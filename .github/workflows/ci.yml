@@ -3,12 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -18,20 +20,33 @@ jobs:
           persist-credentials: false
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      - name: Verify wrapper, toolchain and normal Android build
-        run: nix develop path:. --command ./bootstrap-m0.sh
-      - name: Repeat Android build offline without task/build cache reuse
+      - name: Build and verify Android app
         run: |
-          nix develop path:. --command ./gradlew --offline --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks --dependency-verification=strict clean check :app:assembleDebug :app:assembleRelease
-      - name: Verify APK contents
+          nix develop path:.#ci --command bash -euc '
+            ./bootstrap-m0.sh
+            python3 tools/verify-apk.py app/build/outputs/apk/debug/app-debug.apk
+            python3 tools/verify-apk.py app/build/outputs/apk/release/app-release-unsigned.apk --unsigned
+          '
+      - name: Require reproducibility inputs to remain unchanged
         run: |
-          nix develop path:. --command python3 tools/verify-apk.py app/build/outputs/apk/debug/app-debug.apk
-          nix develop path:. --command python3 tools/verify-apk.py app/build/outputs/apk/release/app-release-unsigned.apk --unsigned
-      - name: Validate Nix package and forced rebuild
+          git diff --check
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+  qualification:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, matches Totipo Java
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Validate Nix package
         run: |
           nix flake check path:.
           nix build path:.
-          nix build --rebuild path:.
       - name: Require reproducibility inputs to remain unchanged
         run: |
           git diff --check

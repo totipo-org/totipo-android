@@ -20,6 +20,11 @@ Or use `.envrc` with `direnv allow`. After changing the shell, exit/re-enter it
 and relaunch jailed-codex. `path:.` includes uncommitted/untracked files during
 M0 review; nothing needs to be staged for Nix validation.
 
+The default shell includes jailed-codex for development. For the lightweight
+Android build/CI environment without agent tooling, use `nix develop path:.#ci`.
+Both shells share the Android/JDK environment and Python; Nix Gradle remains
+available for the bootstrap toolchain verifier. Ordinary builds use `./gradlew`.
+
 The flake provides JDK 17, Gradle 9.8.0, Python and a composed Android SDK from
 its existing locked nixpkgs input: API 37.0, Build Tools 36.0.0, platform tools
 37.0.1, command-line tools 22.0. Compile/target SDK are 37; min SDK is 26.
@@ -41,6 +46,11 @@ Use the wrapper as the ordinary developer/CI entry point:
 ```sh
 ./bootstrap-m0.sh
 ./gradlew --no-daemon check :app:assembleDebug :app:assembleRelease
+```
+
+The forced offline repeat remains a manual M0/toolchain qualification check:
+
+```sh
 ./gradlew --offline --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks clean check :app:assembleDebug :app:assembleRelease
 ```
 
@@ -128,10 +138,11 @@ checks validate ZIP integrity, bootstrap/core/BC DEX presence, storage-nio absen
 and absence of APK/JAR signing. No signing secret, AAB, Play or publication
 infrastructure exists. Debug signing keys are local generated development state.
 
-CI uses this Nix toolchain for wrapper/unit/check/lint/debug/release validation,
-an offline repeat, APK inspection, package checks and a forced rebuild. It does
-not refresh dependency state or publish releases. Remote CI is unproven until
-it actually runs after a later human push.
+Push/PR CI uses the lightweight `#ci` shell for one bootstrap build, APK inspection
+and an unchanged-input check. Nix flake/package checks run on main pushes or
+manual workflow dispatch. Forced offline builds and `nix build --rebuild path:.`
+remain manual qualification actions. CI does not refresh dependency state or
+publish releases. The revised workflow has not yet run remotely.
 
 ## Limitations
 

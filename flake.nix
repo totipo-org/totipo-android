@@ -51,6 +51,14 @@
         };
         androidSdk = android.androidsdk;
         sdkRoot = "${androidSdk}/libexec/android-sdk";
+        # The toolchain verifier uses Nix Gradle; app builds use ./gradlew.
+        androidPackages = [ jdk gradle pkgs.python3 androidSdk ];
+        androidEnv = {
+          JAVA_HOME = "${jdk}/lib/openjdk";
+          ANDROID_HOME = sdkRoot;
+          ANDROID_SDK_ROOT = sdkRoot;
+          GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdkRoot}/build-tools/36.0.0/aapt2";
+        };
         androidPackage = pkgs.callPackage ./package.nix {
           inherit jdk gradle androidSdk;
         };
@@ -72,29 +80,18 @@
           };
         };
 
-        devShells.default = pkgs.mkShell {
-          JAVA_HOME = "${jdk}/lib/openjdk";
-          ANDROID_HOME = sdkRoot;
-          ANDROID_SDK_ROOT = sdkRoot;
-          GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdkRoot}/build-tools/36.0.0/aapt2";
-          packages = [
-            jdk
-            gradle
-            pkgs.python3
-            androidSdk
-
+        devShells.ci = pkgs.mkShell (androidEnv // {
+          packages = androidPackages;
+        });
+        devShells.default = pkgs.mkShell (androidEnv // {
+          packages = androidPackages ++ [
             (jailed-agents.lib.${system}.makeJailedCodex {
               fwdEnv = [ "JAVA_HOME" "ANDROID_HOME" "ANDROID_SDK_ROOT" "GRADLE_OPTS" ];
 
-              extraPkgs = [
-                jdk
-                gradle
-                pkgs.python3
-                androidSdk
-              ];
+              extraPkgs = androidPackages;
             })
           ];
-        };
+        });
       });
 
   nixConfig = {
