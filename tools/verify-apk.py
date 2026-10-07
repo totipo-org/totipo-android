@@ -9,6 +9,7 @@ import zipfile
 parser = argparse.ArgumentParser()
 parser.add_argument('apk', type=Path)
 parser.add_argument('--unsigned', action='store_true')
+parser.add_argument('--no-debug-probe', action='store_true', help='Require release DEX to exclude diagnostic classes')
 args = parser.parse_args()
 data = args.apk.read_bytes()
 with zipfile.ZipFile(args.apk) as apk:
@@ -21,6 +22,8 @@ with zipfile.ZipFile(args.apk) as apk:
     for descriptor in [b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/VaultSession;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
     assert b'Lorg/totipo/storage/nio/' not in dex, 'Unexpected NIO provider'
+    if args.no_debug_probe:
+        assert b'Lorg/totipo/android/debug/' not in dex, 'Debug diagnostic machinery in release DEX'
     if args.unsigned:
         assert not any(name.upper().startswith('META-INF/') and name.upper().endswith(('.RSA', '.DSA', '.EC', '.SF')) for name in names), 'JAR signature present'
         # An APK v2/v3 signing block sits immediately before the ZIP central directory.

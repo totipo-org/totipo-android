@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/storage_probe_extraction_rules">
+        <activity android:name="org.totipo.android.debug.StorageProbeActivity"
+            android:label="Totipo disposable storage probe" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
