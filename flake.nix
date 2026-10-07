@@ -18,24 +18,79 @@
       let
         pkgs = import nixpkgs {
           inherit system;
+          config = {
+            android_sdk.accept_license = true;
+            # Allow only the Android SDK components selected below.
+            allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [
+              "androidsdk"
+              "android-sdk-cmdline-tools"
+              "android-sdk-platforms"
+              "android-sdk-build-tools"
+              "android-sdk-platform-tools"
+              "cmdline-tools"
+              "platforms"
+              "build-tools"
+              "platform-tools"
+            ];
+          };
+        };
+        jdk = pkgs.jdk17_headless;
+        gradle = pkgs.gradle_9.override { java = jdk; };
+        android = pkgs.androidenv.composeAndroidPackages {
+          platformVersions = [ "37.0" ];
+          buildToolsVersions = [ "36.0.0" ];
+          platformToolsVersion = "37.0.1";
+          cmdLineToolsVersion = "22.0";
+          toolsVersion = null;
+          includeSources = false;
+          includeEmulator = false;
+          includeSystemImages = false;
+          includeNDK = false;
+          includeCmake = false;
+          includeExtras = [ ];
+        };
+        androidSdk = android.androidsdk;
+        sdkRoot = "${androidSdk}/libexec/android-sdk";
+        androidPackage = pkgs.callPackage ./package.nix {
+          inherit jdk gradle androidSdk;
         };
       in
       {
         formatter = pkgs.nixpkgs-fmt;
 
+        packages = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          default = androidPackage;
+        };
+        checks = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          android = androidPackage;
+        };
+        apps = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          update-package-deps = {
+            type = "app";
+            program = "${androidPackage.mitmCache.updateScript}";
+            meta.description = "Update the pinned Android Gradle download cache";
+          };
+        };
+
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            jdk17_headless
-            gradle_9
-            python3
+          JAVA_HOME = "${jdk}/lib/openjdk";
+          ANDROID_HOME = sdkRoot;
+          ANDROID_SDK_ROOT = sdkRoot;
+          GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdkRoot}/build-tools/36.0.0/aapt2";
+          packages = [
+            jdk
+            gradle
+            pkgs.python3
+            androidSdk
 
             (jailed-agents.lib.${system}.makeJailedCodex {
-              fwdEnv = [ "JAVA_HOME" ];
+              fwdEnv = [ "JAVA_HOME" "ANDROID_HOME" "ANDROID_SDK_ROOT" "GRADLE_OPTS" ];
 
-              extraPkgs = with pkgs; [
-                jdk17_headless
-                gradle_9
-                python3
+              extraPkgs = [
+                jdk
+                gradle
+                pkgs.python3
+                androidSdk
               ];
             })
           ];

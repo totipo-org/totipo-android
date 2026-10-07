@@ -1,0 +1,179 @@
+{
+  "origins": [
+    "https://dl.google.com",
+    "https://maven.google.com",
+    "https://repo.gradle.org",
+    "https://repo.maven.apache.org/maven2",
+    "https://repo1.maven.org/maven2"
+  ],
+  "artifacts": 338,
+  "matchedGradleArtifacts": 312,
+  "additionalPoms": [
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2-proto/9.4.0-15978811/aapt2-proto-9.4.0-15978811.pom",
+      "coordinate": "com.android.tools.build:aapt2-proto:9.4.0-15978811",
+      "sha256": "c6579b9861199047c269b55f7acbd9b006e4e10cae037dac765a344fac1c9629"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/aaptcompiler/9.4.0/aaptcompiler-9.4.0.pom",
+      "coordinate": "com.android.tools.build:aaptcompiler:9.4.0",
+      "sha256": "54b3e0b96702fadaa5eb2a6880e41284a356cd74eda7697ae53507f75d13476a"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/builder-model/9.4.0/builder-model-9.4.0.pom",
+      "coordinate": "com.android.tools.build:builder-model:9.4.0",
+      "sha256": "e7d19df0850968f88c2ca3c905aa50cc6f3da6feae232c7b2a21aa59712592cd"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/builder-test-api/9.4.0/builder-test-api-9.4.0.pom",
+      "coordinate": "com.android.tools.build:builder-test-api:9.4.0",
+      "sha256": "5368c5b31811f433af89cdfd490cb407c0a9b7f6b54f5b1aa84e68e1ee7bb63e"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/builder/9.4.0/builder-9.4.0.pom",
+      "coordinate": "com.android.tools.build:builder:9.4.0",
+      "sha256": "f765b0ff3a3de5998fee6110e849ba191402d594b1fc5feada492ea62dc007e7"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle-api/9.4.0/gradle-api-9.4.0.pom",
+      "coordinate": "com.android.tools.build:gradle-api:9.4.0",
+      "sha256": "fe34980a3983390c299d2b0ae72e2ea54c7f17fcc920624b86227be913ad0264"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle-common-api/9.4.0/gradle-common-api-9.4.0.pom",
+      "coordinate": "com.android.tools.build:gradle-common-api:9.4.0",
+      "sha256": "38c64ce8c7d777a7b29b3a11eab3bb9fb73d108df7421c245f525e271e8ae127"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle-settings-api/9.4.0/gradle-settings-api-9.4.0.pom",
+      "coordinate": "com.android.tools.build:gradle-settings-api:9.4.0",
+      "sha256": "acbc73ceb56ce258d9a7e471f91ca2a59cebcd487ddc10c25a5550a71a316682"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle/9.4.0/gradle-9.4.0.pom",
+      "coordinate": "com.android.tools.build:gradle:9.4.0",
+      "sha256": "7798ae7eff045309991594b02ff194dfb87ad582bca758c8169a48313fd11343"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/manifest-merger/32.4.0/manifest-merger-32.4.0.pom",
+      "coordinate": "com.android.tools.build:manifest-merger:32.4.0",
+      "sha256": "b94ed4893ec49e575b7a899a505b4879196e93bab4ac698c28f23c56ffd28c67"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/jetifier/jetifier-core/1.0.0-beta10/jetifier-core-1.0.0-beta10.pom",
+      "coordinate": "com.android.tools.build.jetifier:jetifier-core:1.0.0-beta10",
+      "sha256": "5c9d42e6b7e35d4d8d02e0a322cf26693b3ec3642b107c8f0be5a721d45a0c6d"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/build/jetifier/jetifier-processor/1.0.0-beta10/jetifier-processor-1.0.0-beta10.pom",
+      "coordinate": "com.android.tools.build.jetifier:jetifier-processor:1.0.0-beta10",
+      "sha256": "33b17f396989404a49174748569bc8edf4e39a62a42a35ce93dca5c0e4ba0842"
+    },
+    {
+      "url": "https://dl.google.com/dl/android/maven2/com/android/tools/utp/gradle-work-action-api/32.4.0/gradle-work-action-api-32.4.0.pom",
+      "coordinate": "com.android.tools.utp:gradle-work-action-api:32.4.0",
+      "sha256": "fa0fb5d9629050a4cc7dc9b1d9ef0a42dbd81ac1be007d373db642fdab0cb689"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/com/google/guava/guava/33.4.0-jre/guava-33.4.0-jre.pom",
+      "coordinate": "com.google.guava:guava:33.4.0-jre",
+      "sha256": "fa94db40022ddfc775af9ecfb130cce515b96f740daf82f20af846d95054134b"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/apache/groovy/groovy/4.0.29/groovy-4.0.29.pom",
+      "coordinate": "org.apache.groovy:groovy:4.0.29",
+      "sha256": "0b8acbf9063b27e6cc7cda1654311d42cba3b4cf034e7ae1487e1ad962f92eb8"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/checkerframework/checker-qual/3.43.0/checker-qual-3.43.0.pom",
+      "coordinate": "org.checkerframework:checker-qual:3.43.0",
+      "sha256": "9313bf53b3efd8aaca266eea8b96e307976b65c0b16510cc6f02319fbaebed43"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/fus-statistics-gradle-plugin/2.2.10/fus-statistics-gradle-plugin-2.2.10.pom",
+      "coordinate": "org.jetbrains.kotlin:fus-statistics-gradle-plugin:2.2.10",
+      "sha256": "d2f2702240654816b7044856ba58b6af9b358f02b0ebf20951b09780e06b4990"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin-api/2.2.10/kotlin-gradle-plugin-api-2.2.10.pom",
+      "coordinate": "org.jetbrains.kotlin:kotlin-gradle-plugin-api:2.2.10",
+      "sha256": "46b4e672609e7a7017fb749dc62deaa46fdf8f97ef3adc2d82c0b291d42529a5"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin-idea/2.2.10/kotlin-gradle-plugin-idea-2.2.10.pom",
+      "coordinate": "org.jetbrains.kotlin:kotlin-gradle-plugin-idea:2.2.10",
+      "sha256": "be74f1ef040e1efa08342d78d1c94cdf3476fe1f467b6b104df9add945784a3d"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin-model/2.2.10/kotlin-gradle-plugin-model-2.2.10.pom",
+      "coordinate": "org.jetbrains.kotlin:kotlin-gradle-plugin-model:2.2.10",
+      "sha256": "1a5cac7647a40454e42b274ae0df8c08719ed84f7e9de3ed1b306489c3ddd493"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/2.2.10/kotlin-gradle-plugin-2.2.10.pom",
+      "coordinate": "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.10",
+      "sha256": "2efac5be4709583777b2505ea2603ba8e1d7bcf9fa633f2ed7054d6511b1c4a5"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.2.10/kotlin-stdlib-2.2.10.pom",
+      "coordinate": "org.jetbrains.kotlin:kotlin-stdlib:2.2.10",
+      "sha256": "454ba507a3d36b4ac253df6df96f8739bd26ea19df3f332b10b13f2c5715f787"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.10/kotlin-stdlib-2.4.10.pom",
+      "coordinate": "org.jetbrains.kotlin:kotlin-stdlib:2.4.10",
+      "sha256": "9f81f25e96b919153392ded53bd33216e76624909cfd080a3edb278d44fc34f0"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.9.0/kotlinx-coroutines-core-jvm-1.9.0.pom",
+      "coordinate": "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.9.0",
+      "sha256": "19c4889941b3aa098bd57cc64f02f9adacc654d571a12a956de4b5bb148c6499"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core/1.9.0/kotlinx-coroutines-core-1.9.0.pom",
+      "coordinate": "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0",
+      "sha256": "770f2793d05e2b027b9c799938ec1d2d4ef141ce5819c780c32c3995cadb0a47"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.3/totipo-core-0.1.3.pom",
+      "coordinate": "org.totipo:totipo-core:0.1.3",
+      "sha256": "e3a4f22392479bde9941ffb7c0c744d1f77d77f25a60be268e046809f337b83f"
+    }
+  ],
+  "metadata": [
+    {
+      "url": "https://dl.google.com/play-sdk/index/snapshot.gz",
+      "sha256": "37eeb942800582d45ed91654ef941d30a9f648d35a799d49c03f8c50c73f40df"
+    },
+    {
+      "url": "https://maven.google.com/master-index.xml",
+      "sha256": "837a60c116f4f1348710efa3aa6fccec29358b232efe3713366c499e7c127c7b"
+    },
+    {
+      "url": "https://repo.gradle.org/artifactory/libs-releases/org/gradle/gradle-tooling-api/maven-metadata/xml",
+      "metadata": {
+        "groupId": "org.gradle",
+        "lastUpdated": "20260924135448",
+        "release": "9.9.0-milestone-2"
+      }
+    },
+    {
+      "url": "https://repo1.maven.org/maven2/junit/junit/maven-metadata/xml",
+      "metadata": {
+        "groupId": "junit",
+        "lastUpdated": "20210213164433",
+        "release": "4.13.2"
+      }
+    },
+    {
+      "url": "https://repo1.maven.org/maven2/org/totipo/totipo-core/maven-metadata/xml",
+      "metadata": {
+        "groupId": "org.totipo",
+        "lastUpdated": "20261006012759",
+        "release": "0.1.3"
+      }
+    }
+  ],
+  "cacheSha256": "b6a947d036ca916f34f255819a6b6f611617f79af49e68cdf4c4cc802040afd6",
+  "additionalPomsFreshPublisherVerified": true
+}

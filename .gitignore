@@ -12,3 +12,6 @@ result
 result-*
 
 .DS_Store
+
+# AGP-generated local IDE/build state.
+.kotlin/
