@@ -1,9 +1,11 @@
 # Totipo Android
 
 M0 repository/bootstrap build is validated, unreleased (`0.0.0-dev`). One Java
-`:app` module displays a platform Activity with a bootstrap label. It directly
-consumes released `org.totipo:totipo-core:0.1.3` from Maven Central and packages
-core's Bouncy Castle runtime dependency. No product functionality is implemented.
+`:app` module displays a platform Activity with a bootstrap label. It consumes released
+`org.totipo:totipo-storage-nio:0.1.4` from Maven Central, transitively packaging
+core 0.1.4 and Bouncy Castle 1.86. The production local replica uses private NIO
+mode below Android no-backup storage, controlled by one exclusive root owner.
+No product functionality or SAF reconciliation bridge is implemented.
 See [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md) and the
 [M0 evidence report](review/M0_ANDROID_BOOTSTRAP_REPORT.md) for validated status.
 
@@ -56,7 +58,7 @@ The forced offline repeat remains a manual M0/toolchain qualification check:
 
 `check` includes the debug JVM smoke test, Android lint and debug/release
 Maven-boundary validation. Release is deliberately unminified and unsigned, so
-the real core/BC graph must survive D8 and packaging. Configuration cache is
+the real NIO/core/BC graph must survive D8 and packaging. Configuration cache is
 disabled because the custom verification action resolves configurations at
 execution; no cache compatibility is claimed. Build cache remains available for
 ordinary iteration. Toolchain and SDK auto-download are disabled, UTF-8 is explicit.
@@ -134,7 +136,7 @@ CI and optional device evidence are recorded separately in the M0 report.
 
 The package installs only
 `result/share/totipo-android/totipo-android-0.0.0-dev-unsigned.apk`. Installation
-checks validate ZIP integrity, bootstrap/core/BC DEX presence, storage-nio absence
+checks validate ZIP integrity, bootstrap/NIO/core/BC DEX presence, debug probe/test exclusion
 and absence of APK/JAR signing. No signing secret, AAB, Play or publication
 infrastructure exists. Debug signing keys are local generated development state.
 
@@ -146,8 +148,11 @@ publish releases. The revised workflow has not yet run remotely.
 
 ## Limitations
 
-There is no Android storage provider or Syncthing integration yet. M0 chooses no
-storage architecture, real UI toolkit, DI, navigation or lifecycle security
-architecture. There is no vault/TOTP UI, permissions, background behavior,
+There is no Android storage provider or Syncthing integration yet. The private
+canonical local replica boundary is defined in
+[M1D](review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md); transport reconciliation
+is a design awaiting review. No real UI toolkit, DI, navigation or lifecycle
+security architecture is implemented. There is no vault/TOTP UI, permissions,
+background behavior,
 production signing or application-conformance claim. Build evidence does not
 establish Android crypto/runtime/filesystem qualification or interoperability.

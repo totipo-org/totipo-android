@@ -1,12 +1,22 @@
 # Totipo Java released dependency
 
-Android directly consumes `org.totipo:totipo-core:0.1.4` from Maven Central.
-Core requires Java 17 and adds `org.bouncycastle:bcprov-jdk18on:1.86` at runtime.
-The M1C qualification harness consumes `org.totipo:totipo-storage-nio:0.1.4`
-through `debugImplementation`
-only for physical-device qualification in disposable no-backup app-private storage.
-Release compile/runtime and the release APK exclude NIO. This is not a production
-architecture commitment; core never operates against SAF/provider transport.
+Android consumes `org.totipo:totipo-storage-nio:0.1.4` as its single direct
+production Totipo dependency from Maven Central. NIO requires exactly
+`org.totipo:totipo-core:0.1.4`, which adds `org.bouncycastle:bcprov-jdk18on:1.86`
+at runtime. Both debug and release package core/NIO/BC. No redundant direct core
+edge is needed: NIO exposes core transitively on compile and runtime classpaths.
+
+The qualified local-replica mode is `NioTotipoStore.openPrivate(...)`, with default
+durability, exclusively app-controlled writers and root-wide serialization.
+`LocalReplicaOwner` resolves `getApplicationContext().getNoBackupFilesDir()/totipo-vault`
+and gates all production handles/sessions and future bridge imports with an
+exclusive lease. It stores no unlocked session. The SAF tree is transport candidate
+state; it is never the canonical store used for local application operations.
+Shared/default `open(...)` remains unsuitable for the tested Android private
+filesystem: its hard-link publication path was denied. Private-mode qualification
+applies only to the tested private deployment assumptions, not every Android
+filesystem/API level or power-loss behavior. No SAF/provider reconciliation
+qualification follows from local-store qualification.
 
 Upstream: https://github.com/totipo-org/totipo-java, source tag `v0.1.4`.
 Release commit: `44332d459e0cbec74e93ea5fb77280596c505732`.
@@ -22,20 +32,19 @@ not establish Android platform, storage, runtime or application conformance.
 The direct version is pinned in `app/build.gradle.kts`. Strict dependency locks
 and SHA-256 verification metadata pin the resolved graph; `verifyMavenBoundary`,
 wired into `check`, checks debug/release compile/runtime external modules, the
-direct core edge and core's BC runtime edge, rejects project/file artifacts and
-permits exactly NIO 0.1.4 as a direct debug-only external module and requires
-its external NIO → core 0.1.4 edge, including the requested version. Mixed Totipo
-requests are rejected even if Gradle would resolve them to 0.1.4.
-`verifyReleaseApkBoundary`, also in `check`, asserts that release DEX contains no
-NIO or debug probe classes. Repository declarations are centralized; Totipo is excluded
-from Google Maven so all Totipo resolution uses Central.
+single direct NIO edge, NIO's exact core edge, and core's BC runtime edge. It rejects
+project/file artifacts, obsolete coordinates, unexpected modules, and mixed Totipo
+requests even if Gradle would resolve them to 0.1.4. `verifyReleaseApkBoundary`, also
+in `check`, requires core/NIO/BC and excludes all debug probe and helper classes
+and test classes. Repository declarations are centralized; Totipo is excluded
+from Google Maven so all Totipo resolution uses Central. Maven Local is not configured.
 
 Nix `package-deps.json` separately pins package downloads. The human-regenerated
 0.1.4 cache was reviewed against actual Central bytes, Gradle verification metadata
 and publisher POM bytes: no current 0.1.3 entry remains; BC and unrelated artifact
 hashes are unchanged. The only unrelated change is an inert Gradle publisher
-metadata timestamp, with the same release value. M0 does not
-implement `TotipoStore` or choose Android storage.
+metadata timestamp, with the same release value. M1D changes only NIO lock
+configuration scopes; artifact hashes and the Nix download cache remain unchanged.
 
 ## 0.1.4 published provenance
 
@@ -66,8 +75,10 @@ factory with default durability. It exclusively owns a disposable app-private
 no-backup root and serializes all runs/handles. No independent writer or sync
 process mutates that root. Physical API-37 private-mode qualification passed the
 complete exercised workflow; see `review/TOTIPO_JAVA_0_1_4_ANDROID_REPIN_REPORT.md`.
-Storage-NIO remains debug-only pending a later reviewed production-dependency
-decision. This does not establish Android-wide or power-loss support.
+M1D promotes the same released artifact to production without altering NIO storage
+behavior. See `review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md` for ownership,
+reconciliation design and its review limits. This establishes no Android-wide or
+power-loss support.
 
 Historical 0.1.3 qualification evidence, including its failed shared-mode device
 run, remains in `review/M1C_LOCAL_REPLICA_RECONCILIATION_REPORT.md`.

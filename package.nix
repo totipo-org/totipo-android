@@ -81,7 +81,7 @@ stdenv.mkDerivation (finalAttrs: {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
-    python3 tools/verify-apk.py "$out/share/totipo-android/totipo-android-${version}-unsigned.apk" --unsigned
+    python3 tools/verify-apk.py "$out/share/totipo-android/totipo-android-${version}-unsigned.apk" --unsigned --no-debug-probe
     runHook postInstallCheck
   '';
   meta = {
