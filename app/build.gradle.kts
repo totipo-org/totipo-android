@@ -30,6 +30,7 @@ java { toolchain.languageVersion.set(JavaLanguageVersion.of(17)) }
 tasks.withType<JavaCompile>().configureEach { options.encoding = "UTF-8" }
 dependencies {
     implementation("org.totipo:totipo-core:0.1.3")
+    debugImplementation("org.totipo:totipo-storage-nio:0.1.3")
     testImplementation("junit:junit:4.13.2")
 }
 dependencyLocking {
@@ -44,7 +45,7 @@ val productionConfigurations = listOf(
 )
 val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
     group = "verification"
-    description = "Require released core and its BC runtime edge; reject local Totipo/storage providers"
+    description = "Require released core/BC and debug-only NIO; reject local Totipo artifacts"
     val graphs = productionConfigurations.map { configurations.named(it).get().incoming.resolutionResult.rootComponent }
     inputs.files(productionConfigurations.map { configurations.named(it) })
     doLast {
@@ -65,16 +66,23 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 component.id as ModuleComponentIdentifier
             }
             val totipo = modules.filter { it.group == "org.totipo" || it.group.startsWith("org.totipo.") }
-            check(totipo.map { "${it.group}:${it.module}:${it.version}" } == listOf("org.totipo:totipo-core:0.1.3")) {
-                "Unexpected Totipo modules: $totipo"
+            val debug = productionConfigurations[index].startsWith("debug")
+            val expected = setOf("org.totipo:totipo-core:0.1.3") +
+                if (debug) setOf("org.totipo:totipo-storage-nio:0.1.3") else emptySet()
+            check(totipo.map { "${it.group}:${it.module}:${it.version}" }.toSet() == expected) {
+                "Unexpected Totipo modules in ${productionConfigurations[index]}: $totipo"
             }
-            check(modules.none { it.module == "totipo-storage-nio" || it.group.startsWith("dev.totipo") }) {
-                "Storage provider or obsolete Totipo coordinate present"
+            check(modules.none { it.group.startsWith("dev.totipo") ||
+                (it.module == "totipo-storage-nio" && (!debug || it.group != "org.totipo" || it.version != "0.1.3")) }) {
+                "Unexpected storage provider or obsolete Totipo coordinate"
             }
             val direct = root.dependencies.filterIsInstance<ResolvedDependencyResult>().filter { !it.isConstraint }
             check(direct.any { (it.selected.id as? ModuleComponentIdentifier)?.let { id ->
                 id.group == "org.totipo" && id.module == "totipo-core" && id.version == "0.1.3"
             } == true }) { "Core must be a direct external module" }
+            if (debug) check(direct.any { (it.selected.id as? ModuleComponentIdentifier)?.let { id ->
+                id.group == "org.totipo" && id.module == "totipo-storage-nio" && id.version == "0.1.3"
+            } == true }) { "Debug qualification NIO must be a direct external module" }
             // File dependencies do not appear in ResolutionResult; inspect artifacts too.
             configurations.getByName(productionConfigurations[index]).incoming.artifacts.artifacts.forEach { artifact ->
                 check(artifact.id.componentIdentifier is ModuleComponentIdentifier) {
@@ -92,7 +100,17 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 }) { "Expected core -> BC 1.86 Maven runtime relationship" }
             }
         }
-        logger.lifecycle("Verified debug/release external core 0.1.3 Maven boundary")
+        logger.lifecycle("Verified core 0.1.3; NIO 0.1.3 debug only; external Maven boundary")
     }
 }
 tasks.named("check") { dependsOn(verifyMavenBoundary, "testDebugUnitTest", "lint") }
+
+val verifyReleaseApkBoundary = tasks.register<Exec>("verifyReleaseApkBoundary") {
+    group = "verification"
+    description = "Require release APK to exclude NIO and all debug probes"
+    dependsOn("assembleRelease")
+    commandLine("python3", rootProject.file("tools/verify-apk.py"),
+        layout.buildDirectory.file("outputs/apk/release/app-release-unsigned.apk").get().asFile,
+        "--unsigned", "--no-debug-probe")
+}
+tasks.named("check") { dependsOn(verifyReleaseApkBoundary) }

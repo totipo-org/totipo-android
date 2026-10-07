@@ -24,7 +24,7 @@ jobs:
         run: |
           nix develop path:.#ci --command bash -euc '
             ./bootstrap-m0.sh
-            python3 tools/verify-apk.py app/build/outputs/apk/debug/app-debug.apk
+            python3 tools/verify-apk.py app/build/outputs/apk/debug/app-debug.apk --debug-nio
             python3 tools/verify-apk.py app/build/outputs/apk/release/app-release-unsigned.apk --unsigned
           '
       - name: Require reproducibility inputs to remain unchanged

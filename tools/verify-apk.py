@@ -10,7 +10,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('apk', type=Path)
 parser.add_argument('--unsigned', action='store_true')
 parser.add_argument('--no-debug-probe', action='store_true', help='Require release DEX to exclude diagnostic classes')
+parser.add_argument('--debug-nio', action='store_true', help='Require the M1C debug qualification provider')
 args = parser.parse_args()
+assert not (args.debug_nio and (args.unsigned or args.no_debug_probe)), 'Conflicting APK boundaries'
 data = args.apk.read_bytes()
 with zipfile.ZipFile(args.apk) as apk:
     assert apk.testzip() is None, 'Corrupt APK entry'
@@ -21,7 +23,11 @@ with zipfile.ZipFile(args.apk) as apk:
     assert dex.startswith(b'dex\n'), 'Missing DEX'
     for descriptor in [b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/VaultSession;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
-    assert b'Lorg/totipo/storage/nio/' not in dex, 'Unexpected NIO provider'
+    if args.debug_nio:
+        for descriptor in [b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/totipo/android/debug/LocalNioProbeActivity;']:
+            assert descriptor in dex, f'Missing debug qualification class: {descriptor!r}'
+    else:
+        assert b'Lorg/totipo/storage/nio/' not in dex, 'Unexpected NIO provider'
     if args.no_debug_probe:
         assert b'Lorg/totipo/android/debug/' not in dex, 'Debug diagnostic machinery in release DEX'
     if args.unsigned:

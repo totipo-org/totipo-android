@@ -8,5 +8,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name="org.totipo.android.debug.LocalNioProbeActivity"
+            android:label="Totipo local NIO qualification" android:exported="true" />
     </application>
 </manifest>

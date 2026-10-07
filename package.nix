@@ -8,9 +8,11 @@ let
   centralOrg = cache."https://repo.maven.apache.org/maven2/org" or { };
   core = central."org/totipo#totipo-core/0.1.3"
     or (centralOrg."totipo#totipo-core/0.1.3" or { });
+  nio = central."org/totipo#totipo-storage-nio/0.1.3"
+    or (centralOrg."totipo#totipo-storage-nio/0.1.3" or { });
   bc = central."org/bouncycastle#bcprov-jdk18on/1.86"
     or (centralOrg."bouncycastle#bcprov-jdk18on/1.86" or { });
-  cacheReady = core ? jar && (core ? module || core ? pom) && bc ? jar;
+  cacheReady = core ? jar && (core ? module || core ? pom) && bc ? jar && nio ? jar && (nio ? module || nio ? pom);
   trees = [ "app/src" "gradle" "tools" ];
   files = [
     "build.gradle.kts" "settings.gradle.kts" "gradle.properties"
