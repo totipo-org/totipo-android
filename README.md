@@ -5,7 +5,10 @@ M0 repository/bootstrap build is validated, unreleased (`0.0.0-dev`). One Java
 `org.totipo:totipo-storage-nio:0.1.4` from Maven Central, transitively packaging
 core 0.1.4 and Bouncy Castle 1.86. The production local replica uses private NIO
 mode below Android no-backup storage, controlled by one exclusive root owner.
-No product functionality or SAF reconciliation bridge is implemented.
+Production SAF code now observes read-only bounded transport snapshots; no
+synchronization, import, export, or product functionality is implemented. The
+provider tree must already be selected and authorized by a future product flow.
+See the [M1E report](review/M1E_READ_ONLY_PROVIDER_SNAPSHOT_REPORT.md).
 See [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md) and the
 [M0 evidence report](review/M0_ANDROID_BOOTSTRAP_REPORT.md) for validated status.
 
@@ -148,10 +151,10 @@ publish releases. The revised workflow has not yet run remotely.
 
 ## Limitations
 
-There is no Android storage provider or Syncthing integration yet. The private
+There is no synchronization or Syncthing integration yet. The private
 canonical local replica boundary is defined in
 [M1D](review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md); transport reconciliation
-is a design awaiting review. No real UI toolkit, DI, navigation or lifecycle
+awaits Java candidate-validation integration. No real UI toolkit, DI, navigation or lifecycle
 security architecture is implemented. There is no vault/TOTP UI, permissions,
 background behavior,
 production signing or application-conformance claim. Build evidence does not
