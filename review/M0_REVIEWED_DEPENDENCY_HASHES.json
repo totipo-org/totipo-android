@@ -24,19 +24,27 @@
     "sha256": "970b70cb75a184639b6fb9ba3c465aca6a4e1a5f3fff4d65ce8574b2fd79ef38"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.3/totipo-core-0.1.3.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.jar",
     "sha256": "1e3db6ca15273941549dfa821b9f7dc9a00c6ad81e7e66642a1f09c114eeee19"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.3/totipo-core-0.1.3.module",
-    "sha256": "f78bf8f63d52418d03c7feb8167591167929a513ed98edbd77f402e442684f22"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.module",
+    "sha256": "6dc1052306ed1e25dd06c7484a0378e7e3f19c74607f5bc5b7ab3be54802c564"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.3/totipo-storage-nio-0.1.3.jar",
-    "sha256": "691b56c8831f71dafb7d5cb6f7d68ee59c9f42c5bb19c29c9455e1925237334e"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.pom",
+    "sha256": "498abaca7446d84fbb0da3bd92246424fe2eabe839ff5c02c1f5d7b2b7e54bc8"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.3/totipo-storage-nio-0.1.3.module",
-    "sha256": "61761b8105c7839a8fe43e47b26cf84bad395d5e5c6fac6ba63c0d387aae790b"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.jar",
+    "sha256": "9e559ec75fb09af068f876751f32d696c50c40988a16d28419dfa05d1d1c4dae"
+  },
+  {
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.module",
+    "sha256": "2d9b9e6bf66e21a7258eeeecc85550f11dc4071896e847c2d57d7319f3c2af24"
+  },
+  {
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.pom",
+    "sha256": "f954ae9643d0a33b3e2ee8c0024a62e4b5fc555c6c233795a986eb6c12a48b4c"
   }
 ]

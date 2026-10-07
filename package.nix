@@ -6,10 +6,10 @@ let
   # Android spans com/org groups; desktop's smaller cache used an /org prefix.
   central = cache."https://repo.maven.apache.org/maven2" or { };
   centralOrg = cache."https://repo.maven.apache.org/maven2/org" or { };
-  core = central."org/totipo#totipo-core/0.1.3"
-    or (centralOrg."totipo#totipo-core/0.1.3" or { });
-  nio = central."org/totipo#totipo-storage-nio/0.1.3"
-    or (centralOrg."totipo#totipo-storage-nio/0.1.3" or { });
+  core = central."org/totipo#totipo-core/0.1.4"
+    or (centralOrg."totipo#totipo-core/0.1.4" or { });
+  nio = central."org/totipo#totipo-storage-nio/0.1.4"
+    or (centralOrg."totipo#totipo-storage-nio/0.1.4" or { });
   bc = central."org/bouncycastle#bcprov-jdk18on/1.86"
     or (centralOrg."bouncycastle#bcprov-jdk18on/1.86" or { });
   cacheReady = core ? jar && (core ? module || core ? pom) && bc ? jar && nio ? jar && (nio ? module || nio ? pom);

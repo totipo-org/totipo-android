@@ -203,7 +203,7 @@
   "artifactory/libs-releases/org/gradle/gradle-tooling-api/maven-metadata": {
    "xml": {
     "groupId": "org.gradle",
-    "lastUpdated": "20260924135448",
+    "lastUpdated": "20261007170937",
     "release": "9.9.0-milestone-2"
    }
   }
@@ -722,15 +722,15 @@
    "jar": "sha256-6fGLikHwF+kDPLDthciiuiMHKSzf4l6uNlkj56MdKnA=",
    "pom": "sha256-D+MTJug7diLLzZx11GeykfAf/jzG4+dmUawFocHHo2A="
   },
-  "org/totipo#totipo-core/0.1.3": {
+  "org/totipo#totipo-core/0.1.4": {
    "jar": "sha256-Hj22yhUnOUFUnfqCG599yaAMatgefmZkKh8JwRTu7hk=",
-   "module": "sha256-94v49j1SQY0Dx/64FnWRFnkppRPtmO29d/QC5EJoTyI=",
-   "pom": "sha256-46TyI5JHm96ZQf+3wMdE0fd9d/JaYL4mjgRoCfM3uD8="
+   "module": "sha256-bcEFIwbtHiXdBsdISgN45+PxnHRgf1vFt6s75UgCxWQ=",
+   "pom": "sha256-SYq6ynRG2E+7DaO9kiRkJP4uq+g5/1wCwfXXsrflS8g="
   },
-  "org/totipo#totipo-storage-nio/0.1.3": {
-   "jar": "sha256-aRtWyIMfcdr7fVy299aO5ZyfQsW7GcKclFXhklI3M04=",
-   "module": "sha256-YXYbgQXHg5qP5D5Hsmz4S605XV5cb6xrpjwNOHqueQs=",
-   "pom": "sha256-fMFC6eNGRRLF3yg28WFfC5pFf2RcP5+h7WClNn7S2TI="
+  "org/totipo#totipo-storage-nio/0.1.4": {
+   "jar": "sha256-nlWex1+wmvBo+HZ1HzLWlsUMQJiKFtKEGd+gXR0cTa4=",
+   "module": "sha256-LZuea/ZuIaclju7syFVQ8R3EBxiW6EfC1X1zGfPCryQ=",
+   "pom": "sha256-+VSulkPQozs+LujAAkpi5LX8VVxsIzeVqYbrbBKki0w="
   }
  },
  "https://repo1.maven.org/maven2": {
@@ -744,15 +744,15 @@
   "org/totipo/totipo-core/maven-metadata": {
    "xml": {
     "groupId": "org.totipo",
-    "lastUpdated": "20261006012759",
-    "release": "0.1.3"
+    "lastUpdated": "20261007193235",
+    "release": "0.1.4"
    }
   },
   "org/totipo/totipo-storage-nio/maven-metadata": {
    "xml": {
     "groupId": "org.totipo",
-    "lastUpdated": "20261006012754",
-    "release": "0.1.3"
+    "lastUpdated": "20261007193235",
+    "release": "0.1.4"
    }
   }
  }

@@ -1,4 +1,5 @@
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ModuleComponentSelector
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 
 plugins { id("com.android.application") }
@@ -29,8 +30,8 @@ android {
 java { toolchain.languageVersion.set(JavaLanguageVersion.of(17)) }
 tasks.withType<JavaCompile>().configureEach { options.encoding = "UTF-8" }
 dependencies {
-    implementation("org.totipo:totipo-core:0.1.3")
-    debugImplementation("org.totipo:totipo-storage-nio:0.1.3")
+    implementation("org.totipo:totipo-core:0.1.4")
+    debugImplementation("org.totipo:totipo-storage-nio:0.1.4")
     testImplementation("junit:junit:4.13.2")
 }
 dependencyLocking {
@@ -56,6 +57,15 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 if (!visited.add(component)) return
                 component.dependencies.forEach { dependency ->
                     check(dependency is ResolvedDependencyResult) { "Unresolved dependency: $dependency" }
+                    val requested = dependency.requested as? ModuleComponentSelector
+                    if (requested != null && (requested.group == "org.totipo" || requested.group.startsWith("org.totipo."))) {
+                        val selected = dependency.selected.id as? ModuleComponentIdentifier
+                        check(requested.version == "0.1.4" && selected != null &&
+                            selected.group == requested.group && selected.module == requested.module &&
+                            selected.version == requested.version) {
+                            "Mixed/substituted Totipo edge: $requested -> ${dependency.selected.id}"
+                        }
+                    }
                     visit(dependency.selected)
                 }
             }
@@ -67,22 +77,35 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
             }
             val totipo = modules.filter { it.group == "org.totipo" || it.group.startsWith("org.totipo.") }
             val debug = productionConfigurations[index].startsWith("debug")
-            val expected = setOf("org.totipo:totipo-core:0.1.3") +
-                if (debug) setOf("org.totipo:totipo-storage-nio:0.1.3") else emptySet()
+            val expected = setOf("org.totipo:totipo-core:0.1.4") +
+                if (debug) setOf("org.totipo:totipo-storage-nio:0.1.4") else emptySet()
             check(totipo.map { "${it.group}:${it.module}:${it.version}" }.toSet() == expected) {
                 "Unexpected Totipo modules in ${productionConfigurations[index]}: $totipo"
             }
             check(modules.none { it.group.startsWith("dev.totipo") ||
-                (it.module == "totipo-storage-nio" && (!debug || it.group != "org.totipo" || it.version != "0.1.3")) }) {
+                (it.module == "totipo-storage-nio" && (!debug || it.group != "org.totipo" || it.version != "0.1.4")) }) {
                 "Unexpected storage provider or obsolete Totipo coordinate"
             }
             val direct = root.dependencies.filterIsInstance<ResolvedDependencyResult>().filter { !it.isConstraint }
             check(direct.any { (it.selected.id as? ModuleComponentIdentifier)?.let { id ->
-                id.group == "org.totipo" && id.module == "totipo-core" && id.version == "0.1.3"
+                id.group == "org.totipo" && id.module == "totipo-core" && id.version == "0.1.4"
             } == true }) { "Core must be a direct external module" }
             if (debug) check(direct.any { (it.selected.id as? ModuleComponentIdentifier)?.let { id ->
-                id.group == "org.totipo" && id.module == "totipo-storage-nio" && id.version == "0.1.3"
+                id.group == "org.totipo" && id.module == "totipo-storage-nio" && id.version == "0.1.4"
             } == true }) { "Debug qualification NIO must be a direct external module" }
+            if (debug) {
+                val nio = components.single { (it.id as? ModuleComponentIdentifier)?.let { id ->
+                    id.group == "org.totipo" && id.module == "totipo-storage-nio"
+                } == true }
+                check(nio.dependencies.filterIsInstance<ResolvedDependencyResult>().any { edge ->
+                    val requested = edge.requested as? ModuleComponentSelector
+                    val selected = edge.selected.id as? ModuleComponentIdentifier
+                    edge.isConstraint.not() && requested?.group == "org.totipo" &&
+                        requested.module == "totipo-core" && requested.version == "0.1.4" &&
+                        selected?.group == "org.totipo" && selected.module == "totipo-core" &&
+                        selected.version == "0.1.4"
+                }) { "Expected NIO 0.1.4 -> core 0.1.4 external Maven edge" }
+            }
             // File dependencies do not appear in ResolutionResult; inspect artifacts too.
             configurations.getByName(productionConfigurations[index]).incoming.artifacts.artifacts.forEach { artifact ->
                 check(artifact.id.componentIdentifier is ModuleComponentIdentifier) {
@@ -100,7 +123,7 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 }) { "Expected core -> BC 1.86 Maven runtime relationship" }
             }
         }
-        logger.lifecycle("Verified core 0.1.3; NIO 0.1.3 debug only; external Maven boundary")
+        logger.lifecycle("Verified core 0.1.4; NIO 0.1.4 debug only; external Maven boundary")
     }
 }
 tasks.named("check") { dependsOn(verifyMavenBoundary, "testDebugUnitTest", "lint") }
