@@ -10,5 +10,7 @@
         </activity>
         <activity android:name="org.totipo.android.debug.LocalNioProbeActivity"
             android:label="Totipo local NIO qualification" android:exported="true" />
+        <activity android:name="org.totipo.android.debug.AuthPerfActivity"
+            android:label="Totipo authentication diagnostics" android:exported="true" />
     </application>
 </manifest>

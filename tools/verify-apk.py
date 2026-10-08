@@ -24,9 +24,10 @@ with zipfile.ZipFile(args.apk) as apk:
     for descriptor in [b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
     if args.debug_probe:
-        for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;']:
+        for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;']:
             assert descriptor in dex, f'Missing debug qualification class: {descriptor!r}'
     if args.no_debug_probe:
+        assert b'TotipoAuthPerf' not in dex and b'AuthPerfBenchmark' not in dex and b'AuthPerfActivity' not in dex and b'DebugDisposableCreation' not in dex, 'Authentication performance diagnostics in release DEX'
         assert b'Lorg/totipo/android/debug/' not in dex, 'Debug diagnostic machinery in release DEX'
         assert b'Lorg/totipo/android/reconcile/DebugVaultTiming' not in dex and b'TotipoVaultTiming' not in dex, 'Unlock timing probe in release DEX'
     assert b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinatorTest' not in dex, 'Foreground tests/fault fixtures in APK'
