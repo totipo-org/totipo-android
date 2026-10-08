@@ -7,12 +7,14 @@ core 0.1.5 and Bouncy Castle 1.86. The production local replica uses private NIO
 mode below Android no-backup storage, controlled by one exclusive root owner.
 Production SAF code observes read-only bounded transport snapshots and classifies
 immutable candidates through the active Java session. Duplicate and incomplete
-observations retain their distinctions. A controlled local immutable import validates
-and publishes exact ciphertext under one uninterrupted owner lease, closing the
-validating session before opening the publication store. Provider export and VAULT
-reconciliation are not implemented; no automatic sync or product workflow exists. The
+observations retain their distinctions. Foreground read-only provider reconciliation
+can authenticate and import immutable
+objects into the private replica. A lifecycle wrapper keeps one owner lease through
+classification, session closure, sequential publication and normally observed reopen.
+Reopening requires the current credential supplied for that operation. There is no
+provider export, background sync, VAULT reconciliation or finished unlock/session UX. The
 provider tree must already be selected and authorized by a future product flow.
-See the [M1G report](review/M1G_VALIDATED_IMMUTABLE_IMPORT_REPORT.md).
+See the [M1H report](review/M1H_FOREGROUND_RECONCILIATION_ORCHESTRATION_REPORT.md).
 See [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md) and the
 [M0 evidence report](review/M0_ANDROID_BOOTSTRAP_REPORT.md) for validated status.
 
@@ -157,8 +159,9 @@ publish releases. The revised workflow has not yet run remotely.
 
 There is no synchronization or Syncthing integration yet. The private
 canonical local replica boundary is defined in
-[M1D](review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md); transport reconciliation
-awaits Java candidate-validation integration. No real UI toolkit, DI, navigation or lifecycle
+[M1D](review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md); foreground immutable
+import orchestration is established, with partial outcomes
+and incomplete provider evidence preserved. No real UI toolkit, DI, navigation or lifecycle
 security architecture is implemented. There is no vault/TOTP UI, permissions,
 background behavior,
 production signing or application-conformance claim. Build evidence does not
