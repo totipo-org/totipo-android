@@ -7,10 +7,12 @@ core 0.1.5 and Bouncy Castle 1.86. The production local replica uses private NIO
 mode below Android no-backup storage, controlled by one exclusive root owner.
 Production SAF code observes read-only bounded transport snapshots and classifies
 immutable candidates through the active Java session. Duplicate and incomplete
-observations retain their distinctions; no synchronization, import, export, VAULT
-reconciliation, or product functionality is implemented. The
+observations retain their distinctions. A controlled local immutable import validates
+and publishes exact ciphertext under one uninterrupted owner lease, closing the
+validating session before opening the publication store. Provider export and VAULT
+reconciliation are not implemented; no automatic sync or product workflow exists. The
 provider tree must already be selected and authorized by a future product flow.
-See the [M1E report](review/M1E_READ_ONLY_PROVIDER_SNAPSHOT_REPORT.md).
+See the [M1G report](review/M1G_VALIDATED_IMMUTABLE_IMPORT_REPORT.md).
 See [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md) and the
 [M0 evidence report](review/M0_ANDROID_BOOTSTRAP_REPORT.md) for validated status.
 
