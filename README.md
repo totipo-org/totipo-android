@@ -2,11 +2,13 @@
 
 M0 repository/bootstrap build is validated, unreleased (`0.0.0-dev`). One Java
 `:app` module displays a platform Activity with a bootstrap label. It consumes released
-`org.totipo:totipo-storage-nio:0.1.4` from Maven Central, transitively packaging
-core 0.1.4 and Bouncy Castle 1.86. The production local replica uses private NIO
+`org.totipo:totipo-storage-nio:0.1.5` from Maven Central, transitively packaging
+core 0.1.5 and Bouncy Castle 1.86. The production local replica uses private NIO
 mode below Android no-backup storage, controlled by one exclusive root owner.
-Production SAF code now observes read-only bounded transport snapshots; no
-synchronization, import, export, or product functionality is implemented. The
+Production SAF code observes read-only bounded transport snapshots and classifies
+immutable candidates through the active Java session. Duplicate and incomplete
+observations retain their distinctions; no synchronization, import, export, VAULT
+reconciliation, or product functionality is implemented. The
 provider tree must already be selected and authorized by a future product flow.
 See the [M1E report](review/M1E_READ_ONLY_PROVIDER_SNAPSHOT_REPORT.md).
 See [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md) and the

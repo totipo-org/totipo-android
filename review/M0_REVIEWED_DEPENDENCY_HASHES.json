@@ -24,27 +24,27 @@
     "sha256": "970b70cb75a184639b6fb9ba3c465aca6a4e1a5f3fff4d65ce8574b2fd79ef38"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.jar",
-    "sha256": "1e3db6ca15273941549dfa821b9f7dc9a00c6ad81e7e66642a1f09c114eeee19"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.5/totipo-core-0.1.5.jar",
+    "sha256": "e99609e59db1d9f52f80c446060e63ce7dde17ad69252fa87d397d0cb1577f81"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.module",
-    "sha256": "6dc1052306ed1e25dd06c7484a0378e7e3f19c74607f5bc5b7ab3be54802c564"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.5/totipo-core-0.1.5.module",
+    "sha256": "8a3bd815956d59f470f2639cfd95697496abac8c24b6b848579855c05f40bbe5"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.pom",
-    "sha256": "498abaca7446d84fbb0da3bd92246424fe2eabe839ff5c02c1f5d7b2b7e54bc8"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.5/totipo-core-0.1.5.pom",
+    "sha256": "886ae205c99b23aef40332102b7c31393e88a8b3a513f21f5f18a6a93307e3a2"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.5/totipo-storage-nio-0.1.5.jar",
     "sha256": "9e559ec75fb09af068f876751f32d696c50c40988a16d28419dfa05d1d1c4dae"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.module",
-    "sha256": "2d9b9e6bf66e21a7258eeeecc85550f11dc4071896e847c2d57d7319f3c2af24"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.5/totipo-storage-nio-0.1.5.module",
+    "sha256": "4339f56533be8af2fa42b283b7a8513b51bae9de2d7f9aca3294dfec7b03dd88"
   },
   {
-    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.pom",
-    "sha256": "f954ae9643d0a33b3e2ee8c0024a62e4b5fc555c6c233795a986eb6c12a48b4c"
+    "url": "https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.5/totipo-storage-nio-0.1.5.pom",
+    "sha256": "1065a65031308327d660e2290213b5489ceeb13a5f11507b13b45ed4d926bb3d"
   }
 ]

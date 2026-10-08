@@ -31,7 +31,7 @@ final class LocalNioQualification {
         LocalNioQualification probe = new LocalNioQualification();
         probe.line("M1C local NIO qualification v2 (private mode)");
         probe.line("API level=" + Build.VERSION.SDK_INT);
-        probe.line("Java boundary=core 0.1.4 + storage-nio 0.1.4; default NioDurability");
+        probe.line("Java boundary=core 0.1.5 + storage-nio 0.1.5; default NioDurability");
         probe.line("Storage=noBackupFilesDir/m1c-nio-qualification/<run-id>; disposable only");
         probe.line("Mode=explicit openPrivate; harness exclusively owns root and serializes runs/handles");
         probe.line("No independent writer, Syncthing, SAF or cloud process writes into this root.");
