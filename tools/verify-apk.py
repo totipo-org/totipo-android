@@ -21,12 +21,16 @@ with zipfile.ZipFile(args.apk) as apk:
     assert 'AndroidManifest.xml' in names and 'resources.arsc' in names
     dex = b''.join(apk.read(name) for name in names if name.startswith('classes') and name.endswith('.dex'))
     assert dex.startswith(b'dex\n'), 'Missing DEX'
-    for descriptor in [b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
+    for descriptor in [b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
     if args.debug_probe:
-        for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;']:
+        for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;', b'Lorg/totipo/android/DebugTotpFixtureActivity;', b'Lorg/totipo/android/reconcile/DebugTotpFixture;']:
             assert descriptor in dex, f'Missing debug qualification class: {descriptor!r}'
     if args.no_debug_probe:
+        for forbidden in [b'DebugTotpFixture', b'12345678901234567890', b'Public test fixture',
+                          b'TotpPresentationTest', b'TotpControllerTest', b'TotpCoordinatorTest',
+                          b'FakeClock', b'FakeClipboard']:
+            assert forbidden not in dex, f'M2A fixture/test seam in release DEX: {forbidden!r}'
         assert b'EXPECTED_SYNTHETIC_SHA256' not in dex and b'matchesSyntheticOutput' not in dex and b'output_match=1' not in dex and b'30eb8bf0a90f2cd624a1d00aa7093e2c8f11968586718195043150ca6ce50bb1' not in dex, 'M1L equivalence diagnostics in release DEX'
         assert b'TotipoAuthPerf' not in dex and b'AuthPerfBenchmark' not in dex and b'AuthPerfActivity' not in dex and b'DebugDisposableCreation' not in dex, 'Authentication performance diagnostics in release DEX'
         assert b'Lorg/totipo/android/debug/' not in dex, 'Debug diagnostic machinery in release DEX'

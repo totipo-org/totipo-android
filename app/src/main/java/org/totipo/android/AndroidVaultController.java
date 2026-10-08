@@ -11,6 +11,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.totipo.OpenResult;
 import org.totipo.CreateVaultResult;
+import org.totipo.TokenId;
+import java.time.Instant;
 import org.totipo.android.provider.ProviderSnapshot.Scan;
 import org.totipo.android.reconcile.ForegroundVaultCoordinator;
 import org.totipo.android.reconcile.ForegroundVaultCoordinator.View;
@@ -24,10 +26,17 @@ public final class AndroidVaultController {
         BUSY, ERROR_LOCKED, LOCKING, FAILED_CLOSE, ERROR_OPEN }
     public enum Error { NONE, AUTHENTICATION_FAILED, LOCAL_VAULT_ABSENT, LOCAL_STORAGE_UNAVAILABLE,
         LOCAL_STORAGE_UNSAFE, OPEN_FAILED, CREATE_FAILED, OBSERVATION_DIAGNOSTICS, CLOSE_FAILED, BUSY }
-    public record Snapshot(State state, Error error, String message, View view) {}
+    public record Snapshot(State state, Error error, String message, View view,
+                           RevealedTotp revealedCode, long remainingSeconds) {
+        Snapshot(State state, Error error, String message, View view) { this(state, error, message, view, null, 0); }
+        @Override public String toString() { return "Snapshot[" + state + ", " + error + "]"; }
+    }
     public interface Listener { void changed(Snapshot state); }
     // Android dispatch/thread policy is supplied by Application; JVM tests exercise this seam.
-    interface Dispatcher { void post(Runnable action); void assertDispatchThread(); void assertWorkerThread(); }
+    interface Dispatcher {
+        void post(Runnable action); void assertDispatchThread(); void assertWorkerThread();
+        default Runnable after(long millis, Runnable action) { throw new UnsupportedOperationException("Scheduler required"); }
+    }
     static class Backend {
         ForegroundVaultCoordinator.Discovery discover(LocalReplicaOwner owner) throws IOException {
             return ForegroundVaultCoordinator.discover(owner);
@@ -38,10 +47,18 @@ public final class AndroidVaultController {
         ForegroundVaultCoordinator.Creation create(LocalReplicaOwner owner, char[] credential) throws IOException {
             return ForegroundVaultCoordinator.create(owner, credential);
         }
+        ForegroundVaultCoordinator.TotpResult generateTotp(ForegroundVaultCoordinator vault, TokenId id, Instant now,
+                                                         ForegroundVaultCoordinator.ObservedToken expected) {
+            return vault.generateTotp(id, now, expected);
+        }
     }
     private final LocalReplicaOwner owner;
     private final Dispatcher dispatcher;
     private final Backend backend;
+    private final TotpPresentation presentation;
+    private final TotpPresentation.Time time;
+    private long presentationEpoch;
+    private boolean clearingPresentation;
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(1), action -> {
                 Thread thread = new Thread(action, "Totipo-vault"); thread.setDaemon(true); return thread;
@@ -55,10 +72,28 @@ public final class AndroidVaultController {
 
     AndroidVaultController(LocalReplicaOwner owner, Dispatcher dispatcher) { this(owner, dispatcher, new Backend()); }
     AndroidVaultController(LocalReplicaOwner owner, Dispatcher dispatcher, Backend backend) {
+        this(owner, dispatcher, backend, new TotpPresentation.Time() {
+            public Instant wall() { return Instant.now(); }
+            public long elapsedMillis() { return System.nanoTime() / 1_000_000; }
+        }, null);
+    }
+    AndroidVaultController(LocalReplicaOwner owner, Dispatcher dispatcher, Backend backend,
+                           TotpPresentation.Time time, TotpPresentation.Clipboard clipboard) {
         this.owner = owner; this.dispatcher = dispatcher; this.backend = backend;
+        this.time = time;
+        TotpPresentation.Clipboard marshalled = clipboard == null ? null : new TotpPresentation.Clipboard() {
+            public boolean copy(String marker, String text) {
+                dispatcher.assertDispatchThread(); return clipboard.copy(marker, text);
+            }
+            public void clearIfOwned(String marker, String text) {
+                dispatcher.post(() -> { dispatcher.assertDispatchThread(); clipboard.clearIfOwned(marker, text); });
+            }
+        };
+        presentation = new TotpPresentation(time, (delay, action) -> dispatcher.after(delay,
+                () -> { synchronized (this) { action.run(); } }), marshalled, this::presentationChanged);
         submit(State.STARTING, "Checking local vault…", this::discover);
     }
-    public synchronized Snapshot snapshot() { return snapshot; }
+    public synchronized Snapshot snapshot() { presentation.display(); return snapshot; }
     public void attach(Listener listener) {
         dispatcher.assertDispatchThread();
         synchronized (this) { listeners.add(listener); }
@@ -72,17 +107,71 @@ public final class AndroidVaultController {
         dispatcher.post(() -> {
             dispatcher.assertDispatchThread();
             Snapshot value;
-            synchronized (this) { if (!listeners.contains(listener)) return; value = snapshot; }
+            synchronized (this) { if (!listeners.contains(listener)) return; value = snapshot(); }
             listener.changed(value);
         });
     }
     private void publish(State state, Error error, String message, View view) {
         ArrayList<Listener> targets;
         synchronized (this) {
+            clearPresentation();
             snapshot = new Snapshot(state, error, message, view);
             targets = new ArrayList<>(listeners);
         }
         for (Listener listener : targets) deliver(listener);
+    }
+    private synchronized void presentationChanged() {
+        if (clearingPresentation) return;
+        var display = presentation.display();
+        snapshot = new Snapshot(snapshot.state(), snapshot.error(), snapshot.message(), snapshot.view(),
+                display.code(), display.seconds());
+        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+    }
+    private void clearPresentation() {
+        presentationEpoch++;
+        clearingPresentation = true;
+        try { presentation.clear(); }
+        finally { clearingPresentation = false; }
+    }
+    public synchronized void hideCode() {
+        dispatcher.assertDispatchThread(); clearPresentation(); presentationChanged();
+    }
+    public synchronized boolean copyShownCode() {
+        dispatcher.assertDispatchThread();
+        if (operating || snapshot.state() != State.OPEN) return false;
+        boolean copied = presentation.copy();
+        if (copied || presentation.display().code() != null) {
+            snapshot = new Snapshot(snapshot.state(), snapshot.error(),
+                    copied ? "Code copied" : "Clipboard unavailable; code was not copied.",
+                    snapshot.view(), snapshot.revealedCode(), snapshot.remainingSeconds());
+            presentationChanged();
+        }
+        return copied;
+    }
+    public synchronized boolean showCode(TokenId id) {
+        dispatcher.assertDispatchThread();
+        if (operating || snapshot.state() != State.OPEN) return false;
+        var expected = snapshot.view().tokens().stream().filter(token -> token.id().equals(id)).findFirst().orElse(null);
+        if (expected == null) return false;
+        long epoch = presentationEpoch + 1; // submit's publication revokes the previous reveal.
+        return submit(State.BUSY, "Generating code…", () -> {
+            ForegroundVaultCoordinator.TotpResult result;
+            try { result = backend.generateTotp(vault, id, time.wall(), expected); }
+            catch (RuntimeException unavailable) {
+                result = new ForegroundVaultCoordinator.TotpResult(ForegroundVaultCoordinator.TotpStatus.FAILED, null);
+            }
+            synchronized (this) {
+                // Observation/Hide can revoke an in-flight reveal while crypto runs.
+                if (epoch != presentationEpoch || dirty || observationFailed) {
+                    publish(State.OPEN, Error.NONE, "Vault changed; show the code again.", snapshot.view()); return;
+                }
+                snapshot = new Snapshot(State.OPEN, snapshot.error(),
+                        result.status() == ForegroundVaultCoordinator.TotpStatus.AVAILABLE
+                                ? "Vault open" : "Code unavailable; token needs attention.", snapshot.view());
+                if (result.status() != ForegroundVaultCoordinator.TotpStatus.AVAILABLE
+                        || !presentation.reveal(result.revealed())) presentationChanged();
+            }
+        });
     }
     private synchronized boolean submit(State state, String message, Runnable operation) {
         if (operating) return false;
@@ -181,6 +270,7 @@ public final class AndroidVaultController {
         render("Vault open");
     }
     private synchronized void signal(boolean failed) {
+        clearPresentation(); presentationChanged();
         dirty = true; observationFailed |= failed; scheduleView();
     }
     private synchronized void scheduleView() {

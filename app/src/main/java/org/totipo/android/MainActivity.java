@@ -13,6 +13,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import org.totipo.android.AndroidVaultController.Snapshot;
@@ -23,7 +24,10 @@ public final class MainActivity extends Activity {
     private AndroidVaultController controller;
     private final AndroidVaultController.Listener listener = this::render;
     private LinearLayout content;
-    private TextView status, details;
+    private TextView status, code, remaining, selected;
+    private LinearLayout revealPanel;
+    private TokenListAdapter tokens;
+    private org.totipo.TokenId selectedId;
     private EditText password, confirmation;
     private Button action, refresh, lock;
     private String surface;
@@ -38,7 +42,10 @@ public final class MainActivity extends Activity {
             unsupported.setPadding(24, 80, 24, 24); setContentView(unsupported);
         } else render(controller.snapshot());
     }
-    @Override protected void onStart() { super.onStart(); if (controller != null) controller.attach(listener); }
+    @Override protected void onStart() {
+        super.onStart();
+        if (controller != null) { render(controller.snapshot()); controller.attach(listener); }
+    }
     @Override protected void onStop() { if (controller != null) controller.detach(listener); super.onStop(); }
     // No session closure on Activity stop/destruction. No credential Bundle or saved widget state.
     private void render(Snapshot state) {
@@ -62,42 +69,45 @@ public final class MainActivity extends Activity {
         if (refresh != null) {
             refresh.setEnabled(state.state() == State.OPEN); lock.setEnabled(state.state() == State.OPEN);
             var view = state.view();
-            StringBuilder text = new StringBuilder();
-            if (view != null) {
-                text.append(view.tokens().size()).append(" tokens\n");
-                text.append(view.observation() instanceof org.totipo.ObservationProgress.Finished
-                        ? "Latest observation finished\n" : "Observation in progress\n");
-                if (!view.diagnostics().isEmpty() || !view.integrityProblems().isEmpty()) {
-                    text.append("Diagnostics: ").append(view.diagnostics().size())
-                            .append("; integrity warnings: ").append(view.integrityProblems().size()).append('\n');
+            tokens.replace(view == null ? java.util.List.of() : view.tokens(), state.state() == State.OPEN);
+            var shown = state.revealedCode();
+            revealPanel.setVisibility(shown == null ? View.GONE : View.VISIBLE);
+            String formatted = shown == null ? "" : grouped(shown.code());
+            if (!TextUtils.equals(code.getText(), formatted)) code.setText(formatted);
+            remaining.setText(shown == null ? "" : state.remainingSeconds() + " s");
+            if (shown == null) { selected.setText(""); selectedId = null; }
+            if (shown != null && view != null && !shown.tokenId().equals(selectedId)) {
+                selectedId = shown.tokenId();
+                for (var token : view.tokens()) if (token.id().equals(shown.tokenId())
+                        && token.alternatives().size() == 1) {
+                    var descriptor = token.alternatives().get(0);
+                    selected.setText(descriptor.issuer() + " — " + descriptor.account()); break;
                 }
-                for (var token : view.tokens()) {
-                    text.append('\n');
-                    if (token.alternatives().isEmpty()) text.append("Unresolved token\n");
-                    for (var descriptor : token.alternatives()) {
-                        text.append(descriptor.issuer()).append(" — ").append(descriptor.account()).append('\n');
-                        text.append(descriptor.status()).append('\n');
-                    }
-                    if (token.conflict()) text.append("Conflicting alternatives\n");
-                    if (!token.unresolved().isEmpty()) text.append("Unresolved references: ").append(token.unresolved().size()).append('\n');
-                }
-                if (view.tokens().isEmpty()) text.append("No tokens observed. Token enrollment and rotating codes are deferred.");
             }
-            details.setText(text.toString());
         }
     }
+    static String grouped(String value) {
+        int split = (value.length() + 1) / 2;
+        return value.substring(0, split) + " " + value.substring(split);
+    }
+
     private void build(String next) {
         clearPasswords();
+        clearCodeWidgets();
+        code = remaining = selected = null; tokens = null; revealPanel = null;
         surface = next; password = confirmation = null; action = refresh = lock = null;
         ScrollView scroll = new ScrollView(this);
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         int padding = (int) (20 * getResources().getDisplayMetrics().density);
         content.setPadding(padding, padding, padding, padding);
-        if (Build.VERSION.SDK_INT >= 30) scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+        View root = next.equals("open") ? content : scroll;
+        if (Build.VERSION.SDK_INT >= 30) root.setOnApplyWindowInsetsListener((view, insets) -> {
             var bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
         });
-        scroll.setFillViewport(true); scroll.addView(content); setContentView(scroll);
+        content.setSaveEnabled(false); content.setSaveFromParentEnabled(false);
+        if (!next.equals("open")) { scroll.setFillViewport(true); scroll.addView(content); }
+        setContentView(root);
         label("Totipo").setTextSize(28);
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         if (next.equals("create") || next.equals("unlock")) {
@@ -107,10 +117,28 @@ public final class MainActivity extends Activity {
             action = button(next.equals("create") ? "Create Vault" : "Unlock", () -> authenticate(false));
             password.requestFocus();
         } else if (next.equals("open")) {
-            label("Local vault open").setTextSize(22);
-            details = label("");
-            refresh = button("Refresh", () -> controller.refresh());
-            lock = button("Lock", () -> { clearPasswords(); controller.lock(); });
+            tokens = new TokenListAdapter(this, id -> controller.showCode(id));
+            TextView empty = label("No tokens yet");
+            ListView list = new ListView(this); list.setSaveEnabled(false);
+            list.setAdapter(tokens); list.setEmptyView(empty);
+            content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+            revealPanel = new LinearLayout(this); revealPanel.setOrientation(LinearLayout.VERTICAL);
+            revealPanel.setSaveEnabled(false); revealPanel.setSaveFromParentEnabled(false);
+            selected = new TextView(this); code = new TextView(this); remaining = new TextView(this);
+            for (TextView text : new TextView[] {selected, code, remaining}) {
+                text.setSaveEnabled(false); text.setFreezesText(false);
+                text.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+                text.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
+                revealPanel.addView(text);
+            }
+            code.setTextSize(32);
+            LinearLayout revealActions = new LinearLayout(this); revealPanel.addView(revealActions);
+            buttonIn(revealActions, "Hide code", () -> controller.hideCode());
+            buttonIn(revealActions, "Copy code", () -> controller.copyShownCode());
+            revealPanel.setVisibility(View.GONE); content.addView(revealPanel);
+            LinearLayout vaultActions = new LinearLayout(this); content.addView(vaultActions);
+            refresh = buttonIn(vaultActions, "Refresh", () -> controller.refresh());
+            lock = buttonIn(vaultActions, "Lock", () -> { clearPasswords(); controller.lock(); });
         } else {
             action = button("Retry", () -> {
                 clearPasswords();
@@ -131,8 +159,11 @@ public final class MainActivity extends Activity {
         content.addView(field); return field;
     }
     private Button button(String title, Runnable command) {
+        return buttonIn(content, title, command);
+    }
+    private Button buttonIn(LinearLayout parent, String title, Runnable command) {
         Button button = new Button(this); button.setText(title);
-        button.setOnClickListener(ignored -> command.run()); content.addView(button); return button;
+        button.setOnClickListener(ignored -> command.run()); parent.addView(button); return button;
     }
     private void authenticate(boolean emptyConfirmed) {
         boolean create = surface.equals("create");
@@ -158,5 +189,12 @@ public final class MainActivity extends Activity {
         if (password != null) password.getText().clear();
         if (confirmation != null) confirmation.getText().clear();
     }
-    @Override protected void onDestroy() { clearPasswords(); super.onDestroy(); }
+    private void clearCodeWidgets() {
+        if (code != null) code.setText("");
+        if (remaining != null) remaining.setText("");
+        if (selected != null) selected.setText("");
+        if (tokens != null) tokens.replace(java.util.List.of(), false);
+        selectedId = null;
+    }
+    @Override protected void onDestroy() { clearPasswords(); clearCodeWidgets(); super.onDestroy(); }
 }

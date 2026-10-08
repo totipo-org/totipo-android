@@ -13,6 +13,8 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
 import org.totipo.*;
 import org.totipo.android.LocalReplicaOwner;
+import org.totipo.android.RevealedTotp;
+import java.time.Instant;
 import org.totipo.android.provider.ImmutableCandidateClassifier;
 import org.totipo.android.provider.ImmutableCandidateClassifier.*;
 import org.totipo.android.provider.ProviderSnapshot.Scan;
@@ -26,7 +28,7 @@ import static org.totipo.android.reconcile.ImmutableCandidateImporter.*;
  * Cancel cooperatively, never interrupt filesystem publication. */
 public final class ForegroundVaultCoordinator implements AutoCloseable {
     public enum State { OPENING, OPEN, RECONCILING_READ_ONLY, CHANGING_PASSWORD,
-        IMPORTING, REQUESTING_REFRESH, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
+        IMPORTING, REQUESTING_REFRESH, GENERATING_TOTP, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
     public enum Completion { RETAINED_SESSION, REFRESH_REQUESTED, CANCELLED,
         SESSION_FAILURE, BATCH_STOPPED }
     public enum Refresh { NOT_REQUESTED, REQUESTED, SKIPPED_UNSAFE }
@@ -169,6 +171,46 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                 token.heads().stream().map(TokenHead::revision).collect(Collectors.toList()),
                 token.unresolvedReferences(), token.hasConflict())).collect(Collectors.toList());
         return new View(session.fingerprint(), observed.observation(), tokens, observed.diagnostics(), integrityProblems);
+    }
+    public enum TotpStatus { AVAILABLE, UNAVAILABLE_NEEDS_ATTENTION, STALE, FAILED }
+    public record TotpResult(TotpStatus status, RevealedTotp revealed) {
+        @Override public String toString() { return "TotpResult[" + status + "]"; }
+    }
+    /** Only this operation resolves/uses session-scoped alternatives. Never retains one. */
+    public TotpResult generateTotp(TokenId id, Instant now) {
+        return generateTotp(id, now, null);
+    }
+    /** Product callers supply the detached row basis to reject a superseded displayed descriptor,
+     * including changes whose asynchronous observation signal has not arrived yet. */
+    public TotpResult generateTotp(TokenId id, Instant now, ObservedToken expected) {
+        Objects.requireNonNull(id); Objects.requireNonNull(now);
+        begin(State.GENERATING_TOTP);
+        try {
+            VaultState captured = session.state();
+            var token = captured.token(id).orElse(null);
+            if (!(captured.observation() instanceof ObservationProgress.Finished)
+                    || !captured.diagnostics().isEmpty() || !integrityProblems.isEmpty()
+                    || token == null || token.hasConflict() || !token.unresolvedReferences().isEmpty()
+                    || token.alternatives().size() != 1
+                    || token.alternatives().get(0).descriptor().status() != TokenStatus.ACTIVE)
+                return new TotpResult(TotpStatus.UNAVAILABLE_NEEDS_ATTENTION, null);
+            var alternative = token.alternatives().get(0);
+            if (expected != null && (!id.equals(expected.id())
+                    || expected.alternatives().size() != 1
+                    || !alternative.descriptor().equals(expected.alternatives().get(0))
+                    || !token.heads().stream().map(TokenHead::revision).collect(Collectors.toList()).equals(expected.heads())))
+                return new TotpResult(TotpStatus.STALE, null);
+            var code = operations.generateTotp(captured, alternative, now);
+            if (session.state() != captured) return new TotpResult(TotpStatus.STALE, null);
+            int digits = alternative.descriptor().digits();
+            if (now.isBefore(code.validFrom()) || !now.isBefore(code.validUntil())
+                    || !code.code().matches("[0-9]{" + digits + "}"))
+                return new TotpResult(TotpStatus.FAILED, null);
+            return new TotpResult(TotpStatus.AVAILABLE,
+                    new RevealedTotp(id, code.code(), code.validFrom(), code.validUntil(), digits));
+        } catch (RuntimeException unavailable) {
+            return new TotpResult(TotpStatus.FAILED, null);
+        } finally { transition(State.OPEN); }
     }
     private void requireOpen() {
         if (state != State.OPEN) throw new IllegalStateException("Foreground vault is " + state);
@@ -331,6 +373,9 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
 
     // Package-private faults/phase instrumentation only. No injection API ships to public callers.
     static class Operations {
+        TotpCode generateTotp(VaultState state, TokenAlternative alternative, Instant now) {
+            return state.generateTotp(alternative, now);
+        }
         CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws IOException {
             return CoordinatedPrivateStore.open(lease.root());
         }
