@@ -9,8 +9,9 @@ edge is needed: NIO exposes core transitively on compile and runtime classpaths.
 The qualified local-replica mode is `NioTotipoStore.openPrivate(...)`, with default
 durability, exclusively app-controlled writers and root-wide serialization.
 `LocalReplicaOwner` resolves `getApplicationContext().getNoBackupFilesDir()/totipo-vault`
-and gates all production handles/sessions and future bridge imports with an
-exclusive lease. It stores no unlocked session. The SAF tree is transport candidate
+and grants one lifetime lease to the foreground coordinated domain. Its fair store
+gate serializes session SPI calls, staged VAULT handles and exclusive immutable
+bridge batches using one NIO delegate. The owner itself stores no unlocked session. The SAF tree is transport candidate
 state; it is never the canonical store used for local application operations.
 Shared/default `open(...)` remains unsuitable for the tested Android private
 filesystem: its hard-link publication path was denied. Private-mode qualification
@@ -75,8 +76,11 @@ as well. One scan uses one supplied session for all duplicate comparisons. Unequ
 Valid values for one ID report an integrity contradiction without selection. Full
 provider provenance and completeness remain available. The synchronous caller must
 use a worker thread and keep its existing session/root ownership for the operation.
-No second NIO store, local mutation, provider mutation, VAULT validation, persistence
-or UI is added. NIO private mode remains the production local-store boundary.
+M1F added no second NIO store, local mutation, provider mutation, VAULT validation,
+persistence or UI. M1I now materializes immutable objects through the coordinated
+private NIO domain without reauthenticating or closing the session. Its bridge view
+is distinct from the Java-owned session facade. Refresh is requested after the store
+gate releases; request completion has no public correlation identifier. NIO private mode remains the production local-store boundary.
 
 SHA-256 calculated from actual Maven Central bytes; JAR hashes also match module
 metadata. Both POM/module/JAR sets returned HTTP 200 before repinning.

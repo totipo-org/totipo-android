@@ -17,27 +17,19 @@ import org.totipo.android.provider.ImmutableCandidateClassifier;
 import org.totipo.android.provider.ImmutableCandidateClassifier.*;
 import org.totipo.android.provider.ProviderSnapshot.Scan;
 import org.totipo.spi.ObjectWrite;
-import org.totipo.storage.nio.NioTotipoStore;
 import static org.totipo.android.reconcile.ImmutableCandidateImporter.*;
 
-/**
- * Foreground, synchronous worker-thread lifecycle wrapper. This object exclusively owns its
- * lease and every session; callers own only this wrapper and must eventually close it.
- * No raw session/store/root escapes. UI code must dispatch calls to a bounded worker supplied
- * by its future product lifecycle. No Activity lifecycle or worker is installed here.
- *
- * Credentials are operation inputs, consumed and cleared even on rejection. Supply a fresh,
- * exclusively owned buffer containing the CURRENT password for each open/reconcile/change.
- * No credential is retained for session resumption. Read-only captured scans need no rescan.
- * Cancellation is cooperative: never interrupt the worker to cancel filesystem publication.
- */
+/** Worker-thread foreground owner of one root lease, coordinated storage domain and session.
+ * Scans are already captured outside the store gate. Sync needs no credential. The same
+ * authenticated session validates candidates and observes local changes after refresh.
+ * Busy foreground operations are rejected; callers dispatch through a bounded worker.
+ * Cancel cooperatively, never interrupt filesystem publication. */
 public final class ForegroundVaultCoordinator implements AutoCloseable {
     public enum State { OPENING, OPEN, RECONCILING_READ_ONLY, CHANGING_PASSWORD,
-        CLOSING_FOR_IMPORT, IMPORTING, REOPENING, CLOSING, FAILED_CLOSED, CLOSED }
-    public enum Completion { RETAINED_SESSION, RESTORED_SESSION, CANCELLED,
-        SESSION_FAILURE, CLOSE_FAILED, BATCH_STOPPED, SESSION_REOPEN_FAILED,
-        RECONCILIATION_APPLIED_BUT_SESSION_REOPEN_FAILED }
-    public enum Reopen { NOT_NEEDED, RESTORED, FAILED, SKIPPED_UNSAFE }
+        IMPORTING, REQUESTING_REFRESH, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
+    public enum Completion { RETAINED_SESSION, REFRESH_REQUESTED, CANCELLED,
+        SESSION_FAILURE, BATCH_STOPPED }
+    public enum Refresh { NOT_REQUESTED, REQUESTED, SKIPPED_UNSAFE }
     /** Thread-safe, fast, nonthrowing flag query; do not cancel by interrupting a mutation worker. */
     public interface Cancellation { boolean requested(); }
     /** The caller owns vault even on authentication/observation failure, and must close it.
@@ -54,10 +46,10 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     }
     public record Item(RevisionId id, Status status, ObjectWrite publication) {}
     /** Actual outcomes only; unattempted IDs are separate. Evidence retains epoch/coverage and
-     * all siblings. Restored observation does not resolve an uncertain publication retroactively. */
+     * all siblings. A refresh request is not a correlated observation completion acknowledgement. */
     public record Report(Completion completion, ImmutableCandidateClassifier.Result evidence,
-                         List<Item> items, List<RevisionId> unattempted, RevisionId publicationFailureId, Reopen reopen,
-                         OpenResult openFailure, Throwable failure) {
+                         List<Item> items, List<RevisionId> unattempted, RevisionId publicationFailureId, Refresh refresh,
+                         ObservationProgress latestObservation, Throwable failure) {
         public Report { items = frozen(items); unattempted = frozen(unattempted); }
         public long count(Status status) { return items.stream().filter(i -> i.status() == status).count(); }
         public List<RevisionId> contradictions() { return excluded(Status.CONTRADICTION); }
@@ -72,6 +64,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     private final Operations operations;
     private State state = State.OPENING;
     private VaultSession session;
+    private CoordinatedPrivateStore store;
     private List<RevisionId> integrityProblems = List.of();
 
     private ForegroundVaultCoordinator(LocalReplicaOwner.Lease lease, Operations operations) {
@@ -111,7 +104,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     private synchronized void transition(State next) { state = next; }
 
     /** Serializes password rewrap with reconciliation and closure without changing core semantics.
-     * Caller must use the correct current credential for subsequent reopening. */
+     * No wrapper projection or transport VAULT adoption occurs here. */
     public PasswordChangeResult changePassword(char[] current, char[] replacement) {
         Objects.requireNonNull(current); Objects.requireNonNull(replacement);
         boolean entered = false;
@@ -131,95 +124,67 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         }
     }
 
-    public Report reconcile(Scan scan, char[] credential, Cancellation cancellation) {
-        Objects.requireNonNull(credential);
-        boolean entered = false;
-        boolean restoreOpen = false;
+    /** Explicit inbound immutable sync. No authentication, KDF, open or close on this path.
+     * Refresh is requested only after the bridge scope releases its gate. The report records
+     * the latest observation without claiming correlation to this refresh request. */
+    public Report sync(Scan scan) { return sync(scan, () -> false); }
+    public Report sync(Scan scan, Cancellation cancellation) {
+        Objects.requireNonNull(scan); Objects.requireNonNull(cancellation);
+        begin(State.RECONCILING_READ_ONLY);
         ImmutableCandidateClassifier.Result evidence = null;
         List<Selection> plan = List.of();
         List<Item> items = new ArrayList<>();
         try {
-            Objects.requireNonNull(scan); Objects.requireNonNull(cancellation);
-            begin(State.RECONCILING_READ_ONLY); entered = true;
-            if (cancelled(cancellation)) {
-                restoreOpen = true;
-                return report(Completion.CANCELLED, null, items, plan, Reopen.NOT_NEEDED, null, null);
-            }
+            if (cancelled(cancellation)) return report(Completion.CANCELLED, null, items, plan, Refresh.NOT_REQUESTED, null);
             evidence = ImmutableCandidateClassifier.classify(scan, session);
-            // These conditions mean the supplied active session contract has failed. Do not
-            // churn it to retry validation or publish previously validated unrelated groups.
             if (evidence.groups().stream().flatMap(g -> g.siblings().stream())
-                    .anyMatch(c -> c.kind() == Kind.VALIDATION_UNAVAILABLE)) {
-                var failure = new IllegalStateException("Active session validation unavailable");
-                failClosed(failure);
-                return report(Completion.SESSION_FAILURE, evidence, items, plan, Reopen.NOT_NEEDED, null, failure);
+                    .anyMatch(c -> c.unavailability() == Unavailability.SESSION_CLOSED)) {
+                transition(State.FAILED_CLOSED);
+                return report(Completion.SESSION_FAILURE, evidence, items, plan, Refresh.NOT_REQUESTED,
+                        new SessionClosedException());
             }
-            // Preserve integrity warnings across subsequent partial scans; absence cannot clear them.
-            var contradictions = evidence.groups().stream()
-                    .filter(g -> select(g).status == Status.CONTRADICTION).map(Group::objectId).collect(Collectors.toList());
             var accumulated = new java.util.TreeSet<RevisionId>(Comparator.comparing(RevisionId::hex));
-            accumulated.addAll(integrityProblems); accumulated.addAll(contradictions);
-            integrityProblems = Collections.unmodifiableList(new ArrayList<>(accumulated));
-            ImportPlan importPlan = plan(evidence);
-            plan = importPlan.objects;
-            boolean stopBeforeClosure = cancelled(cancellation);
-            if (stopBeforeClosure || plan.isEmpty()) {
-                boolean stop = stopBeforeClosure;
-                restoreOpen = true;
-                return report(stop ? Completion.CANCELLED : Completion.RETAINED_SESSION,
-                        evidence, items, plan, Reopen.NOT_NEEDED, null, null);
-            }
-            transition(State.CLOSING_FOR_IMPORT);
-            try { operations.close(session); session = null; }
-            catch (RuntimeException failure) {
-                transition(State.FAILED_CLOSED); // Session remains owned; no second store, even if close partly ran.
-                return report(Completion.CLOSE_FAILED, evidence, items, plan, Reopen.NOT_NEEDED, null, failure);
-            }
+            accumulated.addAll(integrityProblems);
+            evidence.groups().stream().filter(g -> select(g).status == Status.CONTRADICTION)
+                    .map(Group::objectId).forEach(accumulated::add);
+            integrityProblems = frozen(new ArrayList<>(accumulated));
+            // Validation-unavailable siblings defer their ID; unrelated positive evidence remains useful.
+            plan = plan(evidence).objects;
+            boolean stopBeforeImport = cancelled(cancellation);
+            if (stopBeforeImport || plan.isEmpty()) return report(stopBeforeImport
+                    ? Completion.CANCELLED : Completion.RETAINED_SESSION, evidence, items, plan, Refresh.NOT_REQUESTED, null);
             transition(State.IMPORTING);
-            boolean stopped = false;
-            for (Selection selected : plan) {
-                if (cancelled(cancellation)) { stopped = true; break; }
-                ObjectWrite write;
-                try { write = operations.publish(lease, selected); }
-                catch (Exception failure) {
-                    transition(State.FAILED_CLOSED);
-                    return new Report(Completion.BATCH_STOPPED, evidence, items,
-                            plan.stream().map(s -> s.id).filter(id -> !id.equals(selected.id)
-                                    && items.stream().noneMatch(i -> i.id().equals(id))).collect(Collectors.toList()),
-                            selected.id, Reopen.SKIPPED_UNSAFE, null, failure);
+            RevisionId failedId = null;
+            Throwable failure = null;
+            boolean unsafe = false;
+            try (var bridge = store.bridge()) {
+                for (Selection selected : plan) {
+                    if (cancelled(cancellation)) break;
+                    ObjectWrite write;
+                    try { write = operations.publish(bridge, selected); }
+                    catch (RuntimeException fault) { failedId = selected.id; failure = fault; unsafe = true; break; }
+                    items.add(new Item(selected.id, map(write), write));
+                    if (write instanceof ObjectWrite.Uncertain || write instanceof ObjectWrite.Failed) { unsafe = true; break; }
                 }
-                items.add(new Item(selected.id, map(write), write));
-                // All three StoreFailure reasons are coarse: none proves a healthy root or an
-                // object-local fault. Abort on Failed; Uncertain additionally forbids auto-reopen.
-                if (write instanceof ObjectWrite.Uncertain || write instanceof ObjectWrite.Failed) {
-                    transition(State.FAILED_CLOSED);
-                    return report(Completion.BATCH_STOPPED, evidence, items, plan, Reopen.SKIPPED_UNSAFE, null, null);
-                }
+                if (unsafe) bridge.markUnsafe();
             }
-            transition(State.REOPENING);
-            OpenResult failure = establish(credential);
-            stopped = stopped || cancelled(cancellation);
-            restoreOpen = failure == null;
-            return report(failure == null ? stopped ? Completion.CANCELLED : Completion.RESTORED_SESSION
-                            : reopenFailure(items),
-                    evidence, items, plan, failure == null ? Reopen.RESTORED : Reopen.FAILED, failure, null);
-        } catch (Exception failure) {
-            if (!entered) {
-                if (failure instanceof RuntimeException runtime) throw runtime;
-                throw new IllegalStateException(failure);
+            // NEVER enter Java while the Android store gate is held.
+            if (unsafe) {
+                transition(State.STORAGE_UNSAFE);
+                return new Report(Completion.BATCH_STOPPED, evidence, items, remaining(plan, items, failedId),
+                        failedId, Refresh.SKIPPED_UNSAFE, null, failure);
             }
-            State phase = lifecycle();
-            failClosed(failure);
-            return report(phase == State.REOPENING ? reopenFailure(items)
-                            : phase == State.IMPORTING ? Completion.BATCH_STOPPED : Completion.SESSION_FAILURE,
-                    evidence, items, plan, phase == State.REOPENING ? Reopen.FAILED
-                            : phase == State.IMPORTING ? Reopen.SKIPPED_UNSAFE : Reopen.NOT_NEEDED, null, failure);
+            transition(State.REQUESTING_REFRESH);
+            operations.refresh(session, store);
+            return report(cancelled(cancellation) ? Completion.CANCELLED : Completion.REFRESH_REQUESTED,
+                    evidence, items, plan, Refresh.REQUESTED, null);
+        } catch (RuntimeException failure) {
+            // Keep the same session owned. Explicit close can always clean it up; no automatic reopen.
+            transition(State.STORAGE_UNSAFE);
+            return report(Completion.SESSION_FAILURE, evidence, items, plan, Refresh.SKIPPED_UNSAFE, failure);
         } finally {
-            Arrays.fill(credential, '\0');
-            // Keep the gate busy through result construction and credential cleanup.
-            if (restoreOpen && (lifecycle() == State.RECONCILING_READ_ONLY || lifecycle() == State.REOPENING)) {
-                transition(State.OPEN);
-            }
+            if (lifecycle() == State.RECONCILING_READ_ONLY || lifecycle() == State.IMPORTING
+                    || lifecycle() == State.REQUESTING_REFRESH) transition(State.OPEN);
         }
     }
     // Internal application TCB only: public callers cannot supply descriptive groups/plans.
@@ -250,19 +215,19 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     private static boolean cancelled(Cancellation cancellation) {
         return cancellation.requested() || Thread.currentThread().isInterrupted();
     }
-    private static Completion reopenFailure(List<Item> items) {
-        return items.stream().anyMatch(i -> i.status() == Status.IMPORTED)
-                ? Completion.RECONCILIATION_APPLIED_BUT_SESSION_REOPEN_FAILED : Completion.SESSION_REOPEN_FAILED;
-    }
-    private static Report report(Completion completion, ImmutableCandidateClassifier.Result evidence,
-                                 List<Item> items, List<Selection> plan, Reopen reopen,
-                                 OpenResult openFailure, Throwable failure) {
+    private static List<RevisionId> remaining(List<Selection> plan, List<Item> items, RevisionId failureId) {
         var attempted = items.stream().map(Item::id).collect(Collectors.toList());
-        return new Report(completion, evidence, items, plan.stream().map(s -> s.id)
-                .filter(id -> !attempted.contains(id)).collect(Collectors.toList()), null, reopen, openFailure, failure);
+        return plan.stream().map(s -> s.id).filter(id -> !attempted.contains(id) && !id.equals(failureId))
+                .collect(Collectors.toList());
+    }
+    private Report report(Completion completion, ImmutableCandidateClassifier.Result evidence,
+                          List<Item> items, List<Selection> plan, Refresh refresh, Throwable failure) {
+        return new Report(completion, evidence, items, remaining(plan, items, null), null, refresh,
+                refresh == Refresh.SKIPPED_UNSAFE ? null : session.state().observation(), failure);
     }
     private OpenResult establish(char[] credential) throws Exception {
-        OpenResult result = operations.open(lease, credential);
+        store = operations.storage(lease);
+        OpenResult result = operations.open(store, credential);
         if (!(result instanceof OpenResult.Opened opened)) {
             transition(State.FAILED_CLOSED); return result;
         }
@@ -281,23 +246,31 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     @Override public void close() {
         synchronized (this) {
             if (state == State.CLOSED) return;
-            if (state != State.OPEN && state != State.FAILED_CLOSED) throw new IllegalStateException("Foreground vault busy");
+            if (state != State.OPEN && state != State.FAILED_CLOSED && state != State.STORAGE_UNSAFE) throw new IllegalStateException("Foreground vault busy");
             state = State.CLOSING;
         }
         try {
             if (session != null) { operations.close(session); session = null; }
+            if (store != null) { store.close(); store = null; }
             lease.close(); transition(State.CLOSED);
         } catch (RuntimeException failure) { transition(State.FAILED_CLOSED); throw failure; }
     }
 
     // Package-private faults/phase instrumentation only. No injection API ships to public callers.
     static class Operations {
-        OpenResult open(LocalReplicaOwner.Lease lease, char[] password) throws IOException {
-            return Totipo.open(NioTotipoStore.openPrivate(lease.root()), password);
+        CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws IOException {
+            return CoordinatedPrivateStore.open(lease.root());
+        }
+        OpenResult open(CoordinatedPrivateStore store, char[] password) {
+            return Totipo.open(store.transferSessionView(), password);
         }
         void close(VaultSession session) { session.close(); }
-        ObjectWrite publish(LocalReplicaOwner.Lease lease, Selection selection) throws IOException {
-            try (var store = NioTotipoStore.openPrivate(lease.root())) { return publishExact(store, selection); }
+        ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, Selection selection) {
+            return bridge.publish(selection);
+        }
+        void refresh(VaultSession session, CoordinatedPrivateStore store) {
+            if (store.exclusiveHeldByCurrentThread()) throw new IllegalStateException("Lock order violation");
+            session.requestRefresh();
         }
         void observe(VaultSession session) throws Exception { awaitObservation(session); }
     }

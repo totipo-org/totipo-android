@@ -22,6 +22,9 @@ public final class ForegroundVaultCoordinatorTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
     private static Path fixture;
     private static byte[] wrapper;
+    private static RevisionId childId, parentId;
+    private static byte[] childBytes, parentBytes;
+    private static TokenId ancestryToken;
     private static final Map<RevisionId, byte[]> objects = new TreeMap<>(Comparator.comparing(RevisionId::hex));
     private static final Tree TREE = new Tree("fixture", "content://fixture/root", "root");
     private static char[] credential() { return "M1H disposable fixture".toCharArray(); }
@@ -38,9 +41,19 @@ public final class ForegroundVaultCoordinatorTest {
                     objects.put(id, null);
                 }
             }
+            try (var secret = NewSecret.copyOf(new byte[]{4,3,2,1}); var create = session.state().createToken()) {
+                var saved = (SaveResult.Saved)create.issuer("parent").secret(secret).save();
+                parentId = saved.revisions().get(0); ancestryToken = saved.tokenId();
+            }
+            awaitContent(session, List.of(parentId));
+            try (var update = session.state().update(session.state().token(ancestryToken).orElseThrow().heads().get(0))) {
+                childId = ((SaveResult.Saved)update.issuer("child").save()).revisions().get(0);
+            }
         } finally { Arrays.fill(password, '\0'); }
         wrapper = Files.readAllBytes(fixture.resolve("vault"));
         try (var store = NioTotipoStore.openPrivate(fixture)) {
+            parentBytes = ((BoundedRead.Present)store.readObject(new ObjectName(parentId.hex()), 1024)).bytes();
+            childBytes = ((BoundedRead.Present)store.readObject(new ObjectName(childId.hex()), 1024)).bytes();
             for (RevisionId id : objects.keySet()) objects.put(id, ((BoundedRead.Present)
                     store.readObject(new ObjectName(id.hex()), 1024)).bytes());
         }
@@ -78,18 +91,18 @@ public final class ForegroundVaultCoordinatorTest {
         return opening.vault();
     }
     private static Report run(ForegroundVaultCoordinator vault, Scan scan) {
-        char[] password = credential();
-        Report report = vault.reconcile(scan, password, CONTINUE);
-        assertArrayEquals(new char[password.length], password);
-        return report;
+        return vault.sync(scan, CONTINUE);
     }
     private static class Tracked extends Operations {
         int opens, closes, publications, observations;
         VaultSession first, last;
         List<RevisionId> order = new ArrayList<>();
-        OpenResult open(LocalReplicaOwner.Lease lease, char[] password) throws java.io.IOException {
-            opens++;
-            OpenResult result = super.open(lease, password);
+        List<RevisionId> expected = new ArrayList<>();
+        int refreshes; CoordinatedPrivateStore domain;
+        final Set<CoordinatedPrivateStore.Bridge> scopes = Collections.newSetFromMap(new IdentityHashMap<>());
+        OpenResult open(CoordinatedPrivateStore store, char[] password) {
+            domain = store; opens++;
+            OpenResult result = super.open(store, password);
             if (result instanceof OpenResult.Opened opened) {
                 if (first == null) first = opened.session();
                 last = opened.session();
@@ -97,12 +110,37 @@ public final class ForegroundVaultCoordinatorTest {
             return result;
         }
         void close(VaultSession session) { closes++; super.close(session); }
-        ObjectWrite publish(LocalReplicaOwner.Lease lease, ImmutableCandidateImporter.Selection selection) throws java.io.IOException {
-            publications++; order.add(selection.id);
-            assertThrows(SessionClosedException.class, () -> first.validateObject(selection.id, objects.get(selection.id)));
-            return super.publish(lease, selection);
+        ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selection) {
+            scopes.add(bridge); publications++; order.add(selection.id);
+            var result = super.publish(bridge, selection);
+            if (result instanceof ObjectWrite.Written || result instanceof ObjectWrite.AlreadyPresentExact) expected.add(selection.id);
+            return result;
         }
         void observe(VaultSession session) throws Exception { observations++; super.observe(session); }
+        void refresh(VaultSession session, CoordinatedPrivateStore store) {
+            assertFalse(store.exclusiveHeldByCurrentThread());
+            assertSame(first, session); assertEquals(0, closes); assertEquals(1, opens);
+            refreshes++; super.refresh(session, store);
+            awaitContent(session, expected);
+        }
+    }
+    private static void awaitContent(VaultSession session, List<RevisionId> expected) {
+        awaitState(session, state -> state.observation() instanceof ObservationProgress.Finished
+                && state.tokens().stream().flatMap(t -> t.heads().stream()).map(TokenHead::revision).toList().containsAll(expected));
+    }
+    private static void awaitState(VaultSession session, java.util.function.Predicate<VaultState> predicate) {
+        var done = new CountDownLatch(1);
+        var subscription = new AtomicReference<Flow.Subscription>();
+        var failure = new AtomicReference<Throwable>();
+        session.states().subscribe(new Flow.Subscriber<>() {
+            public void onSubscribe(Flow.Subscription next) { subscription.set(next); next.request(Long.MAX_VALUE); }
+            public void onNext(VaultState state) { if (predicate.test(state)) done.countDown(); }
+            public void onError(Throwable cause) { failure.set(cause); done.countDown(); }
+            public void onComplete() { failure.set(new AssertionError("Session closed")); done.countDown(); }
+        });
+        try { assertTrue("Expected content observation", done.await(20, TimeUnit.SECONDS)); assertNull(failure.get()); }
+        catch (InterruptedException failureValue) { throw new AssertionError(failureValue); }
+        finally { subscription.get().cancel(); }
     }
     @Test public void noEligibleKeepsSameSessionWithoutPublication() throws Exception {
         var ops = new Tracked();
@@ -114,14 +152,15 @@ public final class ForegroundVaultCoordinatorTest {
             assertTrue(ops.first.validateObject(ids().get(0), objects.get(ids().get(0))) instanceof ObjectCandidateValidation.Valid);
         }
     }
-    @Test public void singleRealScanValidationPublicationReopenAndExactIdempotence() throws Exception {
+    @Test public void singleRealScanSameSessionAndExactIdempotence() throws Exception {
         var owner = owner(); var ops = new Tracked();
         try (var vault = opened(owner, ops)) {
             Scan scan = scan(State.COMPLETE, good(0));
             Report result = run(vault, scan);
             assertSame(scan, result.evidence().transport());
-            assertEquals(1, result.count(Status.IMPORTED)); assertEquals(Reopen.RESTORED, result.reopen());
-            assertNotSame(ops.first, ops.last); assertEquals(2, ops.observations);
+            assertEquals(1, result.count(Status.IMPORTED)); assertEquals(Refresh.REQUESTED, result.refresh());
+            assertSame(ops.first, ops.last); assertEquals(1, ops.observations);
+            assertEquals(1, ops.opens); assertEquals(0, ops.closes);
             assertTrue(vault.view().observation() instanceof ObservationProgress.Finished);
             assertEquals(1, vault.view().tokens().size());
             assertEquals(1, run(vault, scan).count(Status.ALREADY_PRESENT));
@@ -134,6 +173,7 @@ public final class ForegroundVaultCoordinatorTest {
         try (var vault = opened(owner(), ops)) {
             Report result = run(vault, all());
             assertEquals(3, result.count(Status.IMPORTED)); assertEquals(ids(), ops.order);
+            assertEquals(1, ops.refreshes); assertEquals(1, ops.scopes.size());
             assertEquals(3, vault.view().tokens().size()); assertTrue(result.unattempted().isEmpty());
         }
     }
@@ -168,7 +208,7 @@ public final class ForegroundVaultCoordinatorTest {
         }
         try (var vault = opened(owner, new Tracked())) {
             var result = run(vault, all()); assertEquals(1, result.count(Status.BLOCKED_EXISTING_DIFFERENT));
-            assertEquals(2, result.count(Status.IMPORTED)); assertEquals(Reopen.RESTORED, result.reopen());
+            assertEquals(2, result.count(Status.IMPORTED)); assertEquals(Refresh.REQUESTED, result.refresh());
         }
         try (var lease = owner.acquire(); var store = NioTotipoStore.openPrivate(lease.root())) {
             assertArrayEquals(obstruction, ((BoundedRead.Present)store.readObject(new ObjectName(ids().get(0).hex()),1024)).bytes());
@@ -177,8 +217,8 @@ public final class ForegroundVaultCoordinatorTest {
     @Test public void everyUncertaintyReasonStopsWithoutReopen() throws Exception {
         for (StoreFailure reason : StoreFailure.values()) {
             var ops = new Tracked() {
-                ObjectWrite publish(LocalReplicaOwner.Lease lease, ImmutableCandidateImporter.Selection selection) throws java.io.IOException {
-                    super.publish(lease, selection); return new ObjectWrite.Uncertain(reason);
+                ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selection) {
+                    super.publish(bridge, selection); return new ObjectWrite.Uncertain(reason);
                 }
             };
             var owner = owner();
@@ -186,8 +226,10 @@ public final class ForegroundVaultCoordinatorTest {
                 var result = run(vault, all());
                 assertEquals(1, result.count(Status.IMPORT_UNCERTAIN)); assertEquals(2, result.unattempted().size());
                 assertEquals(reason, ((ObjectWrite.Uncertain) result.items().get(0).publication()).reason());
-                assertEquals(Reopen.SKIPPED_UNSAFE, result.reopen()); assertEquals(1, ops.opens);
-                assertEquals(ForegroundVaultCoordinator.State.FAILED_CLOSED, vault.lifecycle());
+                assertEquals(Refresh.SKIPPED_UNSAFE, result.refresh()); assertEquals(1, ops.opens);
+                assertEquals(0, ops.closes); assertEquals(0, ops.refreshes);
+                assertTrue(ops.first.validateObject(ids().get(0), objects.get(ids().get(0))) instanceof ObjectCandidateValidation.Valid);
+                assertEquals(ForegroundVaultCoordinator.State.STORAGE_UNSAFE, vault.lifecycle());
                 assertThrows(IllegalStateException.class, vault::view); assertThrows(IllegalStateException.class, owner::acquire);
             }
             try (var recovered = opened(owner, new Tracked())) { assertEquals(1, recovered.view().tokens().size()); }
@@ -196,7 +238,7 @@ public final class ForegroundVaultCoordinatorTest {
     @Test public void everyStorageFailureReasonStopsWithoutFabricatedSuccess() throws Exception {
         for (StoreFailure reason : StoreFailure.values()) {
             var ops = new Tracked() {
-                ObjectWrite publish(LocalReplicaOwner.Lease lease, ImmutableCandidateImporter.Selection selection) {
+                ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selection) {
                     publications++; return new ObjectWrite.Failed(reason);
                 }
             };
@@ -205,100 +247,16 @@ public final class ForegroundVaultCoordinatorTest {
                 assertEquals(reason, ((ObjectWrite.Failed)result.items().get(0).publication()).reason());
                 assertEquals(2, result.unattempted().size()); assertEquals(1, ops.opens);
                 assertEquals(0, result.count(Status.IMPORTED));
+                assertEquals(0, ops.closes); assertEquals(0, ops.refreshes);
+                assertEquals(ForegroundVaultCoordinator.State.STORAGE_UNSAFE, vault.lifecycle());
             }
-        }
-    }
-    @Test public void closeFailureRetainsOwnershipAndNeverOpensAnotherStore() throws Exception {
-        var fail = new AtomicBoolean(true);
-        var ops = new Tracked() {
-            void close(VaultSession session) {
-                if (fail.get()) throw new IllegalStateException("injected close failure");
-                super.close(session);
-            }
-        };
-        var owner = owner(); var vault = opened(owner, ops);
-        try {
-            var result = run(vault, all()); assertEquals(Completion.CLOSE_FAILED, result.completion());
-            assertEquals(0, ops.publications); assertEquals(1, ops.opens);
-            assertThrows(IllegalStateException.class, vault::view); assertThrows(IllegalStateException.class, owner::acquire);
-            assertThrows(IllegalStateException.class, vault::close); assertThrows(IllegalStateException.class, owner::acquire);
-        } finally { fail.set(false); vault.close(); }
-        try (var lease = owner.acquire()) { assertNotNull(lease.root()); }
-    }
-    @Test public void wrongReopenCredentialDoesNotUndoAcknowledgedImport() throws Exception {
-        var owner = owner(); var ops = new Tracked();
-        try (var vault = opened(owner, ops)) {
-            char[] wrong = "wrong current password".toCharArray();
-            var result = vault.reconcile(all(), wrong, CONTINUE);
-            assertArrayEquals(new char[wrong.length], wrong);
-            assertEquals(Completion.RECONCILIATION_APPLIED_BUT_SESSION_REOPEN_FAILED, result.completion());
-            assertTrue(result.openFailure() instanceof OpenResult.AuthenticationFailed);
-            assertEquals(3, result.count(Status.IMPORTED)); assertEquals(Reopen.FAILED, result.reopen());
-            assertThrows(IllegalStateException.class, owner::acquire);
-        }
-        try (var vault = opened(owner, new Tracked())) { assertEquals(3, vault.view().tokens().size()); }
-    }
-    @Test public void reopenObservationBoundaryAndFailureAreExplicit() throws Exception {
-        var owner = owner(); var reference = new AtomicReference<ForegroundVaultCoordinator>();
-        var ops = new Tracked() {
-            void observe(VaultSession session) throws Exception {
-                if (opens > 1) {
-                    assertEquals(ForegroundVaultCoordinator.State.REOPENING, reference.get().lifecycle());
-                    assertThrows(IllegalStateException.class, reference.get()::view);
-                    assertThrows(IllegalStateException.class, owner::acquire);
-                    throw new IllegalStateException("injected observation failure");
-                }
-                super.observe(session);
-            }
-        };
-        try (var vault = opened(owner, ops)) {
-            reference.set(vault);
-            var result = run(vault, all()); assertEquals(3, result.count(Status.IMPORTED));
-            assertEquals(Completion.RECONCILIATION_APPLIED_BUT_SESSION_REOPEN_FAILED, result.completion());
-            assertNotNull(result.failure()); assertEquals(ForegroundVaultCoordinator.State.FAILED_CLOSED, vault.lifecycle());
-        }
-        try (var vault = opened(owner, new Tracked())) { assertEquals(3, vault.view().tokens().size()); }
-    }
-    @Test public void sameLeaseAndSessionGateAtAllTransitionPhases() throws Exception {
-        var owner = owner(); var reference = new AtomicReference<ForegroundVaultCoordinator>();
-        var ops = new Tracked() {
-            void check(ForegroundVaultCoordinator.State expected) {
-                assertThrows(IllegalStateException.class, owner::acquire);
-                if (reference.get() != null) {
-                    assertEquals(expected, reference.get().lifecycle());
-                    assertThrows(IllegalStateException.class, reference.get()::view);
-                    assertThrows(IllegalStateException.class, reference.get()::close);
-                }
-            }
-            void close(VaultSession session) {
-                if (reference.get().lifecycle() == ForegroundVaultCoordinator.State.CLOSING_FOR_IMPORT)
-                    check(ForegroundVaultCoordinator.State.CLOSING_FOR_IMPORT);
-                super.close(session);
-            }
-            ObjectWrite publish(LocalReplicaOwner.Lease lease, ImmutableCandidateImporter.Selection selection) throws java.io.IOException {
-                check(ForegroundVaultCoordinator.State.IMPORTING); return super.publish(lease, selection);
-            }
-            OpenResult open(LocalReplicaOwner.Lease lease, char[] password) throws java.io.IOException {
-                check(ForegroundVaultCoordinator.State.REOPENING); return super.open(lease, password);
-            }
-        };
-        try (var vault = opened(owner, ops)) {
-            reference.set(vault);
-            var result = vault.reconcile(all(), credential(), () -> {
-                if (vault.lifecycle() == ForegroundVaultCoordinator.State.RECONCILING_READ_ONLY)
-                    ops.check(ForegroundVaultCoordinator.State.RECONCILING_READ_ONLY);
-                if (vault.lifecycle() == ForegroundVaultCoordinator.State.REOPENING)
-                    ops.check(ForegroundVaultCoordinator.State.REOPENING);
-                assertThrows(IllegalStateException.class, owner::acquire); return false;
-            });
-            assertEquals(3, result.count(Status.IMPORTED));
         }
     }
     @Test public void concurrentReconciliationPasswordChangeAndCloseRejected() throws Exception {
         var entered = new CountDownLatch(1); var finish = new CountDownLatch(1);
         var worker = Executors.newSingleThreadExecutor();
         try (var vault = opened(owner(), new Tracked())) {
-            var first = worker.submit(() -> vault.reconcile(all(), credential(), () -> {
+            var first = worker.submit(() -> vault.sync(all(), () -> {
                 entered.countDown();
                 try { assertTrue(finish.await(10, TimeUnit.SECONDS)); }
                 catch (InterruptedException failure) { throw new AssertionError(failure); }
@@ -306,9 +264,7 @@ public final class ForegroundVaultCoordinatorTest {
             }));
             try {
                 assertTrue(entered.await(10, TimeUnit.SECONDS));
-                char[] rejected = credential();
-                assertThrows(IllegalStateException.class, () -> vault.reconcile(all(), rejected, CONTINUE));
-                assertArrayEquals(new char[rejected.length], rejected);
+                assertThrows(IllegalStateException.class, () -> vault.sync(all(), CONTINUE));
                 char[] old = credential(), replacement = credential();
                 assertThrows(IllegalStateException.class, () -> vault.changePassword(old, replacement));
                 assertArrayEquals(new char[old.length], old); assertArrayEquals(new char[replacement.length], replacement);
@@ -321,23 +277,23 @@ public final class ForegroundVaultCoordinatorTest {
         for (int cancelAt : List.of(1,2)) {
             var calls = new AtomicInteger(); var ops = new Tracked();
             try (var vault = opened(owner(), ops)) {
-                var result = vault.reconcile(all(), credential(), () -> calls.incrementAndGet() == cancelAt);
+                var result = vault.sync(all(), () -> calls.incrementAndGet() == cancelAt);
                 assertEquals(Completion.CANCELLED, result.completion()); assertEquals(0, ops.closes);
                 assertEquals(0, ops.publications); assertEquals(1, ops.opens); assertNotNull(vault.view());
             }
         }
     }
-    @Test public void cancellationDuringPublicationFinishesObjectThenReopens() throws Exception {
+    @Test public void cancellationDuringPublicationFinishesObjectThenRefreshes() throws Exception {
         var cancelled = new AtomicBoolean();
         var ops = new Tracked() {
-            ObjectWrite publish(LocalReplicaOwner.Lease lease, ImmutableCandidateImporter.Selection selection) throws java.io.IOException {
-                cancelled.set(true); return super.publish(lease, selection);
+            ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selection) {
+                cancelled.set(true); return super.publish(bridge, selection);
             }
         };
         try (var vault = opened(owner(), ops)) {
-            var result = vault.reconcile(all(), credential(), cancelled::get);
+            var result = vault.sync(all(), cancelled::get);
             assertEquals(Completion.CANCELLED, result.completion()); assertEquals(1, result.count(Status.IMPORTED));
-            assertEquals(2, result.unattempted().size()); assertEquals(Reopen.RESTORED, result.reopen());
+            assertEquals(2, result.unattempted().size()); assertEquals(Refresh.REQUESTED, result.refresh());
             assertEquals(1, vault.view().tokens().size());
         }
     }
@@ -361,7 +317,7 @@ public final class ForegroundVaultCoordinatorTest {
                 assertEquals(symbolic.transport().state(), importPlan.coverage);
                 assertEquals(1, importPlan.provenance.size());
                 assertThrows(UnsupportedOperationException.class, () -> importPlan.objects.clear());
-                var report = new Report(Completion.RETAINED_SESSION, symbolic, List.of(), List.of(), null, Reopen.NOT_NEEDED, null, null);
+                var report = new Report(Completion.RETAINED_SESSION, symbolic, List.of(), List.of(), null, Refresh.NOT_REQUESTED, null, null);
                 assertEquals(excluded == contradiction ? List.of(base.objectId()) : List.of(), report.contradictions());
                 assertEquals(excluded == deferred ? List.of(base.objectId()) : List.of(), report.deferredValidation());
             }
@@ -370,10 +326,10 @@ public final class ForegroundVaultCoordinatorTest {
             assertEquals(1, vault.view().tokens().size());
         }
     }
-    @Test public void activeUnsupportedSessionIsFailureNotValidationRetry() throws Exception {
+    @Test public void unsupportedValidationDefersOnlyAffectedId() throws Exception {
         var ops = new Tracked() {
-            OpenResult open(LocalReplicaOwner.Lease lease, char[] password) throws java.io.IOException {
-                var real = (OpenResult.Opened) super.open(lease, password);
+            OpenResult open(CoordinatedPrivateStore store, char[] password) {
+                var real = (OpenResult.Opened) super.open(store, password);
                 var calls = new AtomicInteger();
                 VaultSession unsupported = (VaultSession) java.lang.reflect.Proxy.newProxyInstance(
                         VaultSession.class.getClassLoader(), new Class<?>[]{VaultSession.class}, (proxy, method, args) -> {
@@ -382,39 +338,40 @@ public final class ForegroundVaultCoordinatorTest {
                             try { return method.invoke(real.session(), args); }
                             catch (java.lang.reflect.InvocationTargetException failure) { throw failure.getCause(); }
                         });
+                first = unsupported; last = unsupported;
                 return new OpenResult.Opened(unsupported);
             }
         };
         try (var vault = opened(owner(), ops)) {
             var result = run(vault, scan(State.COMPLETE, good(0), good(0), good(1)));
-            assertEquals(Completion.SESSION_FAILURE, result.completion());
+            assertEquals(Completion.REFRESH_REQUESTED, result.completion());
             assertEquals(List.of(ids().get(0)), result.deferredValidation());
-            assertEquals(0, ops.publications); assertEquals(1, ops.opens);
+            assertEquals(1, ops.publications); assertEquals(1, ops.opens);
             assertEquals(2, result.evidence().groups().size());
-            assertEquals(ForegroundVaultCoordinator.State.FAILED_CLOSED, vault.lifecycle());
+            assertEquals(ForegroundVaultCoordinator.State.OPEN, vault.lifecycle());
         }
     }
     @Test public void publicationExceptionRetainsFailedOwnershipAndActualPriorOutcomes() throws Exception {
         var ops = new Tracked() {
-            ObjectWrite publish(LocalReplicaOwner.Lease lease, ImmutableCandidateImporter.Selection selection) throws java.io.IOException {
-                if (publications == 1) throw new java.io.IOException("injected store-open failure");
-                return super.publish(lease, selection);
+            ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selection) {
+                if (publications == 1) throw new IllegalStateException("injected publication failure");
+                return super.publish(bridge, selection);
             }
         };
         try (var vault = opened(owner(), ops)) {
             var result = run(vault, all()); assertEquals(1, result.count(Status.IMPORTED));
             assertEquals(ids().get(1), result.publicationFailureId()); assertEquals(List.of(ids().get(2)), result.unattempted());
-            assertEquals(Reopen.SKIPPED_UNSAFE, result.reopen()); assertNotNull(result.failure());
+            assertEquals(Refresh.SKIPPED_UNSAFE, result.refresh()); assertNotNull(result.failure());
         }
     }
-    @Test public void passwordChangeBeforeScanReconciliationRequiresNewCredential() throws Exception {
+    @Test public void passwordChangeBeforeSyncNeedsNoCredential() throws Exception {
         var owner = owner();
         try (var vault = opened(owner, new Tracked())) {
             Scan captured = all(); char[] current = credential(), replacement = "new M1H password".toCharArray();
             assertEquals(PasswordChangeResult.CHANGED, vault.changePassword(current, replacement));
             assertArrayEquals(new char[current.length], current); assertArrayEquals(new char[replacement.length], replacement);
-            var result = vault.reconcile(captured, "new M1H password".toCharArray(), CONTINUE);
-            assertEquals(3, result.count(Status.IMPORTED)); assertEquals(Reopen.RESTORED, result.reopen());
+            var result = vault.sync(captured, CONTINUE);
+            assertEquals(3, result.count(Status.IMPORTED)); assertEquals(Refresh.REQUESTED, result.refresh());
         }
     }
     @Test public void credentialsNeverBecomePersistentFieldsOrProductStorage() throws Exception {
@@ -426,6 +383,199 @@ public final class ForegroundVaultCoordinatorTest {
                 "moveDocument", "removeDocument", "createDocument", "deleteDocument", "renameDocument", "openOutputStream",
                 "ContentResolver", "org.totipo.internal", "org.totipo.format")) {
             assertFalse(forbidden, source.contains(forbidden));
+        }
+    }
+    @Test public void missingParentResolvesOnLaterSameSessionSync() throws Exception {
+        // Content wait uses child as the head even after the parent arrives.
+        var ops = new Tracked() {
+            void refresh(VaultSession session, CoordinatedPrivateStore store) {
+                assertFalse(store.exclusiveHeldByCurrentThread()); refreshes++;
+                session.requestRefresh(); awaitContent(session, List.of(childId));
+            }
+        };
+        try (var vault = opened(owner(), ops)) {
+            var child = bytes(childId, "child", ByteState.PRESENT, childBytes);
+            assertEquals(1, vault.sync(scan(State.COMPLETE, child)).count(Status.IMPORTED));
+            assertEquals(1, ops.first.state().token(ancestryToken).orElseThrow().unresolvedReferences().size());
+            var parent = bytes(parentId, "parent", ByteState.PRESENT, parentBytes);
+            assertEquals(1, vault.sync(scan(State.COMPLETE, parent)).count(Status.IMPORTED));
+            awaitState(ops.first, state -> state.token(ancestryToken).map(t -> t.unresolvedReferences().isEmpty()).orElse(false));
+            assertSame(ops.first, ops.last); assertEquals(1, ops.opens); assertEquals(0, ops.closes); assertEquals(2, ops.refreshes);
+        }
+    }
+    @Test public void bridgeHeldThenRealJavaSaveQueuesAndRefreshNeverInvertsLocks() throws Exception {
+        var bridgeEntered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var error = new AtomicReference<Throwable>(); var save = new AtomicReference<SaveResult>();
+        var ops = new Tracked() {
+            void refresh(VaultSession session, CoordinatedPrivateStore store) {
+                // Save owns Java's internal gate and is waiting for Android's gate.
+                // Explicit evidence of release precedes EVERY Java callback below.
+                assertFalse(store.exclusiveHeldByCurrentThread());
+                assertTrue(session.validateObject(ids().get(0), objects.get(ids().get(0))) instanceof ObjectCandidateValidation.Valid);
+                super.refresh(session, store);
+            }
+            ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selected) {
+                bridgeEntered.countDown(); CoordinatedPrivateStoreTest.await(release);
+                return super.publish(bridge, selected);
+            }
+        };
+        try (var vault = opened(owner(), ops);
+             var secret = NewSecret.copyOf(new byte[]{9,8,7,6}); var create = ops.first.state().createToken()) {
+            create.issuer("concurrent Java save").secret(secret);
+            var result = new AtomicReference<Report>();
+            Thread sync = CoordinatedPrivateStoreTest.thread(error, () -> result.set(vault.sync(scan(State.COMPLETE, good(0)))));
+            CoordinatedPrivateStoreTest.await(bridgeEntered);
+            Thread javaSave = CoordinatedPrivateStoreTest.thread(error, () -> save.set(create.save()));
+            try {
+                CoordinatedPrivateStoreTest.queued(ops.domain, javaSave);
+                assertNull(save.get()); // Java owns its gate but has not entered the NIO delegate.
+            } finally { release.countDown(); }
+            sync.join(20000); javaSave.join(20000);
+            assertFalse(sync.isAlive()); assertFalse(javaSave.isAlive()); assertNull(error.get());
+            assertTrue(save.get() instanceof SaveResult.Saved); assertEquals(1, result.get().count(Status.IMPORTED));
+            awaitContent(ops.first, List.of(ids().get(0), ((SaveResult.Saved)save.get()).revisions().get(0)));
+            assertEquals(2, vault.view().tokens().size()); assertEquals(1, ops.opens); assertEquals(0, ops.closes);
+        }
+    }
+    @Test public void runningRealSaveFinishesBeforeBridgePublication() throws Exception {
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var syncStarted = new CountDownLatch(1);
+        var error = new AtomicReference<Throwable>(); var activePublication = new AtomicBoolean();
+        var probe = new AtomicReference<CoordinatedNioProbe>();
+        var ops = new Tracked() {
+            CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
+                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
+                return new CoordinatedPrivateStore(next);
+            }
+            ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selected) {
+                assertFalse(activePublication.get()); return super.publish(bridge, selected);
+            }
+        };
+        try (var vault = opened(owner(), ops); var secret = NewSecret.copyOf(new byte[]{5,6,7,8});
+             var create = ops.first.state().createToken()) {
+            create.secret(secret); var saved = new AtomicReference<SaveResult>();
+            probe.get().hook = name -> {
+                if (name.equals("publishObject") && activePublication.compareAndSet(false, true)) {
+                    entered.countDown(); CoordinatedPrivateStoreTest.await(release); activePublication.set(false);
+                }
+            };
+            Thread javaSave = CoordinatedPrivateStoreTest.thread(error, () -> saved.set(create.save()));
+            CoordinatedPrivateStoreTest.await(entered);
+            var result = new AtomicReference<Report>();
+            Thread sync = CoordinatedPrivateStoreTest.thread(error, () -> {
+                syncStarted.countDown(); result.set(vault.sync(scan(State.COMPLETE, good(0))));
+            });
+            try {
+                CoordinatedPrivateStoreTest.await(syncStarted);
+                assertEquals(0, ops.publications); assertEquals(1, probe.get().active.get());
+            } finally { release.countDown(); }
+            javaSave.join(20000); sync.join(20000); assertNull(error.get());
+            assertFalse(sync.isAlive()); assertFalse(javaSave.isAlive());
+            assertTrue(saved.get() instanceof SaveResult.Saved); assertEquals(1, result.get().count(Status.IMPORTED));
+        }
+    }
+    @Test public void realPasswordChangeBusyCoordinatorRejectsSyncUntilAllStagesFinish() throws Exception {
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var error = new AtomicReference<Throwable>();
+        var probe = new AtomicReference<CoordinatedNioProbe>();
+        var ops = new Tracked() {
+            CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
+                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
+                return new CoordinatedPrivateStore(next);
+            }
+        };
+        try (var vault = opened(owner(), ops)) {
+            var result = new AtomicReference<PasswordChangeResult>();
+            probe.get().hook = name -> {
+                if (name.equals("replace")) { entered.countDown(); CoordinatedPrivateStoreTest.await(release); }
+            };
+            Thread change = CoordinatedPrivateStoreTest.thread(error, () -> result.set(vault.changePassword(credential(), "M1I replacement".toCharArray())));
+            try {
+                CoordinatedPrivateStoreTest.await(entered);
+                assertEquals(ForegroundVaultCoordinator.State.CHANGING_PASSWORD, vault.lifecycle());
+                assertThrows(IllegalStateException.class, () -> vault.sync(all()));
+                assertEquals(0, ops.publications); assertEquals(1, probe.get().active.get());
+            } finally { release.countDown(); }
+            change.join(20000); assertFalse(change.isAlive()); assertNull(error.get());
+            assertEquals(PasswordChangeResult.CHANGED, result.get());
+            assertEquals(3, vault.sync(all()).count(Status.IMPORTED)); assertEquals(0, ops.closes); assertEquals(1, ops.opens);
+        }
+    }
+    @Test public void explicitCloseFailureRetainsLeaseUntilRetryWithoutClosingDuringSync() throws Exception {
+        var fail = new AtomicBoolean(true); var owner = owner();
+        var ops = new Tracked() {
+            void close(VaultSession session) { if (fail.get()) throw new IllegalStateException("close fault"); super.close(session); }
+        };
+        var vault = opened(owner, ops);
+        assertEquals(3, vault.sync(all()).count(Status.IMPORTED)); assertEquals(0, ops.closes);
+        try {
+            assertThrows(IllegalStateException.class, vault::close);
+            assertThrows(IllegalStateException.class, owner::acquire);
+        } finally { fail.set(false); vault.close(); }
+        try (var lease = owner.acquire()) { assertNotNull(lease.root()); }
+    }
+    @Test public void refreshReportDoesNotMistakeReplayedFinishedForImportCompletion() throws Exception {
+        var observationEntered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var probe = new AtomicReference<CoordinatedNioProbe>();
+        var ops = new Tracked() {
+            CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
+                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
+                return new CoordinatedPrivateStore(next);
+            }
+            void refresh(VaultSession session, CoordinatedPrivateStore store) {
+                assertFalse(store.exclusiveHeldByCurrentThread()); refreshes++;
+                session.requestRefresh(); // Deliberately no content wait in this test.
+            }
+        };
+        try (var vault = opened(owner(), ops)) {
+            VaultState before = ops.first.state();
+            assertTrue(before.observation() instanceof ObservationProgress.Finished);
+            probe.get().hook = name -> {
+                if (name.equals("scanObjects")) { observationEntered.countDown(); CoordinatedPrivateStoreTest.await(release); }
+            };
+            try {
+                var report = vault.sync(scan(State.COMPLETE, good(0)));
+                CoordinatedPrivateStoreTest.await(observationEntered);
+                assertEquals(Refresh.REQUESTED, report.refresh());
+                assertEquals(Completion.REFRESH_REQUESTED, report.completion());
+                assertSame(before.observation(), report.latestObservation());
+                assertSame(before, ops.first.state()); assertTrue(vault.view().tokens().isEmpty());
+            } finally { release.countDown(); }
+            awaitContent(ops.first, List.of(ids().get(0)));
+            assertNotSame(before, ops.first.state()); assertEquals(1, vault.view().tokens().size());
+        }
+    }
+    @Test public void realSessionPasswordChangeQueuesBehindBridgeAndStagesNeverOverlap() throws Exception {
+        var bridgeEntered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var error = new AtomicReference<Throwable>(); var probe = new AtomicReference<CoordinatedNioProbe>();
+        var ops = new Tracked() {
+            CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
+                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
+                return new CoordinatedPrivateStore(next);
+            }
+            ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selected) {
+                bridgeEntered.countDown(); CoordinatedPrivateStoreTest.await(release);
+                return super.publish(bridge, selected);
+            }
+        };
+        try (var vault = opened(owner(), ops)) {
+            var result = new AtomicReference<Report>(); var changed = new AtomicReference<PasswordChangeResult>();
+            Thread sync = CoordinatedPrivateStoreTest.thread(error, () -> result.set(vault.sync(scan(State.COMPLETE, good(0)))));
+            CoordinatedPrivateStoreTest.await(bridgeEntered);
+            // Exercise real Java SPI calls even if an internal caller bypassed foreground admission.
+            // Production exposes no raw session, and its changePassword would reject this busy call.
+            Thread change = CoordinatedPrivateStoreTest.thread(error, () -> {
+                char[] current = credential(), replacement = "M1I concurrent replacement".toCharArray();
+                try { changed.set(ops.first.changePassword(current, replacement)); }
+                finally { Arrays.fill(current, '\0'); Arrays.fill(replacement, '\0'); }
+            });
+            try {
+                CoordinatedPrivateStoreTest.queued(ops.domain, change);
+                assertNull(changed.get()); assertEquals(0, probe.get().active.get());
+                assertThrows(IllegalStateException.class, () -> vault.changePassword(credential(), credential()));
+            } finally { release.countDown(); }
+            sync.join(20000); change.join(20000); assertNull(error.get());
+            assertFalse(sync.isAlive()); assertFalse(change.isAlive());
+            assertEquals(PasswordChangeResult.CHANGED, changed.get()); assertEquals(1, result.get().count(Status.IMPORTED));
+            assertEquals(1, vault.view().tokens().size()); assertEquals(1, ops.opens); assertEquals(0, ops.closes);
         }
     }
 }

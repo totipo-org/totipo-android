@@ -7,14 +7,24 @@ core 0.1.5 and Bouncy Castle 1.86. The production local replica uses private NIO
 mode below Android no-backup storage, controlled by one exclusive root owner.
 Production SAF code observes read-only bounded transport snapshots and classifies
 immutable candidates through the active Java session. Duplicate and incomplete
-observations retain their distinctions. Foreground read-only provider reconciliation
-can authenticate and import immutable
-objects into the private replica. A lifecycle wrapper keeps one owner lease through
-classification, session closure, sequential publication and normally observed reopen.
-Reopening requires the current credential supplied for that operation. There is no
-provider export, background sync, VAULT reconciliation or finished unlock/session UX. The
-provider tree must already be selected and authorized by a future product flow.
-See the [M1H report](review/M1H_FOREGROUND_RECONCILIATION_ORCHESTRATION_REPORT.md).
+observations retain their distinctions. Explicit foreground `vault.sync(scan)` validates
+and materializes inbound immutable objects while the same unlocked Java session remains
+alive. One coordinated private NIO domain serializes session SPI calls and each bridge
+batch. The bridge releases its gate before `requestRefresh()`; Java observes the ordinary
+local filesystem replica through normal object observation. Sync needs no credential,
+session close or reopen. A refresh request is reported separately from observation:
+Java 0.1.5 has no public request/completion correlation, and a replayed Finished state
+may describe an earlier pass.
+
+`openPrivate()` selects the Android-qualified local filesystem publication strategy.
+It does not change Totipo object/reconciliation semantics. The SAF bridge is another
+synchronization layer projecting transport candidates into the ordinary local replica.
+There is no provider export, background sync, VAULT bridge projection or finished
+unlock/session UX. MainActivity remains bootstrap-only. The provider tree must already
+be selected and authorized by a future product flow.
+See the [M1I report](review/M1I_COORDINATED_STORE_LIVE_SYNC_REPORT.md).
+The [M1H report](review/M1H_FOREGROUND_RECONCILIATION_ORCHESTRATION_REPORT.md)
+records historical close/import/reopen qualification scaffolding.
 See [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md) and the
 [M0 evidence report](review/M0_ANDROID_BOOTSTRAP_REPORT.md) for validated status.
 
@@ -157,7 +167,8 @@ publish releases. The revised workflow has not yet run remotely.
 
 ## Limitations
 
-There is no synchronization or Syncthing integration yet. The private
+Inbound immutable foreground sync is an architectural primitive; complete synchronization
+and Syncthing integration are not implemented. The private
 canonical local replica boundary is defined in
 [M1D](review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md); foreground immutable
 import orchestration is established, with partial outcomes

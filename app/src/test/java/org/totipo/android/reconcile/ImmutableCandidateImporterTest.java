@@ -16,7 +16,8 @@ import org.totipo.spi.*;
 import org.totipo.storage.nio.NioTotipoStore;
 import static org.junit.Assert.*;
 import static org.totipo.android.reconcile.ImmutableCandidateImporter.*;
-import org.totipo.android.reconcile.ImmutableCandidateImporter.Result;
+import org.totipo.android.reconcile.HistoricalImmutableCandidateImporter.Result;
+import static org.totipo.android.reconcile.HistoricalImmutableCandidateImporter.*;
 
 public final class ImmutableCandidateImporterTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
@@ -195,7 +196,7 @@ public final class ImmutableCandidateImporterTest {
             var ownedStore = new TrackingStore(NioTotipoStore.openPrivate(lease.root()));
             try { session = ((OpenResult.Opened) Totipo.open(ownedStore, credential)).session(); } finally { Arrays.fill(credential, '\0'); }
             finished(session);
-            try (var transition = new Transition(lease, session)) {
+            try (var transition = new HistoricalImmutableCandidateImporter.Transition(lease, session)) {
                 Group group = transition.classify(scan(State.COMPLETE, good("remote"))).groups().get(0);
                 var selected = select(group);
                 assertThrows(IllegalStateException.class, () -> transition.publish(selected));
@@ -314,7 +315,7 @@ public final class ImmutableCandidateImporterTest {
             for (Path p : paths.filter(p -> p.toString().endsWith(".java")).toList()) {
                 String code = Files.readString(p);
                 for (String forbidden : List.of("createDocument", "deleteDocument", "renameDocument", "openOutputStream",
-                        "ContentResolver", "Files.", "prepareVault(", "org.totipo.internal", "org.totipo.format")) {
+                        "ContentResolver", "Files.", "org.totipo.internal", "org.totipo.format")) {
                     assertFalse(p + " contains " + forbidden, code.contains(forbidden));
                 }
             }

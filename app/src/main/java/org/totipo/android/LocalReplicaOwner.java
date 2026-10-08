@@ -13,10 +13,11 @@ import java.util.Objects;
  * single-process for root access: no independent process, provider, or sync software may
  * mutate this directory. A future multi-process design needs a different ownership gate.
  *
- * Every store handle, session, and future bridge import must hold the same exclusive lease
- * for its entire lifetime, including asynchronous work and closure. Open stores only with
- * NioTotipoStore.openPrivate(lease.root()) using default durability. Close all sessions and
- * handles before releasing the lease; never retain the Path or a handle beyond it. Per-session
+ * The foreground coordinator holds one exclusive lease for the lifetime of its coordinated
+ * storage domain, session and bridge, including asynchronous observation and closure. That
+ * domain serializes every SPI call and bridge batch through one fair gate, using one
+ * NioTotipoStore.openPrivate delegate with default durability. Close the session view and
+ * domain before releasing the lease; never retain the Path or a handle beyond it. Per-session
  * Totipo serialization alone is insufficient. This owner holds no credentials or session.
  */
 public final class LocalReplicaOwner {
