@@ -1,6 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/storage_probe_extraction_rules">
+        <activity android:name="org.totipo.android.debug.OtpAuthIntentProbeActivity"
+            android:label="Totipo otpauth transport probe" android:exported="true"
+            android:stateNotNeeded="true" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="otpauth" android:host="totp" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
         <activity android:name="org.totipo.android.DebugTotpFixtureActivity"
             android:label="Totipo disposable TOTP fixture" android:exported="true" />
         <activity android:name="org.totipo.android.debug.StorageProbeActivity"
