@@ -7,8 +7,28 @@ import java.util.List;
 import org.junit.Test;
 import static org.junit.Assert.*;
 
-/** Configuration/security guards, deliberately no KDF execution or timing thresholds. */
+/** Configuration/equivalence/security guards; no timing thresholds. */
 public final class AuthPerfSafetyTest {
+    @Test public void exactProductionInvocationMatchesOriginalSyntheticOutput() throws Exception {
+        var timing = new AuthPerfBenchmark().run(65536, 3, 4, System::nanoTime);
+        assertEquals(1, timing.outputMatch());
+        assertFalse(AuthPerfBenchmark.matchesSyntheticOutput(new byte[32]));
+        assertFalse(AuthPerfBenchmark.matchesSyntheticOutput(new byte[0]));
+    }
+    @Test public void appSourcesNeverExecuteCompilerOrGlobalRuntimeControls() throws Exception {
+        for (String sourceSet : List.of("main", "release", "debug")) {
+            try (var paths = Files.walk(Path.of("src/" + sourceSet))) {
+                for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                    String source = Files.readString(path);
+                    for (String forbidden : List.of("ProcessBuilder", "Runtime.getRuntime().exec", "cmd package",
+                            "pm compile", "setprop", "SystemProperties.set", "dalvik.vm.", "EXPECTED_SYNTHETIC_SHA256")) {
+                        if (forbidden.equals("EXPECTED_SYNTHETIC_SHA256") && sourceSet.equals("debug")) continue;
+                        assertFalse(path + ": " + forbidden, source.contains(forbidden));
+                    }
+                }
+            }
+        }
+    }
     @Test public void parametersMatchInspectedReleased015Invocation() throws Exception {
         // Released sources SHA256 d797c0854db469e8288b787dcbeb3dd3eb8e83062bea5c42b0013082b2cccdc4.
         var benchmark = new AuthPerfBenchmark();

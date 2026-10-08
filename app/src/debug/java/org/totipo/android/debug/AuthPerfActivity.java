@@ -85,6 +85,7 @@ public final class AuthPerfActivity extends Activity {
     private static void timing(String label, AuthPerfBenchmark.Timing timing) {
         Log.i(TAG, label + " setup_ms=" + timing.setupNanos() / 1_000_000.0
                 + " generate_ms=" + timing.generateNanos() / 1_000_000.0
-                + " elapsed_ms=" + timing.totalNanos() / 1_000_000.0);
+                + " elapsed_ms=" + timing.totalNanos() / 1_000_000.0
+                + (timing.outputMatch() == 1 ? " output_match=1" : ""));
     }
 }

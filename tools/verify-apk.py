@@ -27,6 +27,7 @@ with zipfile.ZipFile(args.apk) as apk:
         for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;']:
             assert descriptor in dex, f'Missing debug qualification class: {descriptor!r}'
     if args.no_debug_probe:
+        assert b'EXPECTED_SYNTHETIC_SHA256' not in dex and b'matchesSyntheticOutput' not in dex and b'output_match=1' not in dex and b'30eb8bf0a90f2cd624a1d00aa7093e2c8f11968586718195043150ca6ce50bb1' not in dex, 'M1L equivalence diagnostics in release DEX'
         assert b'TotipoAuthPerf' not in dex and b'AuthPerfBenchmark' not in dex and b'AuthPerfActivity' not in dex and b'DebugDisposableCreation' not in dex, 'Authentication performance diagnostics in release DEX'
         assert b'Lorg/totipo/android/debug/' not in dex, 'Debug diagnostic machinery in release DEX'
         assert b'Lorg/totipo/android/reconcile/DebugVaultTiming' not in dex and b'TotipoVaultTiming' not in dex, 'Unlock timing probe in release DEX'
