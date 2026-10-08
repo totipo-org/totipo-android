@@ -27,7 +27,10 @@ public final class AndroidVaultController {
     public enum Error { NONE, AUTHENTICATION_FAILED, LOCAL_VAULT_ABSENT, LOCAL_STORAGE_UNAVAILABLE,
         LOCAL_STORAGE_UNSAFE, OPEN_FAILED, CREATE_FAILED, OBSERVATION_DIAGNOSTICS, CLOSE_FAILED, BUSY }
     public record Snapshot(State state, Error error, String message, View view,
-                           RevealedTotp revealedCode, long remainingSeconds) {
+                           RevealedTotp revealedCode, long remainingSeconds, AddTokenOutcome addOutcome) {
+        Snapshot(State state, Error error, String message, View view, RevealedTotp code, long seconds) {
+            this(state, error, message, view, code, seconds, null);
+        }
         Snapshot(State state, Error error, String message, View view) { this(state, error, message, view, null, 0); }
         @Override public String toString() { return "Snapshot[" + state + ", " + error + "]"; }
     }
@@ -66,6 +69,7 @@ public final class AndroidVaultController {
     private final Set<Listener> listeners = new LinkedHashSet<>();
     private Snapshot snapshot = new Snapshot(State.STARTING, Error.NONE, "Checking local vault…", null);
     // Only worker accesses owned resources. Admission and snapshot fields use this monitor.
+    private AddTokenOutcome addOutcome;
     private ForegroundVaultCoordinator vault;
     private AutoCloseable observation;
     private boolean operating, dirty, viewQueued, observationFailed;
@@ -115,7 +119,7 @@ public final class AndroidVaultController {
         ArrayList<Listener> targets;
         synchronized (this) {
             clearPresentation();
-            snapshot = new Snapshot(state, error, message, view);
+            snapshot = new Snapshot(state, error, message, view, null, 0, addOutcome);
             targets = new ArrayList<>(listeners);
         }
         for (Listener listener : targets) deliver(listener);
@@ -124,7 +128,7 @@ public final class AndroidVaultController {
         if (clearingPresentation) return;
         var display = presentation.display();
         snapshot = new Snapshot(snapshot.state(), snapshot.error(), snapshot.message(), snapshot.view(),
-                display.code(), display.seconds());
+                display.code(), display.seconds(), addOutcome);
         for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
     }
     private void clearPresentation() {
@@ -298,8 +302,40 @@ public final class AndroidVaultController {
         }
         boolean diagnostics = !view.diagnostics().isEmpty() || !view.integrityProblems().isEmpty()
                 || view.tokens().stream().anyMatch(token -> token.conflict() || !token.unresolved().isEmpty());
+        String attention = "Vault needs attention: unresolved, conflicting, or diagnostic observations are present.";
         publish(State.OPEN, diagnostics ? Error.OBSERVATION_DIAGNOSTICS : Error.NONE,
-                diagnostics ? "Vault needs attention: unresolved, conflicting, or diagnostic observations are present." : message, view);
+                diagnostics && !message.contains(attention) ? message + " " + attention : message, view);
+    }
+    /** Takes ownership on every path. Uses existing bounded admission and the live session. */
+    public synchronized boolean addToken(AddTokenRequest request) {
+        dispatcher.assertDispatchThread();
+        boolean admitted = false;
+        try {
+            if (snapshot.state() != State.OPEN || operating) return false;
+            addOutcome = null;
+            admitted = submit(State.BUSY, "Adding token…", () -> {
+                try {
+                    var result = vault.addToken(request);
+                    synchronized (this) { addOutcome = result; }
+                    String message = switch (result.status()) {
+                        case ADDED -> "Token added";
+                        case INVALID_SECRET -> "Enter a valid Base32 secret containing 1–128 decoded bytes.";
+                        case INVALID_FIELDS -> "Check issuer/account (up to 256 UTF-8 bytes), algorithm, digits and period.";
+                        case PUBLICATION_UNCERTAIN -> "Token publication uncertain. Refresh before deciding whether to add again.";
+                        case CONFLICT -> "Vault changed; token was not added. Refresh before retrying.";
+                        case FAILED -> "Token was not added. Check fields and local storage.";
+                        case SESSION_UNAVAILABLE -> "Session unavailable. Lock the vault before retrying.";
+                        case BUSY -> "Vault busy. Try again.";
+                    };
+                    try { render(message); }
+                    catch (RuntimeException observationUnavailable) {
+                        publish(State.ERROR_OPEN, Error.OBSERVATION_DIAGNOSTICS,
+                                message + " Observation unavailable; lock before retrying.", null);
+                    }
+                } finally { request.close(); }
+            });
+            return admitted;
+        } finally { if (!admitted) request.close(); }
     }
     public synchronized boolean refresh() {
         return snapshot.state() == State.OPEN && submit(State.BUSY, "Requesting refresh…", () -> {

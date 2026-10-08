@@ -60,8 +60,13 @@ public final class TotpControllerTest {
     private void pump() { for (Runnable task; (task = deliveries.poll()) != null;) task.run(); }
     private void await(BooleanSupplier condition) throws Exception {
         long stop = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-        while (!condition.getAsBoolean() && System.nanoTime() < stop) { pump(); Thread.sleep(5); }
-        pump(); assertTrue(condition.getAsBoolean());
+        while (System.nanoTime() < stop) {
+            pump();
+            // Pump can schedule a new observation read; evaluate after dispatch, not before it.
+            if (condition.getAsBoolean()) return;
+            Thread.sleep(5);
+        }
+        fail("Timed out waiting for controller condition");
     }
     private boolean idle() {
         synchronized (controller) {

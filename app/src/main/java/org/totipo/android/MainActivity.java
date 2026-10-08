@@ -16,6 +16,8 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
 import org.totipo.android.AndroidVaultController.Snapshot;
 import org.totipo.android.AndroidVaultController.State;
 
@@ -31,6 +33,11 @@ public final class MainActivity extends Activity {
     private EditText password, confirmation;
     private Button action, refresh, lock;
     private String surface;
+    private boolean adding, submitted;
+    private EditText issuer, account, secret, period;
+    private Spinner algorithm, digits;
+    private Button add, cancel;
+
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -40,19 +47,32 @@ public final class MainActivity extends Activity {
             TextView unsupported = new TextView(this);
             unsupported.setText(R.string.unsupported_runtime);
             unsupported.setPadding(24, 80, 24, 24); setContentView(unsupported);
-        } else render(controller.snapshot());
+        } else {
+            if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
+            render(controller.snapshot());
+        }
     }
     @Override protected void onStart() {
         super.onStart();
         if (controller != null) { render(controller.snapshot()); controller.attach(listener); }
     }
-    @Override protected void onStop() { if (controller != null) controller.detach(listener); super.onStop(); }
+    @Override protected void onStop() { clearSecret(); if (controller != null) controller.detach(listener); super.onStop(); }
     // No session closure on Activity stop/destruction. No credential Bundle or saved widget state.
     private void render(Snapshot state) {
+        if (submitted && state.state() == State.OPEN && state.addOutcome() != null) {
+            submitted = false;
+            if (state.addOutcome().status() == AddTokenOutcome.Status.ADDED
+                    || state.addOutcome().status() == AddTokenOutcome.Status.PUBLICATION_UNCERTAIN) {
+                clearSecret(); adding = false;
+            }
+        }
+        if (state.state() != State.OPEN && state.state() != State.BUSY) { clearSecret(); adding = submitted = false; }
+
         String next = switch (state.state()) {
             case NO_LOCAL_VAULT, CREATING -> "create";
             case LOCKED, UNLOCKING -> "unlock";
-            case OPEN, BUSY -> "open";
+            case OPEN, BUSY -> adding ? "add" : "open";
             default -> "status";
         };
         if (!next.equals(surface)) build(next);
@@ -66,6 +86,11 @@ public final class MainActivity extends Activity {
                         || state.state() == State.ERROR_OPEN ? View.VISIBLE : View.GONE);
             }
         }
+        if (next.equals("add")) {
+            boolean enabled = state.state() == State.OPEN;
+            for (View field : new View[]{issuer, account, secret, period, algorithm, digits, add, cancel}) field.setEnabled(enabled);
+        }
+        if (add != null && next.equals("open")) add.setEnabled(state.state() == State.OPEN);
         if (refresh != null) {
             refresh.setEnabled(state.state() == State.OPEN); lock.setEnabled(state.state() == State.OPEN);
             var view = state.view();
@@ -93,8 +118,10 @@ public final class MainActivity extends Activity {
 
     private void build(String next) {
         clearPasswords();
+        clearSecret();
         clearCodeWidgets();
         code = remaining = selected = null; tokens = null; revealPanel = null;
+        issuer = account = secret = period = null; algorithm = digits = null; add = cancel = null;
         surface = next; password = confirmation = null; action = refresh = lock = null;
         ScrollView scroll = new ScrollView(this);
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
@@ -116,6 +143,16 @@ public final class MainActivity extends Activity {
             if (next.equals("create")) confirmation = passwordField("Confirm password");
             action = button(next.equals("create") ? "Create Vault" : "Unlock", () -> authenticate(false));
             password.requestFocus();
+        } else if (next.equals("add")) {
+            label("Add token").setTextSize(22);
+            issuer = textField("Issuer"); account = textField("Account / label");
+            secret = passwordField("Base32 secret");
+            label("Letters A–Z and digits 2–7, case insensitive. Spaces, tabs, line breaks and hyphens are ignored. Optional RFC 4648 padding.");
+            algorithm = selector("Algorithm", new String[]{"SHA1", "SHA256", "SHA512"});
+            digits = selector("Digits", new String[]{"6", "7", "8"});
+            period = textField("Period (seconds)"); period.setInputType(InputType.TYPE_CLASS_NUMBER); period.setText("30");
+            add = button("Add", this::submitToken);
+            cancel = button("Cancel", this::cancelAdd);
         } else if (next.equals("open")) {
             tokens = new TokenListAdapter(this, id -> controller.showCode(id));
             TextView empty = label("No tokens yet");
@@ -137,6 +174,10 @@ public final class MainActivity extends Activity {
             buttonIn(revealActions, "Copy code", () -> controller.copyShownCode());
             revealPanel.setVisibility(View.GONE); content.addView(revealPanel);
             LinearLayout vaultActions = new LinearLayout(this); content.addView(vaultActions);
+            add = button("Add token", () -> {
+                if (controller.snapshot().state() != State.OPEN) return;
+                controller.hideCode(); adding = true; render(controller.snapshot());
+            });
             refresh = buttonIn(vaultActions, "Refresh", () -> controller.refresh());
             lock = buttonIn(vaultActions, "Lock", () -> { clearPasswords(); controller.lock(); });
         } else {
@@ -146,6 +187,46 @@ public final class MainActivity extends Activity {
             });
         }
     }
+    private void clearSecret() { if (secret != null) secret.setText(""); }
+    private void cancelAdd() { clearSecret(); adding = submitted = false; render(controller.snapshot()); }
+    // Legacy API 30–32 path; API 33+ registers the platform predictive-back callback above.
+    @android.annotation.SuppressLint("GestureBackNavigation")
+    @Override public void onBackPressed() { navigateBack(); }
+    private void navigateBack() {
+        if (adding) { if (controller.snapshot().state() == State.OPEN) cancelAdd(); return; }
+        finish();
+    }
+    private void submitToken() {
+        if (submitted || controller.snapshot().state() != State.OPEN) return;
+        long seconds;
+        try {
+            seconds = Long.parseLong(period.getText().toString());
+            if (seconds < 1 || seconds > 4294967295L) throw new NumberFormatException();
+        } catch (NumberFormatException invalid) { period.setError("Enter whole seconds from 1 to 4294967295."); return; }
+        if (secret.length() == 0) { secret.setError("Enter a Base32 secret."); return; }
+        // Copy at submission, never via immutable String; worker takes exclusive ownership.
+        char[] input = new char[secret.length()];
+        secret.getText().getChars(0, input.length, input, 0);
+        clearSecret();
+        var request = new AddTokenRequest(issuer.getText().toString(), account.getText().toString(),
+                org.totipo.TotpAlgorithm.values()[algorithm.getSelectedItemPosition()],
+                6 + digits.getSelectedItemPosition(), seconds, input);
+        submitted = controller.addToken(request);
+    }
+    private EditText textField(String title) {
+        TextView titleView = label(title);
+        EditText field = new EditText(this); field.setId(View.generateViewId()); titleView.setLabelFor(field.getId());
+        field.setSaveEnabled(false); field.setSaveFromParentEnabled(false);
+        field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        content.addView(field); return field;
+    }
+    private Spinner selector(String title, String[] options) {
+        TextView titleView = label(title);
+        Spinner field = new Spinner(this); field.setId(View.generateViewId()); titleView.setLabelFor(field.getId());
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, options);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); field.setAdapter(adapter);
+        field.setSaveEnabled(false); content.addView(field); return field;
+    }
     private TextView label(String text) {
         TextView label = new TextView(this); label.setText(text); label.setTextSize(16);
         content.addView(label); return label;
@@ -154,7 +235,7 @@ public final class MainActivity extends Activity {
         TextView label = label(title);
         EditText field = new EditText(this); field.setId(View.generateViewId()); label.setLabelFor(field.getId());
         field.setSingleLine(true); field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        field.setSaveEnabled(false); field.setFreezesText(false);
+        field.setSaveEnabled(false); field.setSaveFromParentEnabled(false); field.setFreezesText(false);
         field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         content.addView(field); return field;
     }

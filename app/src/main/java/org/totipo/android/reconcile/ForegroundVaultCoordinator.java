@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
 import org.totipo.*;
+import org.totipo.android.AddTokenOutcome;
 import org.totipo.android.LocalReplicaOwner;
 import org.totipo.android.RevealedTotp;
 import java.time.Instant;
@@ -28,7 +29,7 @@ import static org.totipo.android.reconcile.ImmutableCandidateImporter.*;
  * Cancel cooperatively, never interrupt filesystem publication. */
 public final class ForegroundVaultCoordinator implements AutoCloseable {
     public enum State { OPENING, OPEN, RECONCILING_READ_ONLY, CHANGING_PASSWORD,
-        IMPORTING, REQUESTING_REFRESH, GENERATING_TOTP, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
+        IMPORTING, REQUESTING_REFRESH, GENERATING_TOTP, ADDING_TOKEN, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
     public enum Completion { RETAINED_SESSION, REFRESH_REQUESTED, CANCELLED,
         SESSION_FAILURE, BATCH_STOPPED }
     public enum Refresh { NOT_REQUESTED, REQUESTED, SKIPPED_UNSAFE }
@@ -212,6 +213,54 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
             return new TotpResult(TotpStatus.FAILED, null);
         } finally { transition(State.OPEN); }
     }
+    public AddTokenOutcome addToken(org.totipo.android.AddTokenRequest request) {
+        boolean entered = false, saving = false;
+        AddTokenOutcome known = null;
+        byte[] decoded = null;
+        try {
+            synchronized (this) {
+                if (state != State.OPEN) return new AddTokenOutcome(
+                        state == State.CLOSED || state == State.FAILED_CLOSED
+                                ? AddTokenOutcome.Status.SESSION_UNAVAILABLE : AddTokenOutcome.Status.BUSY, null);
+                begin(State.ADDING_TOKEN); entered = true;
+            }
+            try { decoded = request.decodeSecret(); }
+            catch (IllegalArgumentException invalid) { return new AddTokenOutcome(AddTokenOutcome.Status.INVALID_SECRET, null); }
+            try (var secret = NewSecret.copyOf(decoded); var editor = session.state().createToken()) {
+                editor.issuer(request.issuer).account(request.account).algorithm(request.algorithm)
+                        .digits(request.digits).period(java.time.Duration.ofSeconds(request.periodSeconds)).secret(secret);
+                saving = true;
+                SaveResult result = operations.save(editor);
+                if (result instanceof SaveResult.Saved) return known = new AddTokenOutcome(AddTokenOutcome.Status.ADDED, null);
+                if (result instanceof SaveResult.Failed failed) return known = new AddTokenOutcome(AddTokenOutcome.Status.FAILED, failed.reason());
+                if (result instanceof SaveResult.PublicationUncertain uncertain) {
+                    // No fresh semantic retry. Release exact-publication capability; explicit Refresh
+                    // observes possible persistence through the existing session.
+                    known = new AddTokenOutcome(AddTokenOutcome.Status.PUBLICATION_UNCERTAIN, null);
+                    uncertain.retry().close();
+                    return known;
+                }
+                // Create does not produce AdditionalConflict in released core. Keep unexpected
+                // resolution ownership inside this boundary and make no success claim.
+                if (result instanceof SaveResult.AdditionalConflict conflict) {
+                    known = new AddTokenOutcome(AddTokenOutcome.Status.CONFLICT, null);
+                    conflict.resolution().close();
+                    return known;
+                }
+                return new AddTokenOutcome(AddTokenOutcome.Status.FAILED, null);
+            } catch (IllegalArgumentException | NullPointerException invalid) {
+                if (known != null) return known;
+                return new AddTokenOutcome(saving ? AddTokenOutcome.Status.PUBLICATION_UNCERTAIN : AddTokenOutcome.Status.INVALID_FIELDS, null);
+            } catch (SessionClosedException closed) {
+                if (known != null) return known;
+                return new AddTokenOutcome(AddTokenOutcome.Status.SESSION_UNAVAILABLE, null);
+            } catch (RuntimeException failure) { if (known != null) return known; return new AddTokenOutcome(saving ? AddTokenOutcome.Status.PUBLICATION_UNCERTAIN : AddTokenOutcome.Status.FAILED, null); }
+        } finally {
+            if (decoded != null) Arrays.fill(decoded, (byte) 0);
+            request.close();
+            if (entered) transition(State.OPEN);
+        }
+    }
     private void requireOpen() {
         if (state != State.OPEN) throw new IllegalStateException("Foreground vault is " + state);
     }
@@ -373,6 +422,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
 
     // Package-private faults/phase instrumentation only. No injection API ships to public callers.
     static class Operations {
+        SaveResult save(CreateToken editor) { return editor.save(); }
         TotpCode generateTotp(VaultState state, TokenAlternative alternative, Instant now) {
             return state.generateTotp(alternative, now);
         }
