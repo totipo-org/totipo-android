@@ -87,6 +87,79 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
             }
         } finally { Arrays.fill(credential, '\0'); }
     }
+    public record Creation(ForegroundVaultCoordinator vault, CreateVaultResult failure, Throwable cause) {}
+    public enum LocalStatus { ABSENT, PRESENT, UNSAFE, UNAVAILABLE }
+    public record Discovery(ForegroundVaultCoordinator vault, LocalStatus status, Throwable cause) {}
+    /** Pre-session bounded SPI observation using the same lease/domain. Failed closure
+     * returns the owned coordinator for explicit retry, never releases an assumed close. */
+    public static Discovery discover(LocalReplicaOwner owner) throws IOException {
+        return discover(owner, new Operations());
+    }
+    static Discovery discover(LocalReplicaOwner owner, Operations operations) throws IOException {
+        var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
+        LocalStatus status = LocalStatus.UNAVAILABLE;
+        Throwable failure = null;
+        try {
+            vault.store = vault.operations.storage(vault.lease);
+            var read = vault.store.observeVault();
+            status = read instanceof org.totipo.spi.BoundedRead.Absent ? LocalStatus.ABSENT
+                    : read instanceof org.totipo.spi.BoundedRead.Present ? LocalStatus.PRESENT
+                    : read instanceof org.totipo.spi.BoundedRead.Unavailable unavailable
+                            && unavailable.reason() != org.totipo.spi.StoreFailure.UNSAFE_NAMESPACE
+                            ? LocalStatus.UNAVAILABLE : LocalStatus.UNSAFE;
+        } catch (Exception cause) { failure = cause; }
+        vault.transition(State.FAILED_CLOSED);
+        try { vault.close(); }
+        catch (RuntimeException cause) { failure = cause; }
+        return new Discovery(vault, status, failure);
+    }
+    public static Creation create(LocalReplicaOwner owner, char[] credential) throws IOException {
+        return create(owner, credential, new Operations());
+    }
+    static Creation create(LocalReplicaOwner owner, char[] credential, Operations operations) throws IOException {
+        Objects.requireNonNull(credential);
+        try {
+            var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
+            try {
+                vault.store = operations.storage(vault.lease);
+                CreateVaultResult result = operations.create(vault.store, credential);
+                if (!(result instanceof CreateVaultResult.Created created)) {
+                    vault.transition(State.FAILED_CLOSED);
+                    return new Creation(vault, result, null);
+                }
+                vault.session = created.session();
+                operations.observe(vault.session);
+                vault.transition(State.OPEN);
+                return new Creation(vault, null, null);
+            } catch (Exception failure) {
+                vault.failClosed(failure);
+                return new Creation(vault, null, failure);
+            }
+        } finally { Arrays.fill(credential, '\0'); }
+    }
+    public void requestRefresh() {
+        begin(State.REQUESTING_REFRESH);
+        try { operations.refresh(session, store); }
+        finally { transition(State.OPEN); }
+    }
+    /** Signals only; callers schedule detached view reads outside the Java callback.
+     * No Activity subscribes to Java or receives a state editor/session. */
+    @android.annotation.TargetApi(30)
+    public AutoCloseable observe(Runnable changed, Runnable failed) {
+        requireOpen();
+        var subscription = new AtomicReference<Flow.Subscription>();
+        var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        session.states().subscribe(new Flow.Subscriber<VaultState>() {
+            public void onSubscribe(Flow.Subscription next) {
+                subscription.set(next);
+                if (cancelled.get()) next.cancel(); else next.request(Long.MAX_VALUE);
+            }
+            public void onNext(VaultState ignored) { if (!cancelled.get()) changed.run(); }
+            public void onError(Throwable ignored) { if (!cancelled.get()) failed.run(); }
+            public void onComplete() { if (!cancelled.get()) failed.run(); }
+        });
+        return () -> { cancelled.set(true); var current = subscription.get(); if (current != null) current.cancel(); };
+    }
     public synchronized State lifecycle() { return state; }
     public synchronized View view() {
         requireOpen();
@@ -251,7 +324,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         }
         try {
             if (session != null) { operations.close(session); session = null; }
-            if (store != null) { store.close(); store = null; }
+            if (store != null) { store.finishSessionClosure(); store.close(); store = null; }
             lease.close(); transition(State.CLOSED);
         } catch (RuntimeException failure) { transition(State.FAILED_CLOSED); throw failure; }
     }
@@ -263,6 +336,9 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         }
         OpenResult open(CoordinatedPrivateStore store, char[] password) {
             return Totipo.open(store.transferSessionView(), password);
+        }
+        CreateVaultResult create(CoordinatedPrivateStore store, char[] password) {
+            return Totipo.create(store.transferSessionView(), password);
         }
         void close(VaultSession session) { session.close(); }
         ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, Selection selection) {

@@ -31,6 +31,7 @@ public final class ForegroundVaultCoordinatorTest {
     private static final Cancellation CONTINUE = () -> false;
 
     @BeforeClass public static void realCoreFixture() throws Exception {
+        objects.clear();
         fixture = Files.createTempDirectory("m1h-fixture-");
         char[] password = credential();
         try (var session = ((CreateVaultResult.Created) Totipo.create(NioTotipoStore.openPrivate(fixture), password)).session()) {
@@ -81,6 +82,8 @@ public final class ForegroundVaultCoordinatorTest {
                 List.of(new Directory(directory, new Listing("epoch", "objects", Arrays.stream(rows).map(Bytes::document).toList(),
                         coverage, List.of()), Arrays.asList(rows))), coverage, List.of());
     }
+    public static byte[] productFixtureVault() { return wrapper.clone(); }
+    public static Scan productFixtureScan() { return all(); }
     private static Scan all() { return scan(State.COMPLETE, good(2), good(0), good(1)); }
     private static ForegroundVaultCoordinator opened(LocalReplicaOwner owner, Operations operations) throws Exception {
         char[] password = credential();

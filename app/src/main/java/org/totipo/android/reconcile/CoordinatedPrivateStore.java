@@ -45,6 +45,12 @@ final class CoordinatedPrivateStore implements AutoCloseable {
             return action.get();
         } finally { gate.unlock(); }
     }
+    // v1 VAULT is exactly 87 bytes. Only bounded SPI presence/shape is observed here;
+    // authentication and format validation remain in released Java, never an Android parser.
+    BoundedRead observeVault() { return ordinary(() -> delegate.readVault(87)); }
+    // Only after Java close/open/create has returned and relinquished its facade.
+    // Core cleanup is best effort; retry staged cleanup before closing our backing domain.
+    void finishSessionClosure() { session.close(); }
     Bridge bridge() {
         if (gate.isHeldByCurrentThread()) throw new IllegalStateException("Nested bridge access");
         gate.lock();

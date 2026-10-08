@@ -1,32 +1,37 @@
 # Totipo Android
 
-M0 repository/bootstrap build is validated, unreleased (`0.0.0-dev`). One Java
-`:app` module displays a platform Activity with a bootstrap label. It consumes released
-`org.totipo:totipo-storage-nio:0.1.5` from Maven Central, transitively packaging
-core 0.1.5 and Bouncy Castle 1.86. The production local replica uses private NIO
-mode below Android no-backup storage, controlled by one exclusive root owner.
-Production SAF code observes read-only bounded transport snapshots and classifies
-immutable candidates through the active Java session. Duplicate and incomplete
-observations retain their distinctions. Explicit foreground `vault.sync(scan)` validates
-and materializes inbound immutable objects while the same unlocked Java session remains
-alive. One coordinated private NIO domain serializes session SPI calls and each bridge
-batch. The bridge releases its gate before `requestRefresh()`; Java observes the ordinary
-local filesystem replica through normal object observation. Sync needs no credential,
-session close or reopen. A refresh request is reported separately from observation:
-Java 0.1.5 has no public request/completion correlation, and a replayed Finished state
-may describe an earlier pass.
+Unreleased (`0.0.0-dev`). The platform Android shell creates, unlocks and explicitly
+locks an app-private local Totipo vault in no-backup storage. One Application-owned
+`AndroidVaultController` keeps one live foreground coordinator/session across Activity
+recreation. Activities render immutable detached token descriptors, observation status,
+and unresolved/conflict/integrity diagnostics. Refresh requests local observation without
+closing or reauthenticating the session. Vault work uses one bounded application worker;
+UI callbacks return to the main thread. Credentials are not persisted and operation-owned
+mutable buffers are cleared on completion, as best effort rather than guaranteed JVM erasure.
+Empty-password create/unlock requires explicit confirmation.
 
-`openPrivate()` selects the Android-qualified local filesystem publication strategy.
-It does not change Totipo object/reconciliation semantics. The SAF bridge is another
-synchronization layer projecting transport candidates into the ordinary local replica.
-There is no provider export, background sync, VAULT bridge projection or finished
-unlock/session UX. MainActivity remains bootstrap-only. The provider tree must already
-be selected and authorized by a future product flow.
-See the [M1I report](review/M1I_COORDINATED_STORE_LIVE_SYNC_REPORT.md).
-The [M1H report](review/M1H_FOREGROUND_RECONCILIATION_ORCHESTRATION_REPORT.md)
-records historical close/import/reopen qualification scaffolding.
-See [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md) and the
-[M0 evidence report](review/M0_ANDROID_BOOTSTRAP_REPORT.md) for validated status.
+Production consumes released `org.totipo:totipo-storage-nio:0.1.5` from Maven Central,
+transitively packaging core 0.1.5 and Bouncy Castle 1.86. The exclusive local replica owner
+and coordinated private NIO domain serialize storage access. Credential-free inbound
+immutable sync is available internally through `controller.sync(scan)`: the same live
+session validates candidates, the bridge materializes them under its exclusive gate, then
+requests Java refresh after releasing that gate. Refresh is asynchronous; Java exposes
+no request/completion correlation. The UI says “Refresh requested”, never promises a
+request-correlated completion.
+
+Provider selection/persisted tree configuration, export/journal, VAULT transport
+reconciliation, background synchronization, biometrics, inactivity locking and final
+token/TOTP interaction UX remain absent. There is no product Sync button or automatic
+provider synchronization. Explicit lock and process death are the only current lock
+policies; backgrounding/rotation does not lock. Sensitive windows use Android's secure
+window flag. Released Java Flow needs Android 11/API 30 or newer for vault operations;
+older devices show an unsupported-runtime message (minSdk remains 26). This is a
+product lifecycle milestone, not completed synchronization or a finished authenticator.
+
+See the [M1J report](review/M1J_ANDROID_VAULT_SHELL_REPORT.md) for validation status,
+[M1I report](review/M1I_COORDINATED_STORE_LIVE_SYNC_REPORT.md) for storage/sync evidence,
+and [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md). Historical M1H close/import/reopen
+scaffolding remains test-only.
 
 ## Managed development environment
 
@@ -97,10 +102,10 @@ expose `/dev/bus/usb`; start the adb server from the ordinary terminal.
 ./gradlew installDebug
 ```
 
-Launch **Totipo Android Bootstrap** and confirm that the bootstrap label renders.
-This optional human smoke test is recorded separately; it does not qualify vault,
-crypto, Android filesystem or application behavior. No emulator/instrumentation
-suite is part of M0.
+Launch **Totipo**. M1J requires a narrow physical-device create/unlock/rotate/lock
+smoke after agent checks pass; exact commands and the destructive fresh-data reset
+are in the [M1J report](review/M1J_ANDROID_VAULT_SHELL_REPORT.md). Use a disposable
+credential and test vault. No emulator/instrumentation suite is added.
 
 ## Intentional dependency refresh
 
@@ -155,7 +160,7 @@ CI and optional device evidence are recorded separately in the M0 report.
 
 The package installs only
 `result/share/totipo-android/totipo-android-0.0.0-dev-unsigned.apk`. Installation
-checks validate ZIP integrity, bootstrap/NIO/core/BC DEX presence, debug probe/test exclusion
+checks validate ZIP integrity, product Application/controller/UI and coordinated NIO/core/BC DEX presence, debug probe/test exclusion
 and absence of APK/JAR signing. No signing secret, AAB, Play or publication
 infrastructure exists. Debug signing keys are local generated development state.
 
@@ -168,12 +173,10 @@ publish releases. The revised workflow has not yet run remotely.
 ## Limitations
 
 Inbound immutable foreground sync is an architectural primitive; complete synchronization
-and Syncthing integration are not implemented. The private
-canonical local replica boundary is defined in
-[M1D](review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md); foreground immutable
-import orchestration is established, with partial outcomes
-and incomplete provider evidence preserved. No real UI toolkit, DI, navigation or lifecycle
-security architecture is implemented. There is no vault/TOTP UI, permissions,
-background behavior,
-production signing or application-conformance claim. Build evidence does not
-establish Android crypto/runtime/filesystem qualification or interoperability.
+and Syncthing integration are not implemented. Detached descriptors are displayed without
+rotating codes, reveal/copy, token add/edit or conflict repair. There is no provider
+configuration, export, background lock timer or biometric unlock. No DI, AndroidX,
+Compose, service, WorkManager or reactive dependency is introduced. Production signing
+and application conformance are not claimed. JVM/build evidence complements the required
+physical-device smoke; it does not establish universal Android runtime/filesystem or
+interoperability qualification.
