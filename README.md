@@ -102,6 +102,12 @@ expose `/dev/bus/usb`; start the adb server from the ordinary terminal.
 ./gradlew installDebug
 ```
 
+Do not evaluate authentication performance using the ordinary debuggable APK on
+the tested Pixel 6a runtime. Its ~20.5-second KDF is not representative of the
+signed non-debug release's natural install compilation. See the
+[M1M release qualification](review/M1M_RELEASE_AUTH_PERFORMANCE_QUALIFICATION_REPORT.md)
+for real create/unlock timings and the direct ADB installation scope.
+
 Launch **Totipo**. M1J requires a narrow physical-device create/unlock/rotate/lock
 smoke after agent checks pass; exact commands and the destructive fresh-data reset
 are in the [M1J report](review/M1J_ANDROID_VAULT_SHELL_REPORT.md). Use a disposable
