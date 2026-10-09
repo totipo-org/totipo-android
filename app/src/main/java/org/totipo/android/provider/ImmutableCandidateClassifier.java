@@ -18,6 +18,7 @@ import org.totipo.android.provider.ProviderSnapshot.*;
  * Results are in-memory observations, not persistence, current heads, freshness or absence.
  */
 public final class ImmutableCandidateClassifier {
+    public static final int REPRESENTATION_BYTES = 1024;
     private ImmutableCandidateClassifier() {}
 
     public enum Kind { NONCANDIDATE, TRANSPORT_UNAVAILABLE, TRANSPORT_SHORT,
@@ -74,19 +75,19 @@ public final class ImmutableCandidateClassifier {
         if (document.isDirectory() || !ProviderTraversal.isObjectName(document.displayName())) {
             return outcome(observation, Kind.NONCANDIDATE);
         }
-        if (observation.expectedMaximum() != 1024) throw new IllegalArgumentException("Expected object read bound 1024");
+        if (observation.expectedMaximum() != REPRESENTATION_BYTES) throw new IllegalArgumentException("Expected object read bound 1024");
         switch (observation.state()) {
             case MISSING, UNAVAILABLE: return outcome(observation, Kind.TRANSPORT_UNAVAILABLE);
             case SHORT:
-                if (observation.bytes().length >= 1024) throw new IllegalArgumentException("Inconsistent short read");
+                if (observation.bytes().length >= REPRESENTATION_BYTES) throw new IllegalArgumentException("Inconsistent short read");
                 return outcome(observation, Kind.TRANSPORT_SHORT);
             case OVERSIZED:
-                if (observation.bytes().length != 1025) throw new IllegalArgumentException("Inconsistent overflow probe");
+                if (observation.bytes().length != REPRESENTATION_BYTES + 1) throw new IllegalArgumentException("Inconsistent overflow probe");
                 return outcome(observation, Kind.TRANSPORT_OVERSIZED);
             case PRESENT: break;
         }
         byte[] representation = observation.bytes();
-        if (representation.length != 1024) throw new IllegalArgumentException("Inconsistent exact read");
+        if (representation.length != REPRESENTATION_BYTES) throw new IllegalArgumentException("Inconsistent exact read");
         // The public Java type enforces canonical ID syntax. Rejection after M1E's predicate
         // is an integration error and intentionally propagates, never authenticated Invalid.
         RevisionId id = new RevisionId(document.displayName());

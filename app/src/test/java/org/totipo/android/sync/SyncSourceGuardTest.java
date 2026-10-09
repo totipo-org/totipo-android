@@ -4,14 +4,44 @@ import java.util.List;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public final class SyncSourceGuardTest {
-    @Test public void readOnlyPlatformAndHonestUiBoundary() throws Exception {
+    @Test public void productionCreateOnlyAuditAndNoLocalRefreshOrRevealReplacement() throws Exception {
+        var root = Path.of("src/main/java/org/totipo/android");
+        String port = Files.readString(root.resolve("sync/AndroidSyncFolderPort.java"));
+        String writer = Files.readString(root.resolve("sync/ProviderObjectWriter.java"));
+        String controller = Files.readString(root.resolve("AndroidVaultController.java"));
+        try (var sources = Files.walk(root)) {
+            for (Path path : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
+                String source = Files.readString(path);
+                for (String forbidden : List.of("deleteDocument", "renameDocument", "moveDocument", "removeDocument", "copyDocument"))
+                    assertFalse(path + ": " + forbidden, source.contains(forbidden));
+                if (!path.equals(root.resolve("sync/AndroidSyncFolderPort.java"))) {
+                    assertFalse(path.toString(), source.contains("createDocument("));
+                    assertFalse(path.toString(), source.contains("openOutputStream("));
+                }
+            }
+        }
+        assertTrue(port.contains("new org.totipo.RevisionId(name)"));
+        assertTrue(port.contains("isChildDocument"));
+        assertTrue(writer.contains("writer.output(created)"));
+        assertFalse(writer.contains("writer.output(parent)"));
+        String outbound = controller.substring(controller.indexOf("public synchronized boolean publishLocalChanges()"),
+                controller.indexOf("private synchronized boolean startProvider(boolean importing)"));
+        for (String forbidden : List.of("clearPresentation", "requestRefresh", "render(", "State.BUSY", "vault.close"))
+            assertFalse(forbidden, outbound.contains(forbidden));
+        assertTrue(outbound.contains("providerIo.publish"));
+    }
+    @Test public void platformAndHonestUiBoundary() throws Exception {
         String binding = Files.readString(Path.of("src/main/java/org/totipo/android/sync/AndroidSyncFolderPort.java"));
         String reader = Files.readString(Path.of("src/main/java/org/totipo/android/provider/ProviderTreeReader.java"));
         String ui = Files.readString(Path.of("src/main/java/org/totipo/android/MainActivity.java"));
-        for (String forbidden : List.of("createDocument", "deleteDocument", "renameDocument", "openOutputStream",
-                "openFileDescriptor", "_data", "/storage/", "com.google.android.apps.docs", "DocumentFile"))
+        for (String forbidden : List.of("deleteDocument", "renameDocument", "openFileDescriptor", "_data", "/storage/", "com.google.android.apps.docs", "DocumentFile"))
             assertFalse(forbidden, (binding + reader).contains(forbidden));
-        for (String forbidden : List.of("fully synced", "two-way sync", "everything up to date"))
+        assertEquals(1, binding.split("DocumentsContract.createDocument", -1).length - 1);
+        assertTrue(binding.contains("new org.totipo.RevisionId(name)"));
+        assertTrue(binding.contains("openOutputStream(Uri.parse(created.locator()), \"w\")"));
+        assertFalse(binding.contains("openOutputStream(Uri.parse(parent.locator())"));
+        assertTrue(ui.contains("Publish local changes"));
+        for (String forbidden : List.of("fully synced", "two-way sync", "everything up to date", "everything synchronized", "two-way vault sync", "vault synchronized"))
             assertFalse(ui.toLowerCase().contains(forbidden));
         assertTrue(ui.contains("lock.setEnabled(state.state() == State.OPEN)"));
         assertFalse(ui.contains("Executor")); assertFalse(ui.contains("ContentResolver"));

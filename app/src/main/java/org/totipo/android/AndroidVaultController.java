@@ -61,6 +61,12 @@ public final class AndroidVaultController {
     private final SyncFolderBinding syncBinding;
     private final org.totipo.android.sync.ProviderIoLane providerIo = new org.totipo.android.sync.ProviderIoLane();
     private boolean providerActive;
+    private java.util.concurrent.atomic.AtomicBoolean outboundCancelled;
+    private SyncFolderBinding.Request outboundIdentity;
+    private void cancelOutbound() { if (outboundCancelled != null) outboundCancelled.set(true); }
+    private void notifySync() {
+        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+    }
     private long sessionGeneration;
     private SyncView syncView = new SyncView(new SyncFolderBinding.View(
             SyncFolderBinding.Status.NOT_CONFIGURED, false, false), "Not configured");
@@ -397,7 +403,7 @@ public final class AndroidVaultController {
         String detail = message == null ? switch (binding.status()) {
             case NOT_CONFIGURED -> "Not configured";
             case CHECKING -> "Checking sync folder…";
-            case READY -> "Connected";
+            case READY -> binding.writable() ? "Connected" : "Folder is read-only for Totipo.";
             case ACCESS_LOST -> "Access needed. Choose folder again.";
             case UNAVAILABLE -> "Sync folder unavailable. Retry access.";
         } : message;
@@ -415,7 +421,9 @@ public final class AndroidVaultController {
     }
     public synchronized boolean chooseSyncFolder(boolean cancelled, String uri, int flags) {
         dispatcher.assertDispatchThread();
+        if (!cancelled && canManageSyncFolder()) cancelOutbound();
         return folderOperation(() -> {
+            if (!cancelled) cancelOutbound();
             boolean accepted = syncBinding.choose(cancelled, uri,
                     (flags & android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0,
                     (flags & android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0);
@@ -424,8 +432,9 @@ public final class AndroidVaultController {
         });
     }
     public synchronized boolean disconnectSyncFolder() {
-        return folderOperation(() -> updateBinding(syncBinding.disconnect() ? null
-                : "Folder configuration could not be cleared. Try again."));
+        if (canManageSyncFolder()) cancelOutbound();
+        return folderOperation(() -> { cancelOutbound(); updateBinding(syncBinding.disconnect() ? null
+                : "Folder configuration could not be cleared. Try again."); });
     }
     public synchronized boolean checkSyncFolder() {
         if (providerActive) return false;
@@ -441,6 +450,94 @@ public final class AndroidVaultController {
             if (syncBinding.view().status() == SyncFolderBinding.Status.CHECKING) startProvider(true);
             else updateBinding(null);
         });
+    }
+    public synchronized boolean canPublishLocalChanges() {
+        return canImportProviderChanges() && syncView.binding().writable();
+    }
+    /** Foreground sync admission only. Preserve revealed code and global OPEN state. */
+    public synchronized boolean publishLocalChanges() {
+        dispatcher.assertDispatchThread();
+        if (!canPublishLocalChanges()) return false;
+        providerActive = true;
+        var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        outboundCancelled = cancelled;
+        long session = sessionGeneration;
+        updateBinding("Publishing…"); notifySync();
+        try {
+            worker.execute(() -> {
+                SyncFolderBinding.Request request = null;
+                try {
+                    synchronized (this) {
+                        syncBinding.check(); request = syncBinding.request(); outboundIdentity = request;
+                        if (cancelled.get() || session != sessionGeneration || vault == null
+                                || !syncBinding.view().writable() || !syncBinding.view().readable()) {
+                            finishOutbound(cancelled, null); return;
+                        }
+                    }
+                    var detached = vault.outboundSnapshot();
+                    var identity = request;
+                    providerIo.submit(syncBinding.transport(), identity, true, preflight ->
+                        outboundDispatch(cancelled, () -> {
+                            synchronized (this) {
+                                if (!outboundCurrent(identity, session, cancelled)) { finishOutbound(cancelled, null); return; }
+                                syncBinding.accessibility(identity, preflight.accessible());
+                            }
+                            if (!preflight.accessible() || preflight.scan() == null) {
+                                finishOutbound(cancelled, "Provider view incomplete; nothing published."); return;
+                            }
+                            var plan = vault.outboundPlan(detached, preflight.scan(), syncBinding.view().writable());
+                            if (plan.limitation() != null) { finishOutbound(cancelled, plan.limitation()); return; }
+                            if (plan.missing().isEmpty()) {
+                                finishOutbound(cancelled, plan.blocked() ? "Existing provider candidates block publication."
+                                        : "No local changes to publish"); return;
+                            }
+                            providerIo.publish(syncBinding.transport(), identity, plan.target(), plan.missing(), cancelled::get,
+                                result -> outboundDispatch(cancelled, () -> {
+                                    synchronized (this) {
+                                        if (!outboundCurrent(identity, session, cancelled)) { finishOutbound(cancelled, null); return; }
+                                    }
+                                    finishOutbound(cancelled, vault.outboundConfirmation(plan, result));
+                                }));
+                        }));
+                } catch (RuntimeException failure) {
+                    finishOutbound(cancelled, failure instanceof org.totipo.android.sync.DetachedImmutableObject.CapacityExceeded
+                            ? "Local publication capacity exceeded; nothing published." : "Local publication source invalid; nothing published.");
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException busy) { finishOutbound(cancelled, "Provider busy. Try again."); return false; }
+    }
+    private synchronized boolean outboundCurrent(SyncFolderBinding.Request request, long session,
+                                                 java.util.concurrent.atomic.AtomicBoolean cancelled) {
+        if (cancelled.get() || session != sessionGeneration || !syncBinding.current(request)
+                || snapshot.state() != State.OPEN || vault == null) return false;
+        var grants = syncBinding.transport().grants(request.uri());
+        if (!grants.read() || !grants.write()) {
+            syncBinding.check(); cancelled.set(true); return false;
+        }
+        return true;
+    }
+    private void outboundDispatch(java.util.concurrent.atomic.AtomicBoolean cancelled, Runnable action) {
+        try {
+            worker.execute(() -> {
+                dispatcher.assertWorkerThread();
+                try { action.run(); }
+                catch (RuntimeException failure) { finishOutbound(cancelled, "Publication uncertain. Check again before retrying."); }
+            });
+        } catch (RejectedExecutionException busy) { finishOutbound(cancelled, null); }
+    }
+    private synchronized void finishOutbound(java.util.concurrent.atomic.AtomicBoolean cancelled, String message) {
+        if (outboundCancelled != cancelled) return;
+        providerActive = false;
+        outboundCancelled = null;
+        if (!cancelled.get() && outboundIdentity != null && syncBinding.current(outboundIdentity)
+                && syncBinding.view().status() == SyncFolderBinding.Status.CHECKING)
+            syncBinding.accessibility(outboundIdentity, true); // Prior READY retained after local-only failure.
+        outboundIdentity = null;
+        updateBinding(cancelled.get() ? null : message);
+        // Binding replacement may have been waiting for the occupied provider lane.
+        if (syncBinding.view().status() == SyncFolderBinding.Status.CHECKING) startProvider(false);
+        notifySync();
     }
     private synchronized boolean startProvider(boolean importing) {
         if (providerActive || syncBinding.view().status() != SyncFolderBinding.Status.CHECKING) return false;
@@ -521,6 +618,7 @@ public final class AndroidVaultController {
     }
     /** Process/controller teardown: best effort, no wait for provider IPC termination. */
     public synchronized void shutdown() {
+        cancelOutbound();
         sessionGeneration++; // Invalidate even results already queued before executor shutdown.
         providerIo.close(); worker.shutdown();
     }
@@ -544,9 +642,10 @@ public final class AndroidVaultController {
     }
     public synchronized boolean lock() {
         State state = snapshot.state();
+        if (!operating && (state == State.OPEN || state == State.ERROR_OPEN || state == State.FAILED_CLOSE)) cancelOutbound();
         return (state == State.OPEN || state == State.ERROR_OPEN || state == State.FAILED_CLOSE)
                 && submit(State.LOCKING, "Locking vault…", () -> {
-                    synchronized (this) { sessionGeneration++; }
+                    synchronized (this) { cancelOutbound(); sessionGeneration++; }
                     if (closeOwned()) discover();
                 });
     }

@@ -437,6 +437,128 @@ public final class AndroidVaultControllerTest {
         assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.UNAVAILABLE, controller.syncView().binding().status());
         assertEquals(1, threads.size());
     }
+    private org.totipo.android.sync.PublicationPort outboundFixture() throws Exception { return outboundFixture(3); }
+    private org.totipo.android.sync.PublicationPort outboundFixture(int count) throws Exception {
+        owner = TestReplicaOwners.create(temporary.newFolder().toPath());
+        var port = new org.totipo.android.sync.PublicationPort();
+        controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
+            public java.time.Instant wall() { return java.time.Instant.now(); }
+            public long elapsedMillis() { return 0; }
+        }, null, new org.totipo.android.sync.SyncFolderBinding(port));
+        state(State.NO_LOCAL_VAULT); await(this::providerDone);
+        accept(() -> controller.create(password())); state(State.OPEN);
+        for (int i = 0; i < count; i++) add(enrollment("public", "test " + i, org.totipo.TotpAlgorithm.SHA1, 6, 30, rfcSecret()), AddTokenOutcome.Status.ADDED);
+        await(() -> controller.snapshot().view().tokens().size() == count);
+        return port;
+    }
+    @Test public void outboundExactPostflightRetryPreservesSessionStoreAndRevealedCode() throws Exception {
+        var port = outboundFixture(); var session = real.session; var coordinator = real.coordinator;
+        int refreshes = real.refreshes;
+        accept(() -> controller.showCode(controller.snapshot().view().tokens().get(0).id()));
+        await(() -> controller.snapshot().revealedCode() != null);
+        var shown = controller.snapshot().revealedCode();
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertEquals("Local changes published", controller.syncView().message());
+        assertEquals(3, port.creates); assertEquals(3, port.outputs);
+        assertEquals(shown, controller.snapshot().revealedCode());
+        assertSame(session, real.session); assertSame(coordinator, real.coordinator); assertEquals(refreshes, real.refreshes);
+        assertEquals(1, real.creates); assertEquals(0, real.opens); assertEquals(0, real.closes);
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertEquals("No local changes to publish", controller.syncView().message()); assertEquals(3, port.creates);
+    }
+    @Test public void uncertainWriteRetryFreshPreflightAvoidsDuplicateAndExceptionCanBeVerified() throws Exception {
+        var port = outboundFixture(); port.fault = "close";
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertTrue(controller.syncView().message().startsWith("Publication uncertain")); assertEquals(1, port.creates);
+        port.fault = "";
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertEquals("Local changes published", controller.syncView().message()); assertEquals(3, port.creates);
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertEquals("No local changes to publish", controller.syncView().message()); assertEquals(3, port.creates);
+    }
+    @Test public void uncertainButPersistedSingleObjectRetryDoesNoCreateAndFreshEvidenceCanVerifyCloseFailure() throws Exception {
+        var port = outboundFixture(1);
+        var firstPort = port;
+        port.onScan = () -> { if (firstPort.scans == 2) throw new IllegalStateException("postflight unavailable"); };
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertTrue(controller.syncView().message().startsWith("Publication uncertain")); assertEquals(1, port.creates);
+        port.onScan = () -> {};
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertEquals("No local changes to publish", controller.syncView().message()); assertEquals(1, port.creates);
+        lock(); controller.shutdown();
+        port = outboundFixture(1); port.fault = "close";
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertEquals("Local changes published", controller.syncView().message()); assertEquals(1, port.creates);
+    }
+    @Test public void explicitReadBackFailureRemainsUncertainDespiteExactNamespaceAndRetryDoesNotDuplicate() throws Exception {
+        for (String fault : List.of("different", "unavailable")) {
+            var port = outboundFixture(1); port.fault = fault;
+            accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+            assertTrue(controller.syncView().message().startsWith("Publication uncertain")); assertEquals(1, port.creates);
+            port.fault = "";
+            accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+            assertEquals("No local changes to publish", controller.syncView().message()); assertEquals(1, port.creates);
+            lock(); controller.shutdown();
+        }
+    }
+    @Test public void noSuccessBeforeFreshPostflightReturns() throws Exception {
+        var port = outboundFixture(1);
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        port.onScan = () -> { if (port.scans == 2) block(entered, release); };
+        accept(() -> controller.publishLocalChanges()); assertTrue(entered.await(10, TimeUnit.SECONDS));
+        try {
+            assertEquals(1, port.creates); assertEquals("Publishing…", controller.syncView().message());
+            assertEquals(State.OPEN, controller.snapshot().state()); assertEquals(1L, release.getCount());
+        } finally { release.countDown(); }
+        await(this::providerDone); assertEquals("Local changes published", controller.syncView().message());
+    }
+    @Test public void outboundIncompleteReadOnlyCapabilityAndLocalInvalidNeverMutate() throws Exception {
+        var port = outboundFixture();
+        for (var state : org.totipo.android.provider.ProviderSnapshot.State.values()) if (state != org.totipo.android.provider.ProviderSnapshot.State.COMPLETE) {
+            port.coverage = state;
+            accept(() -> controller.publishLocalChanges()); await(this::providerDone); assertEquals(0, port.creates);
+            if (!controller.canPublishLocalChanges()) { port.coverage = org.totipo.android.provider.ProviderSnapshot.State.COMPLETE;
+                accept(() -> controller.checkSyncFolder()); await(this::providerDone); }
+        }
+        port.coverage = org.totipo.android.provider.ProviderSnapshot.State.COMPLETE;
+        port.permissions.put(port.stored.uri(), new org.totipo.android.sync.SyncFolderBinding.Grants(true, false));
+        accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+        assertTrue(controller.canImportProviderChanges()); assertFalse(controller.canPublishLocalChanges());
+        port.permissions.put(port.stored.uri(), new org.totipo.android.sync.SyncFolderBinding.Grants(true, true));
+        accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+        // Test-only corruption of disposable fixture, never production filesystem access.
+        try (var paths = Files.list(localRoot().resolve("objects-v1"))) { Files.write(paths.filter(p -> p.getFileName().toString().matches("[0-9a-f]{64}")).findFirst().orElseThrow(), new byte[1024]); }
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertTrue(controller.syncView().message(), controller.syncView().message().startsWith("Local publication source invalid")); assertEquals(0, port.creates);
+    }
+    @Test public void outboundBlockedCreateWriteLockAndBindingChangeRemainResponsiveAndBounded() throws Exception {
+        for (String phase : List.of("create", "write")) for (String action : List.of("lock", "disconnect", "replace")) {
+            var port = outboundFixture(); int refreshes = real.refreshes;
+            var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+            Runnable blocked = () -> block(entered, release);
+            if (phase.equals("create")) port.onCreate = blocked; else port.onWrite = blocked;
+            accept(() -> controller.publishLocalChanges()); assertTrue(entered.await(10, TimeUnit.SECONDS));
+            try {
+                await(this::idle); assertEquals(State.OPEN, controller.snapshot().state());
+                assertEquals("Publishing…", controller.syncView().message());
+                for (int i = 0; i < 100; i++) { assertFalse(controller.publishLocalChanges()); assertFalse(controller.importProviderChanges()); assertFalse(controller.checkSyncFolder()); }
+                var laneField = AndroidVaultController.class.getDeclaredField("providerIo"); laneField.setAccessible(true);
+                var lane = laneField.get(controller); var executorField = lane.getClass().getDeclaredField("executor"); executorField.setAccessible(true);
+                var executor = (ThreadPoolExecutor)executorField.get(lane);
+                assertEquals(1, executor.getLargestPoolSize()); assertEquals(0, executor.getQueue().size());
+                // Detached batch does not block new local authorship.
+                add(enrollment("public", "later", org.totipo.TotpAlgorithm.SHA1, 6, 30, rfcSecret()), AddTokenOutcome.Status.ADDED);
+                if (action.equals("lock")) { lock(); accept(() -> controller.unlock(password())); state(State.OPEN); }
+                else if (action.equals("disconnect")) { accept(() -> controller.disconnectSyncFolder()); await(this::idle); assertNull(controller.initialTreeUri()); }
+                else { accept(() -> controller.chooseSyncFolder(false, "content://fixture/tree/b", 3)); await(this::idle); }
+                assertEquals(1L, release.getCount());
+            } finally { release.countDown(); }
+            await(this::providerDone); assertEquals(1, port.creates); assertEquals(refreshes, real.refreshes);
+            assertFalse(controller.syncView().message().contains("Local changes published"));
+            if (action.equals("replace")) assertEquals("content://fixture/tree/b", controller.initialTreeUri());
+            lock(); controller.shutdown();
+        }
+    }
     private AddTokenRequest enrollment(String issuer, String account, org.totipo.TotpAlgorithm algorithm, int digits, long period, char[] text) {
         return new AddTokenRequest(issuer, account, algorithm, digits, period, text);
     }

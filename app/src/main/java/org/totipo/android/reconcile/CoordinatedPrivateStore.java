@@ -63,6 +63,29 @@ final class CoordinatedPrivateStore implements AutoCloseable {
         private void held() {
             if (released || !gate.isHeldByCurrentThread()) throw new IllegalStateException("Bridge scope not held");
         }
+        java.util.List<org.totipo.android.sync.DetachedImmutableObject> snapshotObjects() {
+            held(); usable();
+            var scan = delegate.scanObjects();
+            if (!(scan instanceof ObjectScan.Complete)) throw new IllegalStateException("Local publication source invalid");
+            var result = new java.util.ArrayList<org.totipo.android.sync.DetachedImmutableObject>();
+            int total = 0;
+            for (var entry : scan.entries()) {
+                String name = entry.name().value();
+                if (!name.matches("[0-9a-f]{64}")) continue;
+                if (result.size() == org.totipo.android.sync.DetachedImmutableObject.MAX_OBJECTS)
+                    throw new org.totipo.android.sync.DetachedImmutableObject.CapacityExceeded();
+                var read = delegate.readObject(entry.name(), org.totipo.android.sync.DetachedImmutableObject.REPRESENTATION_BYTES);
+                if (!(read instanceof BoundedRead.Present present)) throw new IllegalStateException("Local publication source invalid");
+                byte[] bytes = present.bytes();
+                if (bytes.length != org.totipo.android.sync.DetachedImmutableObject.REPRESENTATION_BYTES)
+                    throw new IllegalStateException("Local publication source invalid");
+                if (total > org.totipo.android.sync.DetachedImmutableObject.MAX_BATCH_BYTES - bytes.length)
+                    throw new org.totipo.android.sync.DetachedImmutableObject.CapacityExceeded();
+                total += bytes.length;
+                result.add(new org.totipo.android.sync.DetachedImmutableObject(new org.totipo.RevisionId(name), bytes));
+            }
+            return java.util.List.copyOf(result);
+        }
         void markUnsafe() { held(); unsafe = true; }
         ObjectWrite publish(ImmutableCandidateImporter.Selection selected) {
             held(); usable();

@@ -93,6 +93,33 @@ public final class ForegroundVaultCoordinatorTest {
         assertEquals(ForegroundVaultCoordinator.State.OPEN, opening.vault().lifecycle());
         return opening.vault();
     }
+    @Test public void outboundSnapshotExactValidationOutsideGateSameDomainAndNoRefresh() throws Exception {
+        var operations = new Tracked();
+        try (var vault = opened(owner(), operations)) {
+            run(vault, all());
+            int refreshes = operations.refreshes;
+            var field = ForegroundVaultCoordinator.class.getDeclaredField("session"); field.setAccessible(true);
+            var live = (VaultSession)field.get(vault); var validations = new AtomicInteger();
+            VaultSession spy = (VaultSession)java.lang.reflect.Proxy.newProxyInstance(VaultSession.class.getClassLoader(),
+                new Class<?>[]{VaultSession.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("validateObject")) {
+                        assertFalse(operations.domain.exclusiveHeldByCurrentThread()); validations.incrementAndGet();
+                    }
+                    try { return method.invoke(live, args); }
+                    catch (java.lang.reflect.InvocationTargetException failure) { throw failure.getCause(); }
+                });
+            field.set(vault, spy);
+            try {
+                var detached = vault.outboundSnapshot(); assertEquals(3, detached.size()); assertEquals(3, validations.get());
+                for (var object : detached) assertArrayEquals(objects.get(object.id()), object.representation());
+                assertSame(operations.domain, fieldOf(vault, "store"));
+                assertEquals(refreshes, operations.refreshes); assertEquals(1, operations.opens); assertEquals(0, operations.closes);
+            } finally { field.set(vault, live); }
+        }
+    }
+    private static Object fieldOf(Object object, String name) throws Exception {
+        var field = object.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(object);
+    }
     private static Report run(ForegroundVaultCoordinator vault, Scan scan) {
         return vault.sync(scan, CONTINUE);
     }

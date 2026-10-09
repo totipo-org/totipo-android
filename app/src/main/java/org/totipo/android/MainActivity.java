@@ -33,6 +33,7 @@ public final class MainActivity extends Activity {
     private EditText password, confirmation;
     private Button action, refresh, lock;
     private TextView syncStatus;
+    private Button publishChanges;
     private Button chooseFolder, importChanges, disconnectFolder, checkFolder;
     private static final int SYNC_TREE_REQUEST = 310;
     private String surface;
@@ -89,6 +90,7 @@ public final class MainActivity extends Activity {
             chooseFolder.setText("Choose folder again");
         chooseFolder.setEnabled(controller.canManageSyncFolder());
         importChanges.setEnabled(controller.canImportProviderChanges());
+        publishChanges.setEnabled(controller.canPublishLocalChanges());
         disconnectFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
         disconnectFolder.setEnabled(controller.canManageSyncFolder());
         checkFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
@@ -155,10 +157,11 @@ public final class MainActivity extends Activity {
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         label("Sync folder").setTextSize(20);
         syncStatus = label("");
-        label("Totipo currently imports token changes from this folder.");
+        label("Totipo exchanges token changes with this folder. Vault password-wrapper synchronization is not enabled yet.");
         LinearLayout folderActions = new LinearLayout(this); content.addView(folderActions);
         chooseFolder = buttonIn(folderActions, "Choose folder", this::chooseSyncFolder);
         importChanges = buttonIn(folderActions, "Import changes", () -> controller.importProviderChanges());
+        publishChanges = buttonIn(folderActions, "Publish local changes", () -> controller.publishLocalChanges());
         LinearLayout folderSettings = new LinearLayout(this); content.addView(folderSettings);
         checkFolder = buttonIn(folderSettings, "Retry access", () -> controller.checkSyncFolder());
         disconnectFolder = buttonIn(folderSettings, "Disconnect", () -> controller.disconnectSyncFolder());

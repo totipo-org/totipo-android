@@ -104,6 +104,35 @@ public final class CoordinatedPrivateStoreTest {
         delegate.action = () -> {}; view.close(); store.close(); assertEquals(1, delegate.closes.get());
         stage.close();
     }
+    @Test public void boundedDetachedSnapshotUsesOneGateAndNeverTruncates() {
+        var size = new AtomicInteger(512); var byteSize = new AtomicInteger(1024);
+        var delegate = new Delegate() {
+            public ObjectScan scanObjects() {
+                return call(() -> new ObjectScan.Complete(java.util.stream.IntStream.range(0, size.get()).mapToObj(i ->
+                    new ObjectEntry(new ObjectName(String.format("%064x", i)), EntryKind.REGULAR, java.util.OptionalLong.empty())).toList()));
+            }
+            public BoundedRead readObject(ObjectName name, int maximum) {
+                assertEquals(1024, maximum); return call(() -> new BoundedRead.Present(new byte[byteSize.get()]));
+            }
+        };
+        var store = new CoordinatedPrivateStore(delegate); var view = store.transferSessionView();
+        delegate.action = () -> assertTrue(store.exclusiveHeldByCurrentThread());
+        java.util.List<org.totipo.android.sync.DetachedImmutableObject> detached;
+        try (var bridge = store.bridge()) { detached = bridge.snapshotObjects(); }
+        assertFalse(store.exclusiveHeldByCurrentThread()); assertEquals(512, detached.size());
+        assertEquals(512 * 1024, detached.stream().mapToInt(o -> o.representation().length).sum());
+        byte[] exposed = detached.get(0).representation(); exposed[0] = 1;
+        assertEquals(0, detached.get(0).representation()[0]);
+        size.set(513);
+        assertThrows(org.totipo.android.sync.DetachedImmutableObject.CapacityExceeded.class,
+            () -> { try (var bridge = store.bridge()) { bridge.snapshotObjects(); } });
+        size.set(1);
+        for (int bad : new int[]{0, 1023, 1025}) {
+            byteSize.set(bad);
+            assertThrows(IllegalStateException.class, () -> { try (var bridge = store.bridge()) { bridge.snapshotObjects(); } });
+        }
+        view.close(); store.close();
+    }
     static Thread thread(AtomicReference<Throwable> failure, Runnable action) {
         Thread thread = new Thread(() -> { try { action.run(); } catch (Throwable fault) { failure.set(fault); } });
         thread.setDaemon(true); thread.start(); return thread;

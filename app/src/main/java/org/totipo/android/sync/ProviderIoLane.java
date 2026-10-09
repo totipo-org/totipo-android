@@ -34,5 +34,15 @@ public final class ProviderIoLane implements AutoCloseable {
             }
         });
     }
+    public void publish(SyncFolderBinding.Port transport, SyncFolderBinding.Request request,
+                        org.totipo.android.provider.ProviderSnapshot.Document target,
+                        java.util.List<DetachedImmutableObject> missing,
+                        java.util.function.BooleanSupplier cancelled,
+                        Consumer<ProviderObjectWriter.Result> delivery) {
+        executor.execute(() -> {
+            var result = ProviderObjectWriter.publish(transport, request.uri(), target, missing, cancelled);
+            try { delivery.accept(result); } catch (Throwable dispatchUnavailable) { }
+        });
+    }
     @Override public void close() { executor.shutdown(); }
 }

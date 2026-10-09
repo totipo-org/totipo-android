@@ -351,6 +351,38 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                     || lifecycle() == State.REQUESTING_REFRESH) transition(State.OPEN);
         }
     }
+    /** Capture exact local representations under the existing gate, then release before Java validation.
+     * No provider I/O, refresh, reopen, or authoritative-state replacement. */
+    public List<org.totipo.android.sync.DetachedImmutableObject> outboundSnapshot() {
+        requireOpen();
+        final List<org.totipo.android.sync.DetachedImmutableObject> detached;
+        try (var bridge = store.bridge()) { detached = bridge.snapshotObjects(); }
+        for (var object : detached) {
+            if (store.exclusiveHeldByCurrentThread()) throw new IllegalStateException("Lock order violation");
+            var valid = session.validateObject(object.id(), object.representation());
+            if (!(valid instanceof ObjectCandidateValidation.Valid authenticated)
+                    || !object.id().equals(authenticated.objectId())
+                    || !Arrays.equals(object.representation(), authenticated.representation()))
+                throw new IllegalStateException("Local publication source invalid");
+        }
+        return detached;
+    }
+    public org.totipo.android.sync.OutboundImmutablePlanner.Plan outboundPlan(
+            List<org.totipo.android.sync.DetachedImmutableObject> detached, Scan scan, boolean write) {
+        requireOpen();
+        return org.totipo.android.sync.OutboundImmutablePlanner.plan(detached,
+                ImmutableCandidateClassifier.classify(scan, session), write);
+    }
+    public String outboundConfirmation(org.totipo.android.sync.OutboundImmutablePlanner.Plan plan,
+            org.totipo.android.sync.ProviderObjectWriter.Result result) {
+        requireOpen();
+        if (result.postflight() == null) return "Publication uncertain. Check again before retrying.";
+        String confirmation = org.totipo.android.sync.OutboundImmutablePlanner.confirm(plan, result.attempted(),
+                ImmutableCandidateClassifier.classify(result.postflight(), session));
+        if ((result.unsupportedName() || result.readBackFailed()) && !confirmation.startsWith("Integrity problem"))
+            return "Publication uncertain. Check again before retrying.";
+        return confirmation;
+    }
     // Internal application TCB only: public callers cannot supply descriptive groups/plans.
     // Real production evidence always comes from classify(scan, this.session) above.
     static final class ImportPlan {
