@@ -10,7 +10,7 @@ sdk = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT'])
 bt = sdk / 'build-tools/36.0.0'
 java = Path(os.environ['JAVA_HOME']) / 'bin'
 platform = sdk / 'platforms/android-37.0/android.jar'
-output = workspace / '.gradle/m3b-saf'
+output = workspace / '.gradle/r19-saf'
 output.mkdir(parents=True, exist_ok=True)
 classes = output / 'classes'
 dex = output / 'dex'
@@ -24,29 +24,27 @@ def run(args):
 
 cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
 jars = []
-for group, module, version in [('org.totipo', 'totipo-core', '0.1.5'),
-                              ('org.totipo', 'totipo-storage-nio', '0.1.5'),
+for group, module, version in [('org.totipo', 'totipo-core', '0.2.0'),
+                              ('org.totipo', 'totipo-storage-nio', '0.2.0'),
                               ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
     candidates = list((cache / group / module / version).glob('*/*.jar'))
     assert len(candidates) == 1, 'Use the already-qualified Gradle cache'
     jars.extend(candidates)
 classpath = os.pathsep.join(str(jar) for jar in jars)
 fixture = output / 'fixture'
-# Retain the original disposable wrapper lineage used by the persisted M3A provider baseline.
+# New disposable r19 fixture, independent of the historical invalid provider VAULT.
 run([java / 'javac', '-classpath', classpath, '-d', classes, workspace / 'tools/device/InboundFixture.java'])
-if not fixture.exists() and (workspace / '.gradle/m3a-saf/fixture').exists():
-    import shutil
-    shutil.copytree(workspace / '.gradle/m3a-saf/fixture', fixture)
 if not fixture.exists():
     run([java / 'java', '-classpath', str(classes) + os.pathsep + classpath,
          'org.totipo.safqualification.InboundFixture', fixture])
 assert (fixture / 'vault').stat().st_size == 87
 objects = list((fixture / 'objects-v1').iterdir())
 assert len(objects) == 3 and all(obj.stat().st_size == 1024 for obj in objects)
-run([java / 'javac', '-source', '17', '-target', '17', '-classpath', platform,
-     '-d', classes, workspace / 'tools/device/SafOutboundRegression.java'])
+run([java / 'javac', '-source', '17', '-target', '17', '-classpath', str(platform) + os.pathsep + classpath,
+     '-d', classes, workspace / 'tools/device/SafOutboundRegression.java', workspace / 'tools/device/LocalStoreQualification.java'])
 run([bt / 'd8', '--min-api', '26', '--lib', platform, '--output', dex,
-     *sorted(classes.glob('org/totipo/safqualification/SafOutboundRegression*.class'))])
+     *sorted(classes.glob('org/totipo/safqualification/SafOutboundRegression*.class')),
+     *sorted(classes.glob('org/totipo/safqualification/LocalStoreQualification*.class'))])
 manifest = output / 'AndroidManifest.xml'
 manifest.write_text('''<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.totipo.safqualification">
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37" />
@@ -59,5 +57,5 @@ run([bt / 'aapt2', 'link', '-I', platform, '--manifest', manifest, '-o', apk])
 with zipfile.ZipFile(apk, 'a') as package:
     package.write(dex / 'classes.dex', 'classes.dex')
     package.write(fixture / 'vault', 'assets/vault')
-(output / 'remote-vault').write_bytes(bytes(87))
-print('SAF test APK and disposable public fixture built: .gradle/m3b-saf')
+(output / 'remote-vault').write_bytes((fixture / 'vault').read_bytes())
+print('SAF test APK and disposable public fixture built: .gradle/r19-saf')

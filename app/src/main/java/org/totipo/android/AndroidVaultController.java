@@ -258,9 +258,12 @@ public final class AndroidVaultController {
                     create ? "Creating vault…" : "Unlocking vault…", () -> {
                 try {
                     Error error;
+                    boolean objectDataObserved = false;
                     if (create) {
                         var result = backend.create(owner, credential); vault = result.vault();
                         if (result.failure() == null && result.cause() == null) { opened(); return; }
+                        objectDataObserved = result.failure() instanceof CreateVaultResult.Failed failed
+                                && failed.reason() == CreateVaultResult.FailureReason.OBJECT_DATA_OBSERVED;
                         error = result.failure() instanceof CreateVaultResult.Uncertain
                                 ? Error.LOCAL_STORAGE_UNSAFE : Error.CREATE_FAILED;
                     } else {
@@ -275,7 +278,9 @@ public final class AndroidVaultController {
                     // Re-observe after failures: uncertain creation can have installed VAULT.
                     discover();
                     Snapshot current = snapshot();
-                    if (current.state() != State.FAILED_CLOSE) publish(current.state(), error, errorMessage(error), null);
+                    if (current.state() != State.FAILED_CLOSE) publish(current.state(), error, objectDataObserved
+                            ? "Totipo found existing token data but no usable vault. A new vault was not created."
+                            : errorMessage(error), null);
                 } catch (IOException | RuntimeException failure) {
                     if (!closeOwned()) return;
                     discover();
@@ -384,6 +389,8 @@ public final class AndroidVaultController {
                 if (vault.lifecycle() == ForegroundVaultCoordinator.State.OPEN) render(
                         report.refresh() == ForegroundVaultCoordinator.Refresh.REQUESTED ? "Refresh requested" : "Inbound scan observed");
                 else publish(State.ERROR_OPEN, Error.LOCAL_STORAGE_UNSAFE, "Local storage needs attention. Lock the vault before retrying.", null);
+            } catch (org.totipo.android.provider.ProviderVaultIdentity.Blocked blocked) {
+                render(blocked.status().message());
             } catch (RuntimeException failure) {
                 publish(State.ERROR_OPEN, Error.LOCAL_STORAGE_UNSAFE, "Inbound observation failed. Lock the vault before retrying.", null);
             }
@@ -522,6 +529,7 @@ public final class AndroidVaultController {
             worker.execute(() -> {
                 dispatcher.assertWorkerThread();
                 try { action.run(); }
+                catch (org.totipo.android.provider.ProviderVaultIdentity.Blocked blocked) { finishOutbound(cancelled, blocked.status().message()); }
                 catch (RuntimeException failure) { finishOutbound(cancelled, "Publication uncertain. Check again before retrying."); }
             });
         } catch (RejectedExecutionException busy) { finishOutbound(cancelled, null); }
@@ -604,6 +612,8 @@ public final class AndroidVaultController {
                     if (vault.lifecycle() == ForegroundVaultCoordinator.State.OPEN) render("Vault open");
                     else publish(State.ERROR_OPEN, Error.LOCAL_STORAGE_UNSAFE,
                             "Local publication failed. Lock the vault before retrying.", null);
+                } catch (org.totipo.android.provider.ProviderVaultIdentity.Blocked blocked) {
+                    updateBinding(blocked.status().message());
                 } finally {
                     synchronized (this) {
                         operating = false; scheduleView();

@@ -2,6 +2,7 @@
 """Check APK ZIP integrity, bootstrap/NIO/core/BC DEX presence and optional unsigned status."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,18 @@ manifest = manifest.replace('http://schemas.android.com/apk/res/android:', 'andr
 for permission in ('android.permission.CAMERA', 'android.permission.INTERNET', 'android.permission.READ_EXTERNAL_STORAGE',
                    'android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.MANAGE_EXTERNAL_STORAGE'):
     assert permission not in manifest, f'Forbidden APK permission: {permission}'
+resources = subprocess.check_output([
+    str(Path(sdk) / 'build-tools/36.0.0/aapt2'), 'dump', 'resources', str(args.apk)], text=True)
+for attribute, resource in [('icon', 'ic_launcher'), ('roundIcon', 'ic_launcher_round')]:
+    match = re.search(r'resource (0x[0-9a-f]+) (?:org.totipo.android:)?mipmap/' + resource + r'\b', resources)
+    assert match, f'Missing Totipo launcher resource: {resource}'
+    assert re.search(r'android:' + attribute + r'\([^)]*\)=@' + match[1] + r'\b', manifest), 'Wrong application branding'
+root = Path(__file__).resolve().parents[1]
+branding = json.loads((root / 'branding-provenance.json').read_text())
+assert branding['commit'] == 'cdb4e91be1c6d3704874b2b92457ffe7be5e9084'
+for path, provenance in branding['assets'].items():
+    assert hashlib.sha256((root / path).read_bytes()).hexdigest() == provenance['sha256'], f'Changed canonical source: {path}'
+    assert provenance['source'] == 'design/icons/platforms/android/res/' + path.removeprefix('app/src/main/res/')
 enrollment_name = 'org.totipo.android.OtpAuthEnrollmentActivity'
 assert 'OtpAuthIntentProbeActivity' not in manifest, 'Obsolete qualification handler'
 assert len(re.findall(r'android:scheme\([^)]*\)="otpauth"', manifest)) == 1, 'Duplicate/aliased otpauth filters'
@@ -77,12 +90,33 @@ with zipfile.ZipFile(args.apk) as apk:
     names = apk.namelist()
     assert len(names) == len(set(names)), 'Duplicate ZIP entry'
     assert 'AndroidManifest.xml' in names and 'resources.arsc' in names
+    icon_blocks = {}
+    for match in re.finditer(r'(?m)^ +resource (0x[0-9a-f]+) (?:org.totipo.android:)?((?:mipmap|drawable)/ic_launcher[^\s]*)\n', resources):
+        end = re.search(r'(?m)^ +(?:resource |type )', resources[match.end():])
+        icon_blocks[match[2]] = (match[1], resources[match.end():match.end() + end.start()] if end else resources[match.end():])
+    for path in branding['assets']:
+        folder, filename = path.removeprefix('app/src/main/res/').split('/')
+        kind = folder.split('-')[0]
+        qualifier = folder.split('-')[1] if '-' in folder else ''
+        key = kind + '/' + filename.rsplit('.', 1)[0]
+        assert key in icon_blocks, f'Missing packaged icon resource: {key}'
+        block = icon_blocks[key][1]
+        config = re.search(r'\(' + qualifier + r'\) \(file\) (res/[^\s]+)', block)
+        assert config and config[1] in names, f'Missing packaged icon configuration: {path}'
+        if filename.endswith('.xml'):
+            adaptive = subprocess.check_output([str(Path(sdk) / 'build-tools/36.0.0/aapt2'),
+                'dump', 'xmltree', str(args.apk), '--file', config[1]], text=True)
+            assert 'E: adaptive-icon' in adaptive and 'E: foreground' in adaptive and 'E: background' in adaptive
+            for layer in ('background', 'foreground'):
+                assert '@' + icon_blocks['drawable/ic_launcher_' + layer][0] in adaptive, 'Wrong canonical adaptive layer'
     dex = b''.join(apk.read(name) for name in names if name.startswith('classes') and name.endswith('.dex'))
     assert dex.startswith(b'dex\n'), 'Missing DEX'
-    for descriptor in [b'Lorg/totipo/android/sync/OutboundImmutablePlanner;', b'Lorg/totipo/android/sync/ProviderObjectWriter;', b'Lorg/totipo/android/sync/DetachedImmutableObject;', b'Lorg/totipo/android/sync/ProviderIoLane;', b'Lorg/totipo/android/sync/SyncFolderBinding;', b'Lorg/totipo/android/sync/AndroidSyncFolderPort;', b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/AddTokenRequest;', b'Lorg/totipo/android/AddTokenOutcome;', b'Lorg/totipo/android/Base32;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
+    for descriptor in [b'Lorg/totipo/android/sync/OutboundImmutablePlanner;', b'Lorg/totipo/android/sync/ProviderObjectWriter;', b'Lorg/totipo/android/sync/DetachedImmutableObject;', b'Lorg/totipo/android/sync/ProviderIoLane;', b'Lorg/totipo/android/sync/SyncFolderBinding;', b'Lorg/totipo/android/sync/AndroidSyncFolderPort;', b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/AddTokenRequest;', b'Lorg/totipo/android/AddTokenOutcome;', b'Lorg/totipo/android/Base32;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/totipo/storage/nio/NioStoreComposition;', b'Lorg/totipo/VaultId;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
     for descriptor in (b'Lorg/totipo/android/OtpAuthEnrollmentActivity;', b'Lorg/totipo/android/OtpAuthUriParser;', b'Lorg/totipo/android/OtpAuthTransport;'):
         assert descriptor in dex, f'Missing production enrollment class: {descriptor!r}'
+    for retired in (b'Lorg/totipo/PasswordChangeResult;', b'Lorg/totipo/VaultFingerprint;', b'Lorg/totipo/spi/PreparedVault;', b'Lorg/totipo/spi/VaultPrepare;', b'openPrivate'):
+        assert retired not in dex, f'Retired Java API packaged: {retired!r}'
     assert b'OtpAuthIntentProbeActivity' not in dex, 'Obsolete probe in APK'
     for forbidden in (b'Lcom/google/api/services/drive/', b'Lcom/google/android/apps/docs/', b'Lcom/nutomic/syncthingandroid/', b'Landroidx/work/', b'Landroidx/documentfile/', b'Lorg/totipo/safqualification/', b'Lcom/google/zxing/', b'Landroidx/camera/', b'Lcom/google/mlkit/', b'Lcom/google/android/gms/'):
         assert forbidden not in dex, f'Forbidden QR/camera/service dependency: {forbidden!r}'

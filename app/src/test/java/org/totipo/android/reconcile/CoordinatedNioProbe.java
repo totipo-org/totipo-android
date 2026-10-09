@@ -20,18 +20,6 @@ final class CoordinatedNioProbe implements TotipoStore {
     public ObjectScan scanObjects() { return call("scanObjects", nio::scanObjects); }
     public BoundedRead readObject(ObjectName name, int size) { return call("readObject", () -> nio.readObject(name, size)); }
     public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return call("publishObject", () -> nio.publishObject(name, bytes)); }
-    public VaultPrepare prepareVault(byte[] bytes) {
-        return call("prepareVault", () -> {
-            var result = nio.prepareVault(bytes);
-            if (!(result instanceof VaultPrepare.Prepared ready)) return result;
-            var prepared = ready.vault();
-            return new VaultPrepare.Prepared(new PreparedVault() {
-                public BoundedRead readBack(int size) { return call("readBack", () -> prepared.readBack(size)); }
-                public VaultInstall installCanonicalIfAbsent() { return call("install", prepared::installCanonicalIfAbsent); }
-                public VaultReplace replaceCanonical() { return call("replace", prepared::replaceCanonical); }
-                public void close() { call("stageClose", () -> { prepared.close(); return null; }); }
-            });
-        });
-    }
+    public VaultCreate createVault(byte[] bytes) { return call("createVault", () -> nio.createVault(bytes)); }
     public void close() { call("close", () -> { nio.close(); return null; }); }
 }

@@ -6,10 +6,10 @@ let
   # Android spans com/org groups; desktop's smaller cache used an /org prefix.
   central = cache."https://repo.maven.apache.org/maven2" or { };
   centralOrg = cache."https://repo.maven.apache.org/maven2/org" or { };
-  core = central."org/totipo#totipo-core/0.1.5"
-    or (centralOrg."totipo#totipo-core/0.1.5" or { });
-  nio = central."org/totipo#totipo-storage-nio/0.1.5"
-    or (centralOrg."totipo#totipo-storage-nio/0.1.5" or { });
+  core = central."org/totipo#totipo-core/0.2.0"
+    or (centralOrg."totipo#totipo-core/0.2.0" or { });
+  nio = central."org/totipo#totipo-storage-nio/0.2.0"
+    or (centralOrg."totipo#totipo-storage-nio/0.2.0" or { });
   bc = central."org/bouncycastle#bcprov-jdk18on/1.86"
     or (centralOrg."bouncycastle#bcprov-jdk18on/1.86" or { });
   cacheReady = core ? jar && (core ? module || core ? pom) && bc ? jar && nio ? jar && (nio ? module || nio ? pom);
@@ -18,7 +18,7 @@ let
     "build.gradle.kts" "settings.gradle.kts" "gradle.properties"
     "app/build.gradle.kts" "app/gradle.lockfile"
     "buildscript-gradle.lockfile" "app/buildscript-gradle.lockfile"
-    "VERSION" "LICENSE"
+    "VERSION" "LICENSE" "branding-provenance.json"
   ];
 in
 assert builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?" version != null;

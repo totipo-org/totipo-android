@@ -89,6 +89,24 @@ public final class AndroidVaultControllerTest {
         if (controller != null && EnumSet.of(State.OPEN, State.ERROR_OPEN, State.FAILED_CLOSE).contains(controller.snapshot().state())) lock();
         assertNull(threadError.get());
     }
+    @Test public void r19ObjectDataVetoPreservesOrphanAndDoesNotCreateVault() throws Exception {
+        byte[] orphan = new byte[]{1,2,3}; Path object;
+        try (var lease = owner.acquire()) {
+            Files.createDirectories(lease.root().resolve("objects-v1"));
+            object = Files.write(lease.root().resolve("objects-v1").resolve("a".repeat(64)), orphan);
+        }
+        start(); state(State.NO_LOCAL_VAULT); accept(() -> controller.create(password())); await(this::idle);
+        assertEquals(State.NO_LOCAL_VAULT, controller.snapshot().state());
+        assertEquals("Totipo found existing token data but no usable vault. A new vault was not created.", controller.snapshot().message());
+        assertFalse(Files.exists(localRoot().resolve("vault"))); assertArrayEquals(orphan, Files.readAllBytes(object));
+        assertNull(real.session);
+    }
+    @Test public void r19CreateAndReopenHaveExactCanonicalVaultId() throws Exception {
+        create(); var id = real.session.vaultId();
+        assertEquals(org.totipo.Totipo.vaultId(Files.readAllBytes(localRoot().resolve("vault"))), id);
+        lock(); accept(() -> controller.unlock(password())); state(State.OPEN);
+        assertEquals(id, real.session.vaultId());
+    }
     @Test public void freshDiscoveryReleasesAllOwnership() throws Exception {
         start(); state(State.NO_LOCAL_VAULT);
         try (var lease = owner.acquire()) { assertNotNull(lease.root()); }
@@ -281,7 +299,7 @@ public final class AndroidVaultControllerTest {
             assertEquals(1, real.opens); assertEquals(0, real.closes);
             assertArrayEquals(wrapper, Files.readAllBytes(localRoot().resolve("vault")));
             port.snapshot = new org.totipo.android.provider.ProviderSnapshot.Scan(scan.epoch(), scan.tree(), scan.root(),
-                    scan.directories(), org.totipo.android.provider.ProviderSnapshot.State.INCOMPLETE_LOADING, scan.issues());
+                    scan.directories(), org.totipo.android.provider.ProviderSnapshot.State.INCOMPLETE_LOADING, scan.issues(), scan.vaultCandidates());
             accept(() -> controller.importProviderChanges()); await(this::providerDone);
             assertEquals("Provider view incomplete. No new objects.", controller.syncView().message());
             port.snapshot = scan; accept(() -> controller.importProviderChanges()); await(this::providerDone);
@@ -313,7 +331,7 @@ public final class AndroidVaultControllerTest {
             accept(() -> controller.refresh()); state(State.OPEN);
             assertEquals(1, port.scans);
         } finally { release.countDown(); }
-        await(this::providerDone); assertEquals("No new objects.", controller.syncView().message());
+        await(this::providerDone); assertEquals("Sync folder has no Totipo vault.", controller.syncView().message());
     }
     @Test public void productPublicationFailureAndExistingContradictionAreVisible() throws Exception {
         ForegroundVaultCoordinatorTest.realCoreFixture();
@@ -447,9 +465,62 @@ public final class AndroidVaultControllerTest {
         }, null, new org.totipo.android.sync.SyncFolderBinding(port));
         state(State.NO_LOCAL_VAULT); await(this::providerDone);
         accept(() -> controller.create(password())); state(State.OPEN);
+        port.vaultBytes = Files.readAllBytes(localRoot().resolve("vault"));
         for (int i = 0; i < count; i++) add(enrollment("public", "test " + i, org.totipo.TotpAlgorithm.SHA1, 6, 30, rfcSecret()), AddTokenOutcome.Status.ADDED);
         await(() -> controller.snapshot().view().tokens().size() == count);
         return port;
+    }
+    @Test public void identityFailureStatusesKeepReadyAndBlockBothControllerDirections() throws Exception {
+        var port = outboundFixture(1); var session = real.session;
+        byte[] canonical = port.vaultBytes.clone();
+        for (String scenario : List.of("missing", "short", "oversized", "magic", "version", "different", "unavailable", "duplicate", "duplicateDifferent", "directory", "loading")) {
+            port.snapshotTransform = scan -> {
+                var original = scan.vaultCandidates().get(0);
+                var doc = original.document();
+                var rows = new ArrayList<>(scan.root().rows());
+                byte[] bytes = canonical.clone();
+                var state = org.totipo.android.provider.ProviderSnapshot.ByteState.PRESENT;
+                var rootState = org.totipo.android.provider.ProviderSnapshot.State.COMPLETE;
+                switch (scenario) {
+                    case "missing" -> rows.remove(doc);
+                    case "short" -> bytes = new byte[86];
+                    case "oversized" -> bytes = new byte[88];
+                    case "magic" -> bytes[0] ^= 1;
+                    case "version" -> bytes[10] = 2;
+                    case "different", "duplicateDifferent" -> bytes[86] ^= 1;
+                    case "unavailable" -> state = org.totipo.android.provider.ProviderSnapshot.ByteState.UNAVAILABLE;
+                    case "duplicate" -> rows.add(doc);
+                    case "directory" -> {
+                        rows.remove(doc);
+                        doc = new org.totipo.android.provider.ProviderSnapshot.Document(doc.tree(), doc.locator(), doc.id(), doc.parentId(),
+                                "vault", "vnd.android.document/directory", null, null); rows.add(doc);
+                    }
+                    case "loading" -> rootState = org.totipo.android.provider.ProviderSnapshot.State.INCOMPLETE_LOADING;
+                }
+                var candidates = new ArrayList<org.totipo.android.provider.ProviderSnapshot.Bytes>();
+                if (!scenario.equals("missing")) candidates.add(new org.totipo.android.provider.ProviderSnapshot.Bytes(scan.epoch(), doc, 87,
+                        state, bytes, org.totipo.android.provider.ProviderSnapshot.Issue.NONE));
+                if (scenario.equals("duplicate") || scenario.equals("duplicateDifferent")) {
+                    if (scenario.equals("duplicateDifferent")) rows.add(doc);
+                    candidates.add(original);
+                }
+                return new org.totipo.android.provider.ProviderSnapshot.Scan(scan.epoch(), scan.tree(),
+                        new org.totipo.android.provider.ProviderSnapshot.Listing(scan.epoch(), scan.tree().rootId(), rows, rootState, List.of()),
+                        scan.directories(), scan.state(), scan.issues(), candidates);
+            };
+            String expected = scenario.equals("missing") ? "Sync folder has no Totipo vault."
+                    : scenario.equals("different") ? "Sync folder belongs to a different Totipo vault."
+                    : "Sync folder vault cannot be verified.";
+            for (BooleanSupplier operation : List.<BooleanSupplier>of(controller::importProviderChanges, controller::publishLocalChanges)) {
+                accept(operation); await(this::providerDone);
+                assertEquals(scenario, expected, controller.syncView().message());
+                assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.READY, controller.syncView().binding().status());
+                assertEquals(0, port.creates); assertEquals(0, port.outputs); assertTrue(port.objects.isEmpty());
+                assertEquals(1, controller.snapshot().view().tokens().size()); assertSame(session, real.session);
+                assertEquals(1, real.creates); assertEquals(0, real.opens);
+                assertArrayEquals(canonical, Files.readAllBytes(localRoot().resolve("vault")));
+            }
+        }
     }
     @Test public void outboundExactPostflightRetryPreservesSessionStoreAndRevealedCode() throws Exception {
         var port = outboundFixture(); var session = real.session; var coordinator = real.coordinator;

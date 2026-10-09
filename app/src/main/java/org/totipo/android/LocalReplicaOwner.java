@@ -8,7 +8,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * Process-wide ownership of noBackupFilesDir/totipo-vault, the canonical local replica.
+ * Process-wide ownership of noBackupFilesDir/totipo-vault, the canonical local canonical store.
  * Production code obtains this singleton using application context. The app must remain
  * single-process for root access: no independent process, provider, or sync software may
  * mutate this directory. A future multi-process design needs a different ownership gate.
@@ -16,7 +16,7 @@ import java.util.Objects;
  * The foreground coordinator holds one exclusive lease for the lifetime of its coordinated
  * storage domain, session and bridge, including asynchronous observation and closure. That
  * domain serializes every SPI call and bridge batch through one fair gate, using one
- * NioTotipoStore.openPrivate delegate with default durability. Close the session view and
+ * NioStoreComposition coordinated delegate with NioDurability. Close the session view and
  * domain before releasing the lease; never retain the Path or a handle beyond it. Per-session
  * Totipo serialization alone is insufficient. This owner holds no credentials or session.
  */
@@ -40,10 +40,10 @@ public final class LocalReplicaOwner {
 
     /** Acquire on a worker thread. Busy callers must retry later, never bypass the owner. */
     public synchronized Lease acquire() throws IOException {
-        if (active != null) throw new IllegalStateException("Local replica already owned");
+        if (active != null) throw new IllegalStateException("Local canonical store already owned");
         Files.createDirectories(root);
         if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("Local replica root is not a private directory");
+            throw new IOException("Local canonical store root is not a private directory");
         }
         active = new Lease();
         return active;
@@ -55,7 +55,7 @@ public final class LocalReplicaOwner {
 
         public Path root() {
             synchronized (LocalReplicaOwner.this) {
-                if (active != this) throw new IllegalStateException("Local replica lease closed");
+                if (active != this) throw new IllegalStateException("Local canonical store lease closed");
                 return root;
             }
         }

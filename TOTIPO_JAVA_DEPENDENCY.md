@@ -1,139 +1,76 @@
 # Totipo Java released dependency
 
-Android consumes `org.totipo:totipo-storage-nio:0.1.5` as its single direct
-production Totipo dependency from Maven Central. NIO requires exactly
-`org.totipo:totipo-core:0.1.5`, which adds `org.bouncycastle:bcprov-jdk18on:1.86`
-at runtime. Both debug and release package core/NIO/BC. No redundant direct core
-edge is needed: NIO exposes core transitively on compile and runtime classpaths.
+Android directly consumes `org.totipo:totipo-storage-nio:0.2.0` from Maven Central.
+NIO exposes exactly `org.totipo:totipo-core:0.2.0` transitively on compile/runtime
+classpaths; core's sole runtime dependency remains `org.bouncycastle:bcprov-jdk18on:1.86`.
+No redundant direct core edge is introduced. All production classes in both released
+JARs have Java 17 class major 61; module variants specify JVM 17.
 
-The qualified local-replica mode is `NioTotipoStore.openPrivate(...)`, with default
-durability, exclusively app-controlled writers and root-wide serialization.
-`LocalReplicaOwner` resolves `getApplicationContext().getNoBackupFilesDir()/totipo-vault`
-and grants one lifetime lease to the foreground coordinated domain. Its fair store
-gate serializes session SPI calls, staged VAULT handles and exclusive immutable
-bridge batches using one NIO delegate. The owner itself stores no unlocked session. The SAF tree is transport candidate
-state; it is never the canonical store used for local application operations.
-Shared/default `open(...)` remains unsuitable for the tested Android private
-filesystem: its hard-link publication path was denied. Private-mode qualification
-applies only to the tested private deployment assumptions, not every Android
-filesystem/API level or power-loss behavior. No SAF/provider reconciliation
-qualification follows from local-store qualification.
+Source: [totipo-java v0.2.0](https://github.com/totipo-org/totipo-java/releases/tag/v0.2.0).
+Annotated tag `d24e3d0ae71ea7fe318261519a9b5d08657a0e03` resolves to release commit
+`d6310c177ae930df188fd4f5798622c935698b2e`.
+Protocol: Totipo Vault Format v1/r19 at spec commit
+`cdb4e91be1c6d3704874b2b92457ffe7be5e9084`, independently confirmed in release `SPEC_PIN.md`.
+All 82 core and 12 NIO published source files match that release commit byte for byte.
+Sources/Javadocs are inspection evidence only, never Android build inputs.
 
-Upstream: https://github.com/totipo-org/totipo-java, source tag `v0.1.5`.
-Release commit: `67c1326a2ce433921a947ba4ffd6843403f4a7a3`.
-Target: Totipo Vault Format v1/r18, spec commit
-`4623a7e1718e23504903096c92332597057bd8f0` (committed revision, not an r18 release tag).
+`CoordinatedPrivateStore` uses the exact public construction in Java 0.2.0's
+`publishing/consumer-smoke/src/main/java/ConsumerSmoke.java`:
 
-Maven Central is the Android consumer boundary. No local source checkout,
-composite substitution, file JAR, Maven Local, snapshot, copied protocol source
-or conformance corpus supplies Totipo. The provider and application responsibilities
-remain separate from Java's operation-scoped qualification. Consuming core does
-not establish Android platform, storage, runtime or application conformance.
+```java
+NioStoreComposition.coordinatedDelegate(root, new NioDurability())
+```
 
-The direct version is pinned in `app/build.gradle.kts`. Strict dependency locks
-and SHA-256 verification metadata pin the resolved graph; `verifyMavenBoundary`,
-wired into `check`, checks debug/release compile/runtime external modules, the
-single direct NIO edge, NIO's exact core edge, and core's BC runtime edge. It rejects
-project/file artifacts, obsolete coordinates, unexpected modules, and mixed Totipo
-requests even if Gradle would resolve them to 0.1.5. `verifyReleaseApkBoundary`, also
-in `check`, requires core/NIO/BC and excludes all debug probe and helper classes
-and test classes. Repository declarations are centralized; Totipo is excluded
-from Google Maven so all Totipo resolution uses Central. Maven Local is not configured.
+This returns one persistent `TotipoStore` delegate using Java-owned complete-stage
+ordinary-move publication and durability. `openPrivate` is absent from Java 0.2.0.
+Ordinary shared `NioTotipoStore.open` uses hard-link publication and remains unsuitable
+for the previously tested Android app-private filesystem. There is no fallback to it.
 
-Nix `package-deps.json` separately pins package downloads. The human-regenerated
-0.1.5 cache was reviewed against actual Central bytes, Gradle verification metadata
-and publisher POM bytes. All six Totipo hashes match; no 0.1.4 Totipo artifact entries
-remain. BC and unrelated cache entries are unchanged. Totipo publisher metadata
-advances NIO to 0.1.5 and drops unused core metadata. Final human Nix check status
-is recorded in the M1F report. No Nix command is run by the agent.
+The Application-owned `LocalReplicaOwner` leases the single app-private local canonical
+store in no-backup storage. `CoordinatedPrivateStore` enforces the composition contract:
+one process, one root owner, one persistent delegate, every call serialized, and exclusive
+bridge batches excluding session SPI operations. Close the logical session facade before
+the physical domain; final delegate close happens once. No independent writer or second
+delegate may access this root. Java session serialization alone is insufficient.
+The retained owner class name is historical; its current role is canonical store ownership.
 
-## 0.1.5 published provenance and candidate validation
+The r19 `TotipoStore` consists of readVault/createVault/scanObjects/readObject/publishObject/close.
+There are no public PreparedVault, staging/replacement handles, password change or root
+fingerprint APIs. VAULT is immutable and create-once. Android presents Java's
+`OBJECT_DATA_OBSERVED` creation veto without a bypass or an Android implementation of
+its orphan-candidate scan.
 
-Published [GitHub release](https://github.com/totipo-org/totipo-java/releases/tag/v0.1.5)
-is neither draft nor prerelease. Annotated tag object
-`8c0c1d45e934df08c0910cf4b2b439d70d918e5a` resolves to source commit
-`67c1326a2ce433921a947ba4ffd6843403f4a7a3`. `SPEC_PIN.md` at that commit
-confirms the unchanged v1/r18 spec pin above. Both Central module variants target
-Java 17. Core runtime remains BC 1.86. All 93 core and 15 NIO published Java
-sources match this release commit exactly; sources are inspection evidence only.
-NIO JAR and sources JAR bytes are identical to 0.1.4. No SAF/provider qualification
-is supplied by Java 0.1.5; historical Android private-mode evidence remains below.
+Every explicit Import/Publish compares detached provider VAULT using `Totipo.vaultId`
+with the authoritative open `session.vaultId()`, outside the Android store gate.
+Recognition is structural validation plus SHA-256, without authentication, password,
+Argon2, freshness or origin evidence. Only a complete root listing and one exact valid
+matching 87-byte document allow object mutation. Multiple candidates conservatively
+block, even identical duplicates. Provider VAULT is never written/adopted/repaired.
+Folder READY describes accessibility and persisted permission, independently of identity.
 
-`VaultSession.validateObject(RevisionId, byte[])` validates externally observed
-immutable objects under an already open authenticated session, entering its normal
-serialization/lifecycle gate. No store access, import, state update, KDF/password
-re-entry or root export occurs. Results are `ObjectCandidateValidation.Invalid`
-or `Valid`; Valid defensively owns the canonical ID and exact 1024-byte ciphertext.
-No parsed TOKEN, secret or metadata is returned. Valid values compare ID and bytes;
-only session-returned values establish authentication, under that session's root.
-Default external implementations may report unsupported validation; closing/closed
-library sessions throw `SessionClosedException`.
+`verifyMavenBoundary` checks all four production configurations, the direct NIO edge,
+exact NIO/core versions and runtime BC edge. Locks and strict SHA-256 verification
+remain enabled. There is no source/project/file/Maven-local/composite fallback or mixed
+Totipo version. `package-deps.json` is generated only by the human-supported Nix updater;
+cache and final human checks are recorded in the reconciliation report.
 
-Android's `ImmutableCandidateClassifier` applies this public API only to M1E exact
-1024-byte candidates with canonical lowercase-hex names. Transport partial/overflow/
-unavailable states remain distinct from Invalid; unavailable sessions remain distinct
-as well. One scan uses one supplied session for all duplicate comparisons. Unequal
-Valid values for one ID report an integrity contradiction without selection. Full
-provider provenance and completeness remain available. The synchronous caller must
-use a worker thread and keep its existing session/root ownership for the operation.
-M1F added no second NIO store, local mutation, provider mutation, VAULT validation,
-persistence or UI. M1I now materializes immutable objects through the coordinated
-private NIO domain without reauthenticating or closing the session. Its bridge view
-is distinct from the Java-owned session facade. Refresh is requested after the store
-gate releases; request completion has no public correlation identifier. NIO private mode remains the production local-store boundary.
-
-SHA-256 calculated from actual Maven Central bytes; JAR hashes also match module
-metadata. Both POM/module/JAR sets returned HTTP 200 before repinning.
+Independently downloaded bytes from
+[canonical Maven Central](https://repo.maven.apache.org/maven2/org/totipo/).
+JAR/source/Javadoc hashes match published module metadata.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| [totipo-core-0.1.5.jar](https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.5/totipo-core-0.1.5.jar) | `e99609e59db1d9f52f80c446060e63ce7dde17ad69252fa87d397d0cb1577f81` |
-| [totipo-core-0.1.5.module](https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.5/totipo-core-0.1.5.module) | `8a3bd815956d59f470f2639cfd95697496abac8c24b6b848579855c05f40bbe5` |
-| [totipo-core-0.1.5.pom](https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.5/totipo-core-0.1.5.pom) | `886ae205c99b23aef40332102b7c31393e88a8b3a513f21f5f18a6a93307e3a2` |
-| [totipo-storage-nio-0.1.5.jar](https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.5/totipo-storage-nio-0.1.5.jar) | `9e559ec75fb09af068f876751f32d696c50c40988a16d28419dfa05d1d1c4dae` |
-| [totipo-storage-nio-0.1.5.module](https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.5/totipo-storage-nio-0.1.5.module) | `4339f56533be8af2fa42b283b7a8513b51bae9de2d7f9aca3294dfec7b03dd88` |
-| [totipo-storage-nio-0.1.5.pom](https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.5/totipo-storage-nio-0.1.5.pom) | `1065a65031308327d660e2290213b5489ceeb13a5f11507b13b45ed4d926bb3d` |
+| `totipo-core-0.2.0.jar` | `4f1fb4bb1ab5f0a78c0f2d9a1ed3146413c94f631e7f9b95477968a66968520f` |
+| `totipo-core-0.2.0.module` | `e344cca2fe0297cb06f74acba63800fb85c69a24bc146f1165143a232984338e` |
+| `totipo-core-0.2.0.pom` | `1a6bbd5b4d82c079cb621d66c89b446c09e2df33efe5e0e89dd5abfd35d7c136` |
+| `totipo-core-0.2.0-sources.jar` | `e2661770e0e59ca733959b4931689a9253988352605087c390bfc3a045dd9b6c` |
+| `totipo-core-0.2.0-javadoc.jar` | `863f8b31f9a66461cf60ec56785f112eaa6e327985c0c1b4bc5ef3a5edbb795c` |
+| `totipo-storage-nio-0.2.0.jar` | `776068249e689e94136748fb8ffd86c837e0af8bbb6cec8ae5e785c4eca4ba93` |
+| `totipo-storage-nio-0.2.0.module` | `33a431575523bb545b57876b09fd04255e04b60b2c64541d72b2cda5f05c7afa` |
+| `totipo-storage-nio-0.2.0.pom` | `4acf1725ac7bb5cd7a4299f729d5eceb82aa3ea524dca7c9d5a9b56616db87b2` |
+| `totipo-storage-nio-0.2.0-sources.jar` | `bb690c98837f938b1cce75cdfc06b44b47b066c4cb937a4ec461f2dc82f5b04b` |
+| `totipo-storage-nio-0.2.0-javadoc.jar` | `ef1b8cf0a278eb64e0cb9073e627debeba298f0fd400378fadfdbf8cd9c7ac7c` |
 
-Published core sources JAR SHA-256:
-`d797c0854db469e8288b787dcbeb3dd3eb8e83062bea5c42b0013082b2cccdc4`.
-Published NIO sources JAR SHA-256:
-`bee2a5c9f941360b9c499f1518e3b2201e1e94405a34a8d2709033419e2ed67f`.
-
-## Historical 0.1.4 published provenance and Android qualification
-
-The 0.1.4 release commit was `44332d459e0cbec74e93ea5fb77280596c505732`.
-
-The annotated tag object `6d59303fc2e3cdae9f57032b0d889841421cbb96` resolves
-to the 0.1.4 release commit above. The published GitHub release is neither draft nor
-prerelease. `SPEC_PIN.md` at that commit confirms the unchanged 0.1.3 v1/r18
-spec pin. Both Central module variants target Java 17; every production class
-in both JARs has class major version 61. Core runtime remains BC 1.86.
-All 15 published NIO Java source files match the release commit exactly.
-
-SHA-256 below was calculated from actual Maven Central bytes; JAR hashes also
-match the published module metadata. POMs and sources are inspection evidence,
-not local build inputs.
-
-| Artifact | SHA-256 |
-| --- | --- |
-| [totipo-core-0.1.4.jar](https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.jar) | `1e3db6ca15273941549dfa821b9f7dc9a00c6ad81e7e66642a1f09c114eeee19` |
-| [totipo-core-0.1.4.module](https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.module) | `6dc1052306ed1e25dd06c7484a0378e7e3f19c74607f5bc5b7ab3be54802c564` |
-| [totipo-core-0.1.4.pom](https://repo.maven.apache.org/maven2/org/totipo/totipo-core/0.1.4/totipo-core-0.1.4.pom) | `498abaca7446d84fbb0da3bd92246424fe2eabe839ff5c02c1f5d7b2b7e54bc8` |
-| [totipo-storage-nio-0.1.4.jar](https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.jar) | `9e559ec75fb09af068f876751f32d696c50c40988a16d28419dfa05d1d1c4dae` |
-| [totipo-storage-nio-0.1.4.module](https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.module) | `2d9b9e6bf66e21a7258eeeecc85550f11dc4071896e847c2d57d7319f3c2af24` |
-| [totipo-storage-nio-0.1.4.pom](https://repo.maven.apache.org/maven2/org/totipo/totipo-storage-nio/0.1.4/totipo-storage-nio-0.1.4.pom) | `f954ae9643d0a33b3e2ee8c0024a62e4b5fc555c6c233795a986eb6c12a48b4c` |
-
-Published NIO sources JAR SHA-256: `bee2a5c9f941360b9c499f1518e3b2201e1e94405a34a8d2709033419e2ed67f`.
-
-The historical M1C probe run used the released `NioTotipoStore.openPrivate(Path)`
-factory with default durability. It exclusively owns a disposable app-private
-no-backup root and serializes all runs/handles. No independent writer or sync
-process mutates that root. Physical API-37 private-mode qualification passed the
-complete exercised workflow; see `review/TOTIPO_JAVA_0_1_4_ANDROID_REPIN_REPORT.md`.
-M1D promotes the same released artifact to production without altering NIO storage
-behavior. See `review/M1D_PRODUCTION_LOCAL_REPLICA_DESIGN_REPORT.md` for ownership,
-reconciliation design and its review limits. This establishes no Android-wide or
-power-loss support.
-
-Historical 0.1.3 qualification evidence, including its failed shared-mode device
-run, remains in `review/M1C_LOCAL_REPLICA_RECONCILIATION_REPORT.md`.
+Android platform/storage qualification is separate from Java's operation-scoped
+qualification. See [the reconciliation report](review/JAVA_0_2_0_R19_ANDROID_RECONCILIATION_REPORT.md)
+for current validation. Historical M1/M3 reports are preserved unchanged.

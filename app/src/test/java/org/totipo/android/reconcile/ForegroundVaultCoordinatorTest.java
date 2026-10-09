@@ -21,7 +21,7 @@ import static org.totipo.android.reconcile.ImmutableCandidateImporter.Status;
 public final class ForegroundVaultCoordinatorTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
     private static Path fixture;
-    private static byte[] wrapper;
+    private static byte[] canonicalVault;
     private static RevisionId childId, parentId;
     private static byte[] childBytes, parentBytes;
     private static TokenId ancestryToken;
@@ -34,7 +34,7 @@ public final class ForegroundVaultCoordinatorTest {
         objects.clear();
         fixture = Files.createTempDirectory("m1h-fixture-");
         char[] password = credential();
-        try (var session = ((CreateVaultResult.Created) Totipo.create(NioTotipoStore.openPrivate(fixture), password)).session()) {
+        try (var session = ((CreateVaultResult.Created) Totipo.create(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(fixture, new org.totipo.storage.nio.NioDurability()), password)).session()) {
             new Operations().observe(session);
             for (int i = 0; i < 3; i++) {
                 try (var secret = NewSecret.copyOf(new byte[]{1,2,3,4}); var create = session.state().createToken()) {
@@ -51,8 +51,8 @@ public final class ForegroundVaultCoordinatorTest {
                 childId = ((SaveResult.Saved)update.issuer("child").save()).revisions().get(0);
             }
         } finally { Arrays.fill(password, '\0'); }
-        wrapper = Files.readAllBytes(fixture.resolve("vault"));
-        try (var store = NioTotipoStore.openPrivate(fixture)) {
+        canonicalVault = Files.readAllBytes(fixture.resolve("vault"));
+        try (var store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(fixture, new org.totipo.storage.nio.NioDurability())) {
             parentBytes = ((BoundedRead.Present)store.readObject(new ObjectName(parentId.hex()), 1024)).bytes();
             childBytes = ((BoundedRead.Present)store.readObject(new ObjectName(childId.hex()), 1024)).bytes();
             for (RevisionId id : objects.keySet()) objects.put(id, ((BoundedRead.Present)
@@ -66,7 +66,7 @@ public final class ForegroundVaultCoordinatorTest {
     }
     private LocalReplicaOwner owner() throws Exception {
         var owner = TestReplicaOwners.create(temporary.newFolder().toPath());
-        try (var lease = owner.acquire()) { Files.write(lease.root().resolve("vault"), wrapper); }
+        try (var lease = owner.acquire()) { Files.write(lease.root().resolve("vault"), canonicalVault); }
         return owner;
     }
     private static List<RevisionId> ids() { return List.copyOf(objects.keySet()); }
@@ -77,12 +77,22 @@ public final class ForegroundVaultCoordinatorTest {
     private static Bytes good(int index) { return bytes(ids().get(index), "remote" + index, ByteState.PRESENT, objects.get(ids().get(index))); }
     private static Scan scan(State coverage, Bytes... rows) {
         var directory = new Document(TREE, "content://fixture/objects", "objects", "root", "objects-v1",
-                "vnd.android.document/directory", null, null);
-        return new Scan("epoch", TREE, new Listing("epoch", "root", List.of(directory), coverage, List.of()),
+                "vnd.android.document/directory", null, 8L);
+        return withVault(new Scan("epoch", TREE, new Listing("epoch", "root", List.of(directory), State.COMPLETE, List.of()),
                 List.of(new Directory(directory, new Listing("epoch", "objects", Arrays.stream(rows).map(Bytes::document).toList(),
-                        coverage, List.of()), Arrays.asList(rows))), coverage, List.of());
+                        coverage, List.of()), Arrays.asList(rows))), coverage, List.of()), canonicalVault);
     }
-    public static byte[] productFixtureVault() { return wrapper.clone(); }
+    public static Scan withVault(Scan scan, byte[] representation) {
+        var doc = new Document(scan.tree(), "content://fixture/vault", "vault-document", scan.tree().rootId(),
+                "vault", "application/octet-stream", null, null);
+        var rows = new ArrayList<>(scan.root().rows()); rows.add(doc);
+        var candidates = new ArrayList<>(scan.vaultCandidates());
+        candidates.add(new Bytes(scan.epoch(), doc, 87, ByteState.PRESENT, representation, Issue.NONE));
+        return new Scan(scan.epoch(), scan.tree(), new Listing(scan.epoch(), scan.tree().rootId(), rows,
+                scan.root().state(), scan.root().issues()), scan.directories(), scan.state(), scan.issues(),
+                candidates);
+    }
+    public static byte[] productFixtureVault() { return canonicalVault.clone(); }
     public static Scan productFixtureScan() { return all(); }
     private static Scan all() { return scan(State.COMPLETE, good(2), good(0), good(1)); }
     private static ForegroundVaultCoordinator opened(LocalReplicaOwner owner, Operations operations) throws Exception {
@@ -93,6 +103,48 @@ public final class ForegroundVaultCoordinatorTest {
         assertEquals(ForegroundVaultCoordinator.State.OPEN, opening.vault().lifecycle());
         return opening.vault();
     }
+    @Test public void sharedIdentityGateBlocksBothDirectionsBeforeObjectPublication() throws Exception {
+        var ops = new Tracked(); var owner = owner();
+        try (var vault = opened(owner, ops)) {
+            Scan matching = all();
+            assertEquals(org.totipo.android.provider.ProviderVaultIdentity.Status.MATCH,
+                    org.totipo.android.provider.ProviderVaultIdentity.classify(matching, ops.first.vaultId()));
+            var invalid = new ArrayList<Scan>();
+            var rootWithoutVault = new Listing(matching.epoch(), TREE.rootId(), matching.root().rows().stream()
+                    .filter(d -> !"vault".equals(d.displayName())).toList(), State.COMPLETE, List.of());
+            invalid.add(new Scan(matching.epoch(), TREE, rootWithoutVault, matching.directories(), State.COMPLETE, List.of()));
+            for (int size : new int[]{0, 86, 88}) invalid.add(withVault(invalid.get(0), new byte[size]));
+            byte[] malformed = canonicalVault.clone(); malformed[0] ^= 1; invalid.add(withVault(invalid.get(0), malformed));
+            malformed = canonicalVault.clone(); malformed[10] = 2; invalid.add(withVault(invalid.get(0), malformed));
+            byte[] different = canonicalVault.clone(); different[86] ^= 1; invalid.add(withVault(invalid.get(0), different));
+            assertFalse(Totipo.vaultId(different).equals(ops.first.vaultId()));
+            Bytes original = matching.vaultCandidates().get(0);
+            invalid.add(new Scan(matching.epoch(), TREE, matching.root(), matching.directories(), State.COMPLETE, List.of(),
+                    List.of(new Bytes(matching.epoch(), original.document(), 87, ByteState.UNAVAILABLE, new byte[0], Issue.EXCEPTION))));
+            invalid.add(withVault(matching, canonicalVault)); // identical duplicates: conservatively blocked
+            invalid.add(withVault(matching, different));
+            var directory = new Document(TREE, original.document().locator(), original.document().id(), TREE.rootId(),
+                    "vault", "vnd.android.document/directory", null, null);
+            invalid.add(new Scan(matching.epoch(), TREE, new Listing(matching.epoch(), TREE.rootId(), List.of(directory), State.COMPLETE, List.of()),
+                    matching.directories(), State.COMPLETE, List.of(), List.of(new Bytes(matching.epoch(), directory, 87, ByteState.PRESENT, canonicalVault, Issue.NONE))));
+            for (State coverage : List.of(State.INCOMPLETE_LOADING, State.INCOMPLETE, State.UNAVAILABLE))
+                invalid.add(new Scan(matching.epoch(), TREE, new Listing(matching.epoch(), TREE.rootId(), matching.root().rows(), coverage, List.of()),
+                        matching.directories(), coverage, List.of(), matching.vaultCandidates()));
+            for (Scan scan : invalid) {
+                assertThrows(org.totipo.android.provider.ProviderVaultIdentity.Blocked.class, () -> vault.sync(scan));
+                assertThrows(org.totipo.android.provider.ProviderVaultIdentity.Blocked.class, () -> vault.outboundPlan(List.of(), scan, true));
+                assertEquals(0, ops.publications); assertEquals(0, ops.refreshes); assertEquals(1, ops.opens);
+                assertFalse(ops.domain.exclusiveHeldByCurrentThread()); assertSame(ops.first, ops.last);
+                assertEquals(ForegroundVaultCoordinator.State.OPEN, vault.lifecycle());
+            }
+            assertArrayEquals(canonicalVault, Files.readAllBytes(ownerRoot(owner, vault)));
+            assertEquals(3, vault.sync(matching).count(Status.IMPORTED));
+            assertNull(vault.outboundPlan(vault.outboundSnapshot(), matching, true).limitation());
+        }
+    }
+    private static Path ownerRoot(LocalReplicaOwner owner, ForegroundVaultCoordinator vault) throws Exception {
+        var lease = (LocalReplicaOwner.Lease)fieldOf(vault, "lease"); return lease.root().resolve("vault");
+    }
     @Test public void outboundSnapshotExactValidationOutsideGateSameDomainAndNoRefresh() throws Exception {
         var operations = new Tracked();
         try (var vault = opened(owner(), operations)) {
@@ -102,6 +154,7 @@ public final class ForegroundVaultCoordinatorTest {
             var live = (VaultSession)field.get(vault); var validations = new AtomicInteger();
             VaultSession spy = (VaultSession)java.lang.reflect.Proxy.newProxyInstance(VaultSession.class.getClassLoader(),
                 new Class<?>[]{VaultSession.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("vaultId")) assertFalse(operations.domain.exclusiveHeldByCurrentThread());
                     if (method.getName().equals("validateObject")) {
                         assertFalse(operations.domain.exclusiveHeldByCurrentThread()); validations.incrementAndGet();
                     }
@@ -110,6 +163,8 @@ public final class ForegroundVaultCoordinatorTest {
                 });
             field.set(vault, spy);
             try {
+                vault.outboundPlan(List.of(), all(), true);
+                validations.set(0);
                 var detached = vault.outboundSnapshot(); assertEquals(3, detached.size()); assertEquals(3, validations.get());
                 for (var object : detached) assertArrayEquals(objects.get(object.id()), object.representation());
                 assertSame(operations.domain, fieldOf(vault, "store"));
@@ -172,15 +227,11 @@ public final class ForegroundVaultCoordinatorTest {
         catch (InterruptedException failureValue) { throw new AssertionError(failureValue); }
         finally { subscription.get().cancel(); }
     }
-    @Test public void providerVaultRowNeverPreparesOrReplacesLocalVault() throws Exception {
+    @Test public void matchingProviderVaultNeverCreatesOrReplacesLocalVault() throws Exception {
         var owner = owner();
         var ops = new Tracked();
         Scan immutable = all();
-        var remoteVault = new Document(TREE, "content://fixture/remote-vault", "remote-vault", "root", "vault",
-                "application/octet-stream", 87L, null);
-        Scan withVault = new Scan(immutable.epoch(), TREE,
-                new Listing(immutable.epoch(), "root", List.of(remoteVault, immutable.root().rows().get(0)), State.COMPLETE, List.of()),
-                immutable.directories(), State.COMPLETE, List.of());
+        Scan withVault = immutable;
         Path root;
         try (var lease = owner.acquire()) { root = lease.root(); }
         byte[] before = Files.readAllBytes(root.resolve("vault"));
@@ -252,14 +303,14 @@ public final class ForegroundVaultCoordinatorTest {
     }
     @Test public void existingDifferentPreservedAndUnrelatedImportsContinue() throws Exception {
         var owner = owner(); byte[] obstruction = new byte[1024];
-        try (var lease = owner.acquire(); var store = NioTotipoStore.openPrivate(lease.root())) {
+        try (var lease = owner.acquire(); var store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability())) {
             assertTrue(store.publishObject(new ObjectName(ids().get(0).hex()), obstruction) instanceof ObjectWrite.Written);
         }
         try (var vault = opened(owner, new Tracked())) {
             var result = run(vault, all()); assertEquals(1, result.count(Status.BLOCKED_EXISTING_DIFFERENT));
             assertEquals(2, result.count(Status.IMPORTED)); assertEquals(Refresh.REQUESTED, result.refresh());
         }
-        try (var lease = owner.acquire(); var store = NioTotipoStore.openPrivate(lease.root())) {
+        try (var lease = owner.acquire(); var store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability())) {
             assertArrayEquals(obstruction, ((BoundedRead.Present)store.readObject(new ObjectName(ids().get(0).hex()),1024)).bytes());
         }
     }
@@ -301,7 +352,7 @@ public final class ForegroundVaultCoordinatorTest {
             }
         }
     }
-    @Test public void concurrentReconciliationPasswordChangeAndCloseRejected() throws Exception {
+    @Test public void concurrentReconciliationAndCloseRejected() throws Exception {
         var entered = new CountDownLatch(1); var finish = new CountDownLatch(1);
         var worker = Executors.newSingleThreadExecutor();
         try (var vault = opened(owner(), new Tracked())) {
@@ -314,9 +365,6 @@ public final class ForegroundVaultCoordinatorTest {
             try {
                 assertTrue(entered.await(10, TimeUnit.SECONDS));
                 assertThrows(IllegalStateException.class, () -> vault.sync(all(), CONTINUE));
-                char[] old = credential(), replacement = credential();
-                assertThrows(IllegalStateException.class, () -> vault.changePassword(old, replacement));
-                assertArrayEquals(new char[old.length], old); assertArrayEquals(new char[replacement.length], replacement);
                 assertThrows(IllegalStateException.class, vault::close);
             } finally { finish.countDown(); }
             assertEquals(3, first.get(30, TimeUnit.SECONDS).count(Status.IMPORTED));
@@ -413,16 +461,7 @@ public final class ForegroundVaultCoordinatorTest {
             assertEquals(Refresh.SKIPPED_UNSAFE, result.refresh()); assertNotNull(result.failure());
         }
     }
-    @Test public void passwordChangeBeforeSyncNeedsNoCredential() throws Exception {
-        var owner = owner();
-        try (var vault = opened(owner, new Tracked())) {
-            Scan captured = all(); char[] current = credential(), replacement = "new M1H password".toCharArray();
-            assertEquals(PasswordChangeResult.CHANGED, vault.changePassword(current, replacement));
-            assertArrayEquals(new char[current.length], current); assertArrayEquals(new char[replacement.length], replacement);
-            var result = vault.sync(captured, CONTINUE);
-            assertEquals(3, result.count(Status.IMPORTED)); assertEquals(Refresh.REQUESTED, result.refresh());
-        }
-    }
+
     @Test public void credentialsNeverBecomePersistentFieldsOrProductStorage() throws Exception {
         for (var field : ForegroundVaultCoordinator.class.getDeclaredFields()) {
             assertNotEquals(char[].class, field.getType()); assertNotEquals(String.class, field.getType());
@@ -492,7 +531,7 @@ public final class ForegroundVaultCoordinatorTest {
         var probe = new AtomicReference<CoordinatedNioProbe>();
         var ops = new Tracked() {
             CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
-                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
+                var next = new CoordinatedNioProbe(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability())); probe.set(next);
                 return new CoordinatedPrivateStore(next);
             }
             ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selected) {
@@ -522,32 +561,7 @@ public final class ForegroundVaultCoordinatorTest {
             assertTrue(saved.get() instanceof SaveResult.Saved); assertEquals(1, result.get().count(Status.IMPORTED));
         }
     }
-    @Test public void realPasswordChangeBusyCoordinatorRejectsSyncUntilAllStagesFinish() throws Exception {
-        var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var error = new AtomicReference<Throwable>();
-        var probe = new AtomicReference<CoordinatedNioProbe>();
-        var ops = new Tracked() {
-            CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
-                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
-                return new CoordinatedPrivateStore(next);
-            }
-        };
-        try (var vault = opened(owner(), ops)) {
-            var result = new AtomicReference<PasswordChangeResult>();
-            probe.get().hook = name -> {
-                if (name.equals("replace")) { entered.countDown(); CoordinatedPrivateStoreTest.await(release); }
-            };
-            Thread change = CoordinatedPrivateStoreTest.thread(error, () -> result.set(vault.changePassword(credential(), "M1I replacement".toCharArray())));
-            try {
-                CoordinatedPrivateStoreTest.await(entered);
-                assertEquals(ForegroundVaultCoordinator.State.CHANGING_PASSWORD, vault.lifecycle());
-                assertThrows(IllegalStateException.class, () -> vault.sync(all()));
-                assertEquals(0, ops.publications); assertEquals(1, probe.get().active.get());
-            } finally { release.countDown(); }
-            change.join(20000); assertFalse(change.isAlive()); assertNull(error.get());
-            assertEquals(PasswordChangeResult.CHANGED, result.get());
-            assertEquals(3, vault.sync(all()).count(Status.IMPORTED)); assertEquals(0, ops.closes); assertEquals(1, ops.opens);
-        }
-    }
+
     @Test public void explicitCloseFailureRetainsLeaseUntilRetryWithoutClosingDuringSync() throws Exception {
         var fail = new AtomicBoolean(true); var owner = owner();
         var ops = new Tracked() {
@@ -566,7 +580,7 @@ public final class ForegroundVaultCoordinatorTest {
         var probe = new AtomicReference<CoordinatedNioProbe>();
         var ops = new Tracked() {
             CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
-                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
+                var next = new CoordinatedNioProbe(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability())); probe.set(next);
                 return new CoordinatedPrivateStore(next);
             }
             void refresh(VaultSession session, CoordinatedPrivateStore store) {
@@ -592,39 +606,5 @@ public final class ForegroundVaultCoordinatorTest {
             assertNotSame(before, ops.first.state()); assertEquals(1, vault.view().tokens().size());
         }
     }
-    @Test public void realSessionPasswordChangeQueuesBehindBridgeAndStagesNeverOverlap() throws Exception {
-        var bridgeEntered = new CountDownLatch(1); var release = new CountDownLatch(1);
-        var error = new AtomicReference<Throwable>(); var probe = new AtomicReference<CoordinatedNioProbe>();
-        var ops = new Tracked() {
-            CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
-                var next = new CoordinatedNioProbe(NioTotipoStore.openPrivate(lease.root())); probe.set(next);
-                return new CoordinatedPrivateStore(next);
-            }
-            ObjectWrite publish(CoordinatedPrivateStore.Bridge bridge, ImmutableCandidateImporter.Selection selected) {
-                bridgeEntered.countDown(); CoordinatedPrivateStoreTest.await(release);
-                return super.publish(bridge, selected);
-            }
-        };
-        try (var vault = opened(owner(), ops)) {
-            var result = new AtomicReference<Report>(); var changed = new AtomicReference<PasswordChangeResult>();
-            Thread sync = CoordinatedPrivateStoreTest.thread(error, () -> result.set(vault.sync(scan(State.COMPLETE, good(0)))));
-            CoordinatedPrivateStoreTest.await(bridgeEntered);
-            // Exercise real Java SPI calls even if an internal caller bypassed foreground admission.
-            // Production exposes no raw session, and its changePassword would reject this busy call.
-            Thread change = CoordinatedPrivateStoreTest.thread(error, () -> {
-                char[] current = credential(), replacement = "M1I concurrent replacement".toCharArray();
-                try { changed.set(ops.first.changePassword(current, replacement)); }
-                finally { Arrays.fill(current, '\0'); Arrays.fill(replacement, '\0'); }
-            });
-            try {
-                CoordinatedPrivateStoreTest.queued(ops.domain, change);
-                assertNull(changed.get()); assertEquals(0, probe.get().active.get());
-                assertThrows(IllegalStateException.class, () -> vault.changePassword(credential(), credential()));
-            } finally { release.countDown(); }
-            sync.join(20000); change.join(20000); assertNull(error.get());
-            assertFalse(sync.isAlive()); assertFalse(change.isAlive());
-            assertEquals(PasswordChangeResult.CHANGED, changed.get()); assertEquals(1, result.get().count(Status.IMPORTED));
-            assertEquals(1, vault.view().tokens().size()); assertEquals(1, ops.opens); assertEquals(0, ops.closes);
-        }
-    }
+
 }

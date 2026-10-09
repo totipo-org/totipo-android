@@ -44,7 +44,7 @@ final class HistoricalImmutableCandidateImporter {
     public static Result importOne(LocalReplicaOwner.Lease lease, Scan scan, RevisionId selectedId,
                                    char[] password) throws IOException {
         Objects.requireNonNull(lease); Objects.requireNonNull(scan); Objects.requireNonNull(selectedId);
-        OpenResult opened = Totipo.open(NioTotipoStore.openPrivate(lease.root()), password);
+        OpenResult opened = Totipo.open(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability()), password);
         if (!(opened instanceof OpenResult.Opened success)) {
             return new Result(Status.AUTHENTICATION_UNAVAILABLE, null, null, null, opened);
         }
@@ -83,7 +83,7 @@ final class HistoricalImmutableCandidateImporter {
         ObjectWrite publish(Selection selected) throws IOException {
             if (!closed) throw new IllegalStateException("Validation session must close before publication");
             if (selected.status != null) throw new IllegalArgumentException("No eligible representation");
-            try (var store = NioTotipoStore.openPrivate(lease.root())) {
+            try (var store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability())) {
                 return publishExact(store, selected);
             }
         }

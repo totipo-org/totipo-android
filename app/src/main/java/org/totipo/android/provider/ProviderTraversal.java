@@ -36,6 +36,15 @@ final class ProviderTraversal {
         String epoch = ProviderSnapshot.newEpoch();
         Listing root = source.children(epoch, tree.rootId(), ROOT_ROWS);
         State state = root.state();
+        // Root row cap bounds duplicate vault candidates to 256 and 256 * 88 transport bytes.
+        // Directories/malformed rows remain unusable evidence; never open them as VAULT files.
+        List<Bytes> vaults = new ArrayList<>();
+        for (Document row : root.rows()) {
+            if (!"vault".equals(row.displayName())) continue;
+            vaults.add(row.isDirectory() || row.mimeType() == null || row.id() == null || row.locator() == null
+                    ? new Bytes(epoch, row, 87, ByteState.UNAVAILABLE, new byte[0], Issue.MALFORMED_ROW)
+                    : source.read(epoch, row, 87));
+        }
         List<Directory> directories = new ArrayList<>();
         List<Issue> issues = new ArrayList<>();
         Set<String> visited = new HashSet<>();
@@ -81,6 +90,6 @@ final class ProviderTraversal {
             }
             directories.add(new Directory(row, children, reads));
         }
-        return new Scan(epoch, tree, root, directories, state, issues);
+        return new Scan(epoch, tree, root, directories, state, issues, vaults);
     }
 }

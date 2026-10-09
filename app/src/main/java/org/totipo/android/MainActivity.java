@@ -157,7 +157,7 @@ public final class MainActivity extends Activity {
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         label("Sync folder").setTextSize(20);
         syncStatus = label("");
-        label("Totipo exchanges token changes with this folder. Vault password-wrapper synchronization is not enabled yet.");
+        label("Totipo imports and publishes immutable token objects. This folder must already contain the same immutable Totipo vault. Totipo reads its vault to verify identity and never writes, replaces, repairs or adopts it.");
         LinearLayout folderActions = new LinearLayout(this); content.addView(folderActions);
         chooseFolder = buttonIn(folderActions, "Choose folder", this::chooseSyncFolder);
         importChanges = buttonIn(folderActions, "Import changes", () -> controller.importProviderChanges());

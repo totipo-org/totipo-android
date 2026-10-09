@@ -40,8 +40,11 @@ public final class ProviderSnapshot {
     public record Directory(Document document, Listing children, List<Bytes> candidates) {
         public Directory { candidates = frozen(candidates); }
     }
-    public record Scan(String epoch, Tree tree, Listing root, List<Directory> directories, State state, List<Issue> issues) {
-        public Scan { directories = frozen(directories); issues = frozen(issues); }
+    public record Scan(String epoch, Tree tree, Listing root, List<Directory> directories, State state, List<Issue> issues, List<Bytes> vaultCandidates) {
+        public Scan { directories = frozen(directories); issues = frozen(issues); vaultCandidates = frozen(vaultCandidates); }
+        public Scan(String epoch, Tree tree, Listing root, List<Directory> directories, State state, List<Issue> issues) {
+            this(epoch, tree, root, directories, state, issues, List.of());
+        }
     }
     public static String newEpoch() { return UUID.randomUUID().toString(); }
     private static <T> List<T> frozen(List<T> values) {

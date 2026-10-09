@@ -59,7 +59,7 @@ public final class ProviderSnapshotTest {
                         iterator::hasNext, iterator::next, () -> State.COMPLETE);
             }
             public Bytes read(String epoch, Document document, int maximum) {
-                var original = fixture.directories().stream().flatMap(d -> d.candidates().stream())
+                var original = java.util.stream.Stream.concat(fixture.vaultCandidates().stream(), fixture.directories().stream().flatMap(d -> d.candidates().stream()))
                         .filter(b -> b.document().equals(document)).findFirst().orElseThrow();
                 return new Bytes(epoch, document, maximum, original.state(), original.bytes(), original.issue());
             }
@@ -68,6 +68,21 @@ public final class ProviderSnapshotTest {
         assertEquals(State.INCOMPLETE, result.state());
         assertTrue(result.directories().get(0).children().issues().contains(Issue.RESOURCE_LIMIT));
         return result;
+    }
+    @Test public void rootVaultReadsUse87PlusProbeAndExistingRootBound() {
+        Source source = new Source();
+        List<Document> rows = new ArrayList<>();
+        for (int i = 0; i < ProviderTraversal.ROOT_ROWS; i++) rows.add(row("v" + i, "root", "vault", false));
+        source.rows.put("root", rows);
+        var scan = new ProviderTreeReader(TREE, source).snapshot(1024);
+        assertEquals(256, scan.vaultCandidates().size()); assertEquals(256, source.readCalls);
+        for (Bytes read : scan.vaultCandidates()) assertEquals(87, read.expectedMaximum());
+        rows.add(row("overflow", "root", "vault", false)); source.readCalls = 0;
+        scan = new ProviderTreeReader(TREE, source).snapshot(1024);
+        assertEquals(State.INCOMPLETE, scan.root().state()); assertEquals(256, source.readCalls);
+        source.rows.put("root", List.of(row("dir", "root", "vault", true))); source.readCalls = 0;
+        scan = new ProviderTreeReader(TREE, source).snapshot(1024);
+        assertEquals(0, source.readCalls); assertEquals(ByteState.UNAVAILABLE, scan.vaultCandidates().get(0).state());
     }
     @Test public void productionSnapshot1024PinsRealRowAndCandidateLimits() {
         for (int count : new int[]{1023, 1024, 1025}) {

@@ -28,7 +28,7 @@ import static org.totipo.android.reconcile.ImmutableCandidateImporter.*;
  * Busy foreground operations are rejected; callers dispatch through a bounded worker.
  * Cancel cooperatively, never interrupt filesystem publication. */
 public final class ForegroundVaultCoordinator implements AutoCloseable {
-    public enum State { OPENING, OPEN, RECONCILING_READ_ONLY, CHANGING_PASSWORD,
+    public enum State { OPENING, OPEN, RECONCILING_READ_ONLY,
         IMPORTING, REQUESTING_REFRESH, GENERATING_TOTP, ADDING_TOKEN, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
     public enum Completion { RETAINED_SESSION, REFRESH_REQUESTED, CANCELLED,
         SESSION_FAILURE, BATCH_STOPPED }
@@ -39,7 +39,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
      * A failed close retains that ownership for explicit retry; failure is never an Opened value. */
     public record Opening(ForegroundVaultCoordinator vault, OpenResult failure, Throwable cause) {}
     /** Detached descriptive projection: no state editor or session is exposed. */
-    public record View(VaultFingerprint fingerprint, ObservationProgress observation,
+    public record View(ObservationProgress observation,
                        List<ObservedToken> tokens, List<VaultDiagnostic> diagnostics, List<RevisionId> integrityProblems) {
         public View { tokens = frozen(tokens); diagnostics = frozen(diagnostics); integrityProblems = frozen(integrityProblems); }
     }
@@ -171,7 +171,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                 token.alternatives().stream().map(TokenAlternative::descriptor).collect(Collectors.toList()),
                 token.heads().stream().map(TokenHead::revision).collect(Collectors.toList()),
                 token.unresolvedReferences(), token.hasConflict())).collect(Collectors.toList());
-        return new View(session.fingerprint(), observed.observation(), tokens, observed.diagnostics(), integrityProblems);
+        return new View(observed.observation(), tokens, observed.diagnostics(), integrityProblems);
     }
     public enum TotpStatus { AVAILABLE, UNAVAILABLE_NEEDS_ATTENTION, STALE, FAILED }
     public record TotpResult(TotpStatus status, RevealedTotp revealed) {
@@ -267,25 +267,14 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     private synchronized void begin(State next) { requireOpen(); state = next; }
     private synchronized void transition(State next) { state = next; }
 
-    /** Serializes password rewrap with reconciliation and closure without changing core semantics.
-     * No wrapper projection or transport VAULT adoption occurs here. */
-    public PasswordChangeResult changePassword(char[] current, char[] replacement) {
-        Objects.requireNonNull(current); Objects.requireNonNull(replacement);
-        boolean entered = false;
-        try {
-            begin(State.CHANGING_PASSWORD); entered = true;
-            PasswordChangeResult result = session.changePassword(current, replacement);
-            if (result == PasswordChangeResult.UNCERTAIN) {
-                failClosed(new IllegalStateException("Password change uncertain; authentication must be re-established"));
-            }
-            return result;
-        } catch (RuntimeException failure) {
-            if (entered) failClosed(failure);
-            throw failure;
-        } finally {
-            Arrays.fill(current, '\0'); Arrays.fill(replacement, '\0');
-            if (entered && lifecycle() == State.CHANGING_PASSWORD) transition(State.OPEN);
-        }
+    /** Compare detached provider VAULT outside the Android store gate, using the open
+     * session's authoritative identity. Never call a session API from a bridge scope. */
+    private void requireMatchingVault(Scan scan) {
+        requireOpen();
+        if (store.exclusiveHeldByCurrentThread()) throw new IllegalStateException("Lock order violation");
+        var identity = org.totipo.android.provider.ProviderVaultIdentity.classify(scan, session.vaultId());
+        if (identity != org.totipo.android.provider.ProviderVaultIdentity.Status.MATCH)
+            throw new org.totipo.android.provider.ProviderVaultIdentity.Blocked(identity);
     }
 
     /** Explicit inbound immutable sync. No authentication, KDF, open or close on this path.
@@ -294,6 +283,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     public Report sync(Scan scan) { return sync(scan, () -> false); }
     public Report sync(Scan scan, Cancellation cancellation) {
         Objects.requireNonNull(scan); Objects.requireNonNull(cancellation);
+        requireMatchingVault(scan);
         begin(State.RECONCILING_READ_ONLY);
         ImmutableCandidateClassifier.Result evidence = null;
         List<Selection> plan = List.of();
@@ -370,6 +360,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     public org.totipo.android.sync.OutboundImmutablePlanner.Plan outboundPlan(
             List<org.totipo.android.sync.DetachedImmutableObject> detached, Scan scan, boolean write) {
         requireOpen();
+        requireMatchingVault(scan);
         return org.totipo.android.sync.OutboundImmutablePlanner.plan(detached,
                 ImmutableCandidateClassifier.classify(scan, session), write);
     }
@@ -377,6 +368,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
             org.totipo.android.sync.ProviderObjectWriter.Result result) {
         requireOpen();
         if (result.postflight() == null) return "Publication uncertain. Check again before retrying.";
+        requireMatchingVault(result.postflight());
         String confirmation = org.totipo.android.sync.OutboundImmutablePlanner.confirm(plan, result.attempted(),
                 ImmutableCandidateClassifier.classify(result.postflight(), session));
         if ((result.unsupportedName() || result.readBackFailed()) && !confirmation.startsWith("Integrity problem"))

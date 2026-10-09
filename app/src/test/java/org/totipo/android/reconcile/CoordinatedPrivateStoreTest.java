@@ -28,12 +28,7 @@ public final class CoordinatedPrivateStoreTest {
         public ObjectScan scanObjects() { return call(() -> new ObjectScan.Complete(java.util.List.of())); }
         public BoundedRead readObject(ObjectName name, int size) { return call(BoundedRead.Absent::new); }
         public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return call(ObjectWrite.Written::new); }
-        public VaultPrepare prepareVault(byte[] bytes) { return call(() -> new VaultPrepare.Prepared(new PreparedVault() {
-            public BoundedRead readBack(int size) { return call(BoundedRead.Absent::new); }
-            public VaultInstall installCanonicalIfAbsent() { return call(VaultInstall.Installed::new); }
-            public VaultReplace replaceCanonical() { return call(VaultReplace.Replaced::new); }
-            public void close() { call(() -> null); }
-        })); }
+        public VaultCreate createVault(byte[] bytes) { return call(VaultCreate.Created::new); }
         public void close() { closes.incrementAndGet(); }
     }
     @Test public void ordinarySpiForwardsAndSessionCloseIsLogicalFinalCloseIsPhysical() {
@@ -41,13 +36,11 @@ public final class CoordinatedPrivateStoreTest {
         var view = store.transferSessionView();
         view.readVault(1); view.scanObjects(); view.readObject(new ObjectName("opaque"), 1);
         view.publishObject(new ObjectName("opaque"), new byte[1]);
-        var stage = ((VaultPrepare.Prepared)view.prepareVault(new byte[1])).vault();
-        stage.readBack(1); stage.replaceCanonical(); stage.close(); stage.close();
-        assertEquals(8, delegate.calls.get());
+        view.createVault(new byte[1]);
+        assertEquals(5, delegate.calls.get());
         assertThrows(IllegalStateException.class, store::close);
         view.close(); view.close(); assertEquals(0, delegate.closes.get());
         assertThrows(IllegalStateException.class, view::scanObjects);
-        assertThrows(IllegalStateException.class, () -> stage.readBack(1));
         // Bridge authority remains independently owned after logical facade close.
         try (var bridge = store.bridge()) { assertTrue(store.exclusiveHeldByCurrentThread()); }
         store.close(); store.close(); assertEquals(1, delegate.closes.get());
@@ -76,16 +69,25 @@ public final class CoordinatedPrivateStoreTest {
         assertEquals(0, newSpiEntered.getCount()); assertNull(error.get());
         view.close(); store.close();
     }
-    @Test public void bridgeScopePausesPreparedVaultOperationsToo() throws Exception {
-        var delegate = new Delegate(); var store = new CoordinatedPrivateStore(delegate); var view = store.transferSessionView();
-        var prepared = ((VaultPrepare.Prepared)view.prepareVault(new byte[1])).vault();
-        var error = new AtomicReference<Throwable>(); Thread next;
-        try (var bridge = store.bridge()) {
-            next = thread(error, prepared::replaceCanonical); queued(store, next);
-            assertEquals(1, delegate.calls.get());
+    @Test public void bridgeScopePausesEveryOrdinaryOperation() throws Exception {
+        for (String operation : java.util.List.of("readVault", "createVault", "scanObjects", "readObject", "publishObject")) {
+            var delegate = new Delegate(); var store = new CoordinatedPrivateStore(delegate);
+            var view = store.transferSessionView(); var error = new AtomicReference<Throwable>(); Thread next;
+            try (var bridge = store.bridge()) {
+                next = thread(error, () -> {
+                    switch (operation) {
+                        case "readVault" -> view.readVault(87);
+                        case "createVault" -> view.createVault(new byte[87]);
+                        case "scanObjects" -> view.scanObjects();
+                        case "readObject" -> view.readObject(new ObjectName("opaque"), 1024);
+                        case "publishObject" -> view.publishObject(new ObjectName("opaque"), new byte[1024]);
+                    }
+                });
+                queued(store, next); assertEquals(0, delegate.calls.get());
+            }
+            next.join(10000); assertFalse(next.isAlive()); assertNull(error.get()); assertEquals(1, delegate.calls.get());
+            view.close(); store.close();
         }
-        next.join(10000); assertNull(error.get()); assertEquals(2, delegate.calls.get());
-        view.close(); assertEquals(3, delegate.calls.get()); store.close();
     }
     @Test public void exceptionsReleaseGateAndFailedCloseRetainsOwnershipForRetry() {
         var delegate = new Delegate(); var store = new CoordinatedPrivateStore(delegate); var view = store.transferSessionView();
@@ -97,12 +99,7 @@ public final class CoordinatedPrivateStoreTest {
             try (var bridge = store.bridge()) { throw new IllegalArgumentException("bridge fault before publication"); }
         });
         view.scanObjects();
-        var stage = ((VaultPrepare.Prepared)view.prepareVault(new byte[1])).vault();
-        delegate.action = () -> { throw new IllegalArgumentException("stage cleanup fault"); };
-        assertThrows(IllegalArgumentException.class, view::close);
-        assertThrows(IllegalStateException.class, store::close);
-        delegate.action = () -> {}; view.close(); store.close(); assertEquals(1, delegate.closes.get());
-        stage.close();
+        view.close(); store.close(); assertEquals(1, delegate.closes.get());
     }
     @Test public void boundedDetachedSnapshotUsesOneGateAndNeverTruncates() {
         var size = new AtomicInteger(512); var byteSize = new AtomicInteger(1024);

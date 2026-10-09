@@ -18,7 +18,7 @@ public final class AuthPerfSafetyTest {
     @Test public void appSourcesNeverExecuteCompilerOrGlobalRuntimeControls() throws Exception {
         for (String sourceSet : List.of("main", "release", "debug")) {
             try (var paths = Files.walk(Path.of("src/" + sourceSet))) {
-                for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                for (Path path : paths.filter(Files::isRegularFile).filter(p -> !p.toString().endsWith(".png")).toList()) {
                     String source = Files.readString(path);
                     for (String forbidden : List.of("ProcessBuilder", "Runtime.getRuntime().exec", "cmd package",
                             "pm compile", "setprop", "SystemProperties.set", "dalvik.vm.", "EXPECTED_SYNTHETIC_SHA256")) {
@@ -29,8 +29,8 @@ public final class AuthPerfSafetyTest {
             }
         }
     }
-    @Test public void parametersMatchInspectedReleased015Invocation() throws Exception {
-        // Released sources SHA256 d797c0854db469e8288b787dcbeb3dd3eb8e83062bea5c42b0013082b2cccdc4.
+    @Test public void parametersMatchInspectedReleased020Invocation() throws Exception {
+        // Released sources SHA256 e2661770e0e59ca733959b4931689a9253988352605087c390bfc3a045dd9b6c.
         var benchmark = new AuthPerfBenchmark();
         Object parameters = benchmark.productionParameters();
         Class<?> type = parameters.getClass();
@@ -67,7 +67,7 @@ public final class AuthPerfSafetyTest {
         assertTrue(benchmark.contains("Arrays.fill(key, (byte) 0)"));
         for (String sourceSet : List.of("main", "release")) {
             try (var paths = Files.walk(Path.of("src/" + sourceSet))) {
-                for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                for (Path path : paths.filter(Files::isRegularFile).filter(p -> !p.toString().endsWith(".png")).toList()) {
                     String source = Files.readString(path);
                     for (String forbidden : List.of("AuthPerf", "DebugDisposableCreation", "DebugVaultTiming", "TotipoVaultTiming")) {
                         assertFalse(path + ": " + forbidden, source.contains(forbidden));
@@ -85,7 +85,7 @@ public final class AuthPerfSafetyTest {
         String timing = Files.readString(Path.of("src/debug/java/org/totipo/android/reconcile/DebugVaultTiming.java"));
         for (String source : List.of(activity, timing)) {
             for (String forbidden : List.of("getMessage()", "getStackTrace", "Log.e", "Log.w", "credential.toString",
-                    "Arrays.toString", "fingerprint()", "getSerial", "getStringExtra(\"password\"")) {
+                    "Arrays.toString", "vaultId()", "getSerial", "getStringExtra(\"password\"")) {
                 assertFalse(forbidden, source.contains(forbidden));
             }
             assertTrue(source.contains("SystemClock.elapsedRealtimeNanos()") || source.contains("SystemClock::elapsedRealtimeNanos"));

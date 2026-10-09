@@ -10,6 +10,8 @@ public final class PublicationPort extends SyncFolderBindingTest.MemoryPort impl
     public final Map<String, byte[]> objects = new LinkedHashMap<>();
     public final Document directory = new Document(TREE, "content://fixture/dir", "dir", "root", "objects-v1",
             "vnd.android.document/directory", null, 8L);
+    public byte[] vaultBytes;
+    public java.util.function.UnaryOperator<Scan> snapshotTransform = value -> value;
     public int creates, outputs;
     public String fault = "";
     public int failAt = 1;
@@ -26,9 +28,10 @@ public final class PublicationPort extends SyncFolderBindingTest.MemoryPort impl
         List<Bytes> bytes = new ArrayList<>();
         objects.forEach((id, representation) -> bytes.add(new Bytes("e", doc(id), 1024,
                 representation.length == 1024 ? ByteState.PRESENT : ByteState.SHORT, representation, Issue.NONE)));
-        return new Scan("e", TREE, new Listing("e", "root", List.of(directory), coverage, List.of()),
+        Scan result = new Scan("e", TREE, new Listing("e", "root", List.of(directory), coverage, List.of()),
                 List.of(new Directory(directory, new Listing("e", "dir", bytes.stream().map(Bytes::document).toList(),
                         coverage, List.of()), bytes)), coverage, List.of());
+        return snapshotTransform.apply(vaultBytes == null ? result : org.totipo.android.reconcile.ForegroundVaultCoordinatorTest.withVault(result, vaultBytes));
     }
     private boolean fault(String name) { return creates == failAt && fault.equals(name); }
     public Document create(Document parent, String name) throws Exception {

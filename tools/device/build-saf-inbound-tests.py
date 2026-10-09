@@ -24,8 +24,8 @@ def run(args):
 
 cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
 jars = []
-for group, module, version in [('org.totipo', 'totipo-core', '0.1.5'),
-                              ('org.totipo', 'totipo-storage-nio', '0.1.5'),
+for group, module, version in [('org.totipo', 'totipo-core', '0.2.0'),
+                              ('org.totipo', 'totipo-storage-nio', '0.2.0'),
                               ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
     candidates = list((cache / group / module / version).glob('*/*.jar'))
     assert len(candidates) == 1, 'Use the already-qualified Gradle cache'
@@ -56,5 +56,5 @@ run([bt / 'aapt2', 'link', '-I', platform, '--manifest', manifest, '-o', apk])
 with zipfile.ZipFile(apk, 'a') as package:
     package.write(dex / 'classes.dex', 'classes.dex')
     package.write(fixture / 'vault', 'assets/vault')
-(output / 'remote-vault').write_bytes(bytes(87))
+(output / 'remote-vault').write_bytes((fixture / 'vault').read_bytes())
 print('SAF test APK and disposable public fixture built: .gradle/m3a-saf')

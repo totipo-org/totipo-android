@@ -34,13 +34,13 @@ public final class ImmutableCandidateImporterTest {
         Path b = Files.createDirectory(fixture.resolve("B"));
         char[] credential = password();
         try {
-            try (var session = ((CreateVaultResult.Created) Totipo.create(NioTotipoStore.openPrivate(a), credential)).session()) {
+            try (var session = ((CreateVaultResult.Created) Totipo.create(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(a, new org.totipo.storage.nio.NioDurability()), credential)).session()) {
                 finished(session);
                 unrelatedId = author(session, "local unrelated").revisions().get(0);
             }
             vault = Files.readAllBytes(a.resolve("vault"));
             unrelated = read(a, unrelatedId);
-            // Same-root wrapper copying is ONLY disposable test fixture construction.
+            // Same-VAULT fixture copying is ONLY disposable test fixture construction.
             Files.write(b.resolve("vault"), vault);
             try (var session = open(b, credential)) {
                 finished(session);
@@ -68,10 +68,10 @@ public final class ImmutableCandidateImporterTest {
         }
     }
     private static VaultSession open(Path root, char[] credential) throws Exception {
-        return ((OpenResult.Opened) Totipo.open(NioTotipoStore.openPrivate(root), credential)).session();
+        return ((OpenResult.Opened) Totipo.open(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()), credential)).session();
     }
     private static byte[] read(Path root, RevisionId revision) throws Exception {
-        try (var store = NioTotipoStore.openPrivate(root)) {
+        try (var store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability())) {
             return ((BoundedRead.Present) store.readObject(new ObjectName(revision.hex()), 1024)).bytes();
         }
     }
@@ -79,7 +79,7 @@ public final class ImmutableCandidateImporterTest {
         var owner = TestReplicaOwners.create(temporary.newFolder().toPath());
         try (var lease = owner.acquire()) {
             Files.write(lease.root().resolve("vault"), vault);
-            try (var store = NioTotipoStore.openPrivate(lease.root())) {
+            try (var store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability())) {
                 assertTrue(store.publishObject(new ObjectName(unrelatedId.hex()), unrelated) instanceof ObjectWrite.Written);
             }
         }
@@ -175,7 +175,7 @@ public final class ImmutableCandidateImporterTest {
             var owner = owner();
             try (var lease = owner.acquire()) {
                 byte[] before = remote.clone(); if (!exact) before[0] ^= 1;
-                try (var store = NioTotipoStore.openPrivate(lease.root())) {
+                try (var store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability())) {
                     assertTrue(store.publishObject(new ObjectName(id.hex()), before) instanceof ObjectWrite.Written);
                 }
                 var result = run(lease, scan(State.COMPLETE, good("remote")), id);
@@ -193,7 +193,7 @@ public final class ImmutableCandidateImporterTest {
         try (var lease = owner.acquire()) {
             char[] credential = password();
             VaultSession session;
-            var ownedStore = new TrackingStore(NioTotipoStore.openPrivate(lease.root()));
+            var ownedStore = new TrackingStore(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability()));
             try { session = ((OpenResult.Opened) Totipo.open(ownedStore, credential)).session(); } finally { Arrays.fill(credential, '\0'); }
             finished(session);
             try (var transition = new HistoricalImmutableCandidateImporter.Transition(lease, session)) {
@@ -328,7 +328,7 @@ public final class ImmutableCandidateImporterTest {
         public ObjectScan scanObjects() { return delegate.scanObjects(); }
         public BoundedRead readObject(ObjectName name, int size) { return delegate.readObject(name, size); }
         public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return delegate.publishObject(name, bytes); }
-        public VaultPrepare prepareVault(byte[] bytes) { return delegate.prepareVault(bytes); }
+        public VaultCreate createVault(byte[] bytes) { return delegate.createVault(bytes); }
         public void close() { delegate.close(); closed = true; }
     }
     private static final class PublicationSpy implements TotipoStore {
@@ -340,7 +340,7 @@ public final class ImmutableCandidateImporterTest {
         public BoundedRead readVault(int size) { throw new AssertionError(); }
         public ObjectScan scanObjects() { throw new AssertionError(); }
         public BoundedRead readObject(ObjectName name, int size) { throw new AssertionError(); }
-        public VaultPrepare prepareVault(byte[] bytes) { throw new AssertionError(); }
+        public VaultCreate createVault(byte[] bytes) { throw new AssertionError(); }
         public void close() { throw new AssertionError(); }
     }
     private static void finished(VaultSession session) throws Exception {

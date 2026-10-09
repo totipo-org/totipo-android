@@ -2,27 +2,25 @@ package org.totipo.android.reconcile;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import org.totipo.spi.*;
-import org.totipo.storage.nio.NioTotipoStore;
 
 /** One private storage domain under the owner's lifetime lease. Worker threads only.
- * A fair mutex serializes EVERY delegate call (NIO is not concurrent), including staged
- * vault handles. The Java-owned facade and Android-owned bridge have distinct lifetimes.
+ * This domain enforces NioStoreComposition coordinatedDelegate exclusivity across the
+ * whole root: one owner, one process, one persistent delegate and one fair gate for EVERY
+ * call and bridge batch. No second delegate or independent writer is permitted.
+ * The Java-owned facade and Android-owned bridge have distinct lifetimes.
  * Never call a VaultSession method while holding a Bridge. No task queue is installed.
  */
 final class CoordinatedPrivateStore implements AutoCloseable {
     private final TotipoStore delegate;
     private final ReentrantLock gate = new ReentrantLock(true);
-    private final Set<Stage> stages = new HashSet<>();
     private final SessionView session = new SessionView();
     private boolean transferred, sessionClosed, closed, unsafe;
 
     static CoordinatedPrivateStore open(Path root) throws IOException {
-        return new CoordinatedPrivateStore(NioTotipoStore.openPrivate(root));
+        return new CoordinatedPrivateStore(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()));
     }
     // Test instrumentation supplies an opaque SPI delegate; never a public injection API.
     CoordinatedPrivateStore(TotipoStore delegate) { this.delegate = java.util.Objects.requireNonNull(delegate); }
@@ -49,7 +47,6 @@ final class CoordinatedPrivateStore implements AutoCloseable {
     // authentication and format validation remain in released Java, never an Android parser.
     BoundedRead observeVault() { return ordinary(() -> delegate.readVault(87)); }
     // Only after Java close/open/create has returned and relinquished its facade.
-    // Core cleanup is best effort; retry staged cleanup before closing our backing domain.
     void finishSessionClosure() { session.close(); }
     Bridge bridge() {
         if (gate.isHeldByCurrentThread()) throw new IllegalStateException("Nested bridge access");
@@ -108,42 +105,14 @@ final class CoordinatedPrivateStore implements AutoCloseable {
         public ObjectScan scanObjects() { return ordinary(delegate::scanObjects); }
         public BoundedRead readObject(ObjectName name, int size) { return ordinary(() -> delegate.readObject(name, size)); }
         public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return ordinary(() -> delegate.publishObject(name, bytes)); }
-        public VaultPrepare prepareVault(byte[] bytes) {
-            return ordinary(() -> {
-                VaultPrepare result = delegate.prepareVault(bytes);
-                if (!(result instanceof VaultPrepare.Prepared ready)) return result;
-                Stage stage = new Stage(ready.vault()); stages.add(stage);
-                return new VaultPrepare.Prepared(stage);
-            });
+        public VaultCreate createVault(byte[] bytes) {
+            return ordinary(() -> delegate.createVault(bytes));
         }
         public void close() {
             gate.lock();
             try {
                 if (sessionClosed) return;
-                // A failed stage cleanup retains logical ownership for retry.
-                for (Stage stage : Set.copyOf(stages)) stage.close();
                 sessionClosed = true;
-            } finally { gate.unlock(); }
-        }
-    }
-    private final class Stage implements PreparedVault {
-        private final PreparedVault prepared;
-        private boolean ended;
-        Stage(PreparedVault prepared) { this.prepared = prepared; }
-        private <T> T call(Supplier<T> action) {
-            return ordinary(() -> {
-                if (ended) throw new IllegalStateException("Prepared vault closed");
-                return action.get();
-            });
-        }
-        public BoundedRead readBack(int size) { return call(() -> prepared.readBack(size)); }
-        public VaultInstall installCanonicalIfAbsent() { return call(prepared::installCanonicalIfAbsent); }
-        public VaultReplace replaceCanonical() { return call(prepared::replaceCanonical); }
-        public void close() {
-            gate.lock();
-            try {
-                if (ended) return;
-                prepared.close(); ended = true; stages.remove(this);
             } finally { gate.unlock(); }
         }
     }

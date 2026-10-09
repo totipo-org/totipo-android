@@ -39,7 +39,7 @@ public final class ImmutableCandidateClassifierTest {
             root = Files.createTempDirectory("m1f-jvm-");
             char[] password = "M1F disposable test password".toCharArray();
             try {
-                var created = Totipo.create(NioTotipoStore.openPrivate(root), password);
+                var created = Totipo.create(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()), password);
                 assertTrue(created instanceof CreateVaultResult.Created);
                 try (var creating = ((CreateVaultResult.Created) created).session()) {
                     awaitFinished(creating);
@@ -51,7 +51,7 @@ public final class ImmutableCandidateClassifierTest {
                     }
                 }
                 bytes = Files.readAllBytes(root.resolve("objects-v1").resolve(id.hex()));
-                store = new GuardStore(NioTotipoStore.openPrivate(root));
+                store = new GuardStore(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()));
                 var opened = Totipo.open(store, password);
                 assertTrue(opened instanceof OpenResult.Opened);
                 session = ((OpenResult.Opened) opened).session();
@@ -78,7 +78,7 @@ public final class ImmutableCandidateClassifierTest {
         public ObjectScan scanObjects() { access(); return delegate.scanObjects(); }
         public BoundedRead readObject(ObjectName name, int expected) { access(); return delegate.readObject(name, expected); }
         public ObjectWrite publishObject(ObjectName name, byte[] bytes) { access(); return delegate.publishObject(name, bytes); }
-        public VaultPrepare prepareVault(byte[] bytes) { access(); return delegate.prepareVault(bytes); }
+        public VaultCreate createVault(byte[] bytes) { access(); return delegate.createVault(bytes); }
         public void close() { access(); delegate.close(); }
     }
     private static void awaitFinished(VaultSession session) throws Exception {
@@ -350,11 +350,10 @@ public final class ImmutableCandidateClassifierTest {
         };
     }
     private static class SessionStub implements VaultSession {
-        public VaultFingerprint fingerprint() { throw new AssertionError(); }
+        public VaultId vaultId() { throw new AssertionError(); }
         public VaultState state() { throw new AssertionError(); }
         public Flow.Publisher<VaultState> states() { throw new AssertionError(); }
         public void requestRefresh() { throw new AssertionError(); }
-        public PasswordChangeResult changePassword(char[] oldPassword, char[] newPassword) { throw new AssertionError(); }
         public void close() { throw new AssertionError(); }
     }
 }

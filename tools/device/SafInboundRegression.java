@@ -70,9 +70,9 @@ public final class SafInboundRegression extends Instrumentation {
             Class<?> ownerClass = loader.loadClass("org.totipo.android.LocalReplicaOwner");
             directory = Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "m3a-isolated-");
             Path root = directory.resolve("totipo-vault"); Files.createDirectories(root);
-            byte[] wrapper;
-            try (var input = getContext().getAssets().open("vault")) { wrapper = input.readAllBytes(); }
-            Files.write(root.resolve("vault"), wrapper);
+            byte[] canonicalVault;
+            try (var input = getContext().getAssets().open("vault")) { canonicalVault = input.readAllBytes(); }
+            Files.write(root.resolve("vault"), canonicalVault);
             var ownerConstructor = ownerClass.getDeclaredConstructor(Path.class); ownerConstructor.setAccessible(true);
             Object owner = ownerConstructor.newInstance(directory);
             Class<?> controllerClass = loader.loadClass("org.totipo.android.AndroidVaultController");
@@ -103,7 +103,7 @@ public final class SafInboundRegression extends Instrumentation {
             command("importProviderChanges", new Class<?>[0]); waitIdle(); waitTokens(3);
             check(field(isolated, "vault") == coordinator && field(coordinator, "session") == session
                     && field(coordinator, "store") == store && field(isolated, "owner") == owner, "same_session_owner_and_store");
-            check(Arrays.equals(wrapper, Files.readAllBytes(root.resolve("vault"))), "provider_vault_not_adopted");
+            check(Arrays.equals(canonicalVault, Files.readAllBytes(root.resolve("vault"))), "provider_vault_not_adopted");
             check(((String)call(call(isolated, "syncView"), "message")).contains("Changes imported"), "import_status_honest");
             Object firstToken = ((List<?>)call(call(call(isolated, "snapshot"), "view"), "tokens")).get(0);
             Object id = call(firstToken, "id");

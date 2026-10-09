@@ -10,28 +10,44 @@ UI callbacks return to the main thread. Credentials are not persisted and operat
 mutable buffers are cleared on completion, as best effort rather than guaranteed JVM erasure.
 Empty-password create/unlock requires explicit confirmation.
 
-Production consumes released `org.totipo:totipo-storage-nio:0.1.5` from Maven Central,
-transitively packaging core 0.1.5 and Bouncy Castle 1.86. The exclusive local replica owner
-and coordinated private NIO domain serialize storage access. Credential-free inbound
-immutable sync is available internally through `controller.sync(scan)`: the same live
-session validates candidates, the bridge materializes them under its exclusive gate, then
-requests Java refresh after releasing that gate. Refresh is asynchronous; Java exposes
-no request/completion correlation. The UI says “Refresh requested”, never promises a
-request-correlated completion.
+Production consumes released Java NIO/core 0.2.0 and Bouncy Castle 1.86 directly
+from Maven Central, targeting Totipo Vault Format v1/r19. One app-private local canonical
+store has one persistent `NioStoreComposition.coordinatedDelegate(root, new NioDurability())`
+wrapped by `CoordinatedPrivateStore`, whose fair gate owns whole-root exclusivity for
+session calls and bridge batches. No second delegate or independent writer is allowed.
 
-Provider selection/persisted tree configuration, export/journal, VAULT transport
-reconciliation, background synchronization, biometrics, inactivity locking and final
-token/TOTP interaction UX remain absent. There is no product Sync button or automatic
-provider synchronization. Explicit lock and process death are the only current lock
-policies; backgrounding/rotation does not lock. Sensitive windows use Android's secure
-window flag. Released Java Flow needs Android 11/API 30 or newer for vault operations;
-older devices show an unsupported-runtime message (minSdk remains 26). This is a
-product lifecycle milestone, not completed synchronization or a finished authenticator.
+Explicit **Import changes** and **Publish local changes** exchange immutable token objects
+through one bounded provider I/O lane. Every operation first reads the provider's root
+immutable VAULT and compares its structural `VaultId` with the currently open session.
+The selected folder must already contain the same immutable VAULT. Missing, malformed,
+unavailable, different or duplicate VAULT candidates block object mutation; duplicate
+candidates are conservatively ambiguous even if identical. No password/KDF is used for
+provider recognition. Folder READY means transport accessibility, not matching identity.
+Totipo never writes, replaces, repairs or adopts provider VAULT. VAULT is immutable;
+password change and migration are absent. Cross-vault migration is separate future work.
 
-See the [M1J report](review/M1J_ANDROID_VAULT_SHELL_REPORT.md) for validation status,
-[M1I report](review/M1I_COORDINATED_STORE_LIVE_SYNC_REPORT.md) for storage/sync evidence,
-and [dependency provenance](TOTIPO_JAVA_DEPENDENCY.md). Historical M1H close/import/reopen
-scaffolding remains test-only.
+Inbound import retains the same authenticated session, Java object validation and exact
+ciphertext, exclusive local publication, then refresh after releasing the store gate.
+Outbound publication retains bounded fresh preflight, create-only canonical names,
+immediate read-back, fresh authenticated postflight and explicit manual retry.
+There is no automatic polling, background synchronization, cloud SDK or Internet permission.
+Java's existing-token-data creation veto is presented without bypass.
+
+Manual enrollment, otpauth enrollment, reveal/copy, vault shell, explicit lock and token
+list behavior remain. Credentials are not persisted. Empty-password create/unlock requires
+confirmation. Backgrounding/rotation does not lock. Java Flow requires API 30 for vault
+operations; minSdk remains 26 and older devices receive the unsupported-runtime message.
+
+The launcher uses canonical adaptive/round/density resources copied unchanged from
+`totipo-spec/design/icons` at r19 commit `cdb4e91be1c6d3704874b2b92457ffe7be5e9084`.
+Master: `design/icons/totipo-app-icon.svg`. Approved artwork gradient colors are
+`#46FB70`, `#08D267`, `#028B55`, `#026344`; no UI palette changes are implied.
+[Branding provenance](branding-provenance.json) records every copied source path/hash.
+No monochrome variant is supplied; none is invented. No icon-generation dependency is added.
+
+See [Java provenance](TOTIPO_JAVA_DEPENDENCY.md) and the
+[0.2.0/r19 reconciliation report](review/JAVA_0_2_0_R19_ANDROID_RECONCILIATION_REPORT.md)
+for current evidence. Historical M1/M3 reports remain unchanged.
 
 ## Managed development environment
 
@@ -108,10 +124,8 @@ signed non-debug release's natural install compilation. See the
 [M1M release qualification](review/M1M_RELEASE_AUTH_PERFORMANCE_QUALIFICATION_REPORT.md)
 for real create/unlock timings and the direct ADB installation scope.
 
-Launch **Totipo**. M1J requires a narrow physical-device create/unlock/rotate/lock
-smoke after agent checks pass; exact commands and the destructive fresh-data reset
-are in the [M1J report](review/M1J_ANDROID_VAULT_SHELL_REPORT.md). Use a disposable
-credential and test vault. No emulator/instrumentation suite is added.
+Launch **Totipo**. Qualification uses disposable isolated app-private roots and a designated disposable
+provider fixture; no user real vault is modified. Standalone harnesses add no app dependency.
 
 ## Intentional dependency refresh
 
@@ -178,11 +192,9 @@ publish releases. The revised workflow has not yet run remotely.
 
 ## Limitations
 
-Inbound immutable foreground sync is an architectural primitive; complete synchronization
-and Syncthing integration are not implemented. Detached descriptors are displayed without
-rotating codes, reveal/copy, token add/edit or conflict repair. There is no provider
-configuration, export, background lock timer or biometric unlock. No DI, AndroidX,
-Compose, service, WorkManager or reactive dependency is introduced. Production signing
-and application conformance are not claimed. JVM/build evidence complements the required
-physical-device smoke; it does not establish universal Android runtime/filesystem or
-interoperability qualification.
+Object-only foreground synchronization requires a pre-existing matching immutable VAULT;
+complete vault bootstrap, migration and provider VAULT publication are unimplemented.
+There is no background sync, Syncthing integration, biometric unlock, inactivity lock timer,
+conflict repair, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
+and universal Android filesystem/runtime or interoperability qualification are not claimed.
+JVM/build evidence complements the isolated physical-device qualification recorded in the report.

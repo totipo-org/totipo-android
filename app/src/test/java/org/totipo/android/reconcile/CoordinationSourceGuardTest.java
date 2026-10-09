@@ -20,10 +20,10 @@ public final class CoordinationSourceGuardTest {
         }
         String domain = Files.readString(Path.of("src/main/java/org/totipo/android/reconcile/CoordinatedPrivateStore.java"));
         String bridge = block(domain, "final class Bridge");
-        for (String forbidden : List.of("prepareVault", "replaceCanonical", "readVault", "VaultSession", "session.", "Totipo.open")) {
+        for (String forbidden : List.of("createVault", "replaceCanonical", "readVault", "VaultSession", "session.", "Totipo.open")) {
             assertFalse(forbidden, bridge.contains(forbidden));
         }
-        assertTrue(domain.contains("NioTotipoStore.openPrivate(root)"));
+        assertTrue(domain.contains("org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability())"));
         assertFalse(domain.contains("NioTotipoStore.open(root)"));
     }
     @Test public void exclusiveScopeNeverCallsBackIntoJavaAndSyncNeedsNoAuthentication() throws Exception {

@@ -17,7 +17,7 @@ public final class InboundFixture {
     }
     public static void main(String[] args) throws Exception {
         Path root = Path.of(args[0]); Files.createDirectories(root);
-        try (var session = ((CreateVaultResult.Created) Totipo.create(NioTotipoStore.openPrivate(root), new char[0])).session()) {
+        try (var session = ((CreateVaultResult.Created) Totipo.create(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()), new char[0])).session()) {
             observed(session, 0);
             for (int i = 0; i < 3; i++) {
                 try (var secret = NewSecret.copyOf(new byte[]{1, 2, 3, 4}); var editor = session.state().createToken()) {

@@ -15,7 +15,8 @@ public final class SafOutboundRegression extends Instrumentation {
     private String step = "setup";
     private int checks;
     private boolean inspectOnly;
-    @Override public void onCreate(Bundle args) { super.onCreate(args); inspectOnly = args != null && "true".equals(args.getString("inspectOnly")); start(); }
+    private String blockedExpected;
+    @Override public void onCreate(Bundle args) { super.onCreate(args); inspectOnly = args != null && "true".equals(args.getString("inspectOnly")); blockedExpected = args == null ? null : args.getString("blockedExpected"); start(); }
     private Object call(Object target, String name, Class<?>[] types, Object... args) throws Exception {
         return target.getClass().getMethod(name, types).invoke(target, args);
     }
@@ -112,7 +113,7 @@ public final class SafOutboundRegression extends Instrumentation {
                 check(cursor != null && cursor.moveToFirst() && "Totipo-M3A-Test".equals(cursor.getString(0)), "designated_disposable_provider_tree");
             }
             Map<String, String> before = inventory(uri);
-            check(before.containsKey("vault") && before.containsKey("objects-v1/")
+            check((blockedExpected != null || before.containsKey("vault")) && before.containsKey("objects-v1/")
                     && before.keySet().stream().filter(n -> n.matches("objects-v1/[0-9a-f]{64}")).count() >= 3,
                     "existing_fixture_baseline_required");
             recordInventory("before", before);
@@ -126,9 +127,11 @@ public final class SafOutboundRegression extends Instrumentation {
             Class<?> ownerClass = loader.loadClass("org.totipo.android.LocalReplicaOwner");
             directory = Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "m3a-isolated-");
             Path root = directory.resolve("totipo-vault"); Files.createDirectories(root);
-            byte[] wrapper;
-            try (var input = getContext().getAssets().open("vault")) { wrapper = input.readAllBytes(); }
-            Files.write(root.resolve("vault"), wrapper);
+            byte[] canonicalVault;
+            try (var input = getContext().getAssets().open("vault")) { canonicalVault = input.readAllBytes(); }
+            Files.write(root.resolve("vault"), canonicalVault);
+            LocalStoreQualification.run(directory);
+            check(true, "r19_local_coordinated_store_and_orphan_veto");
             var ownerConstructor = ownerClass.getDeclaredConstructor(Path.class); ownerConstructor.setAccessible(true);
             Object owner = ownerConstructor.newInstance(directory);
             Class<?> controllerClass = loader.loadClass("org.totipo.android.AndroidVaultController");
@@ -155,11 +158,35 @@ public final class SafOutboundRegression extends Instrumentation {
             waitIdle(); check(!(Boolean)call(isolated, "canImportProviderChanges"), "locked_import_disabled");
             command("unlock", new Class<?>[]{char[].class}, new char[0]); waitIdle();
             Object coordinator = field(isolated, "vault"), session = field(coordinator, "session"), store = field(coordinator, "store");
+            if (blockedExpected != null) {
+                Class<?> requestClass = loader.loadClass("org.totipo.android.AddTokenRequest");
+                Class<?> algorithmClass = loader.loadClass("org.totipo.TotpAlgorithm");
+                Object request = requestClass.getConstructor(String.class, String.class, algorithmClass, int.class, long.class, char[].class)
+                        .newInstance("r19 blocked public fixture", "isolated", algorithmClass.getField("SHA1").get(null), 6, 30L, "AEAQCAI".toCharArray());
+                command("addToken", new Class<?>[]{requestClass}, request); waitIdle(); waitTokens(1);
+                Map<String, byte[]> localBefore = new TreeMap<>();
+                try (var paths = Files.list(root.resolve("objects-v1"))) {
+                    for (Path path : paths.toList()) localBefore.put(path.getFileName().toString(), Files.readAllBytes(path));
+                }
+                for (String operation : List.of("importProviderChanges", "publishLocalChanges")) {
+                    command(operation, new Class<?>[0]); waitIdle();
+                    check(blockedExpected.equals(call(call(isolated, "syncView"), "message")), "r19_" + operation + "_blocked_truthfully");
+                    check(tokens() == 1, "no_local_object_import");
+                    try (var paths = Files.list(root.resolve("objects-v1"))) {
+                        var all = paths.toList(); check(all.size() == localBefore.size(), "no_extra_local_object");
+                        for (Path path : all) check(Arrays.equals(localBefore.get(path.getFileName().toString()), Files.readAllBytes(path)), "local_objects_unchanged");
+                    }
+                    check(before.equals(inventory(uri)), "zero_provider_mutation");
+                    check(Arrays.equals(canonicalVault, Files.readAllBytes(root.resolve("vault"))), "local_canonical_vault_unchanged");
+                    check(field(coordinator, "session") == session, "blocked_same_live_session");
+                }
+                result.putString("stream", "R19 BLOCKED PASS checks=" + checks + "\n"); finish(-1, result); return;
+            }
             check(tokens() == 0, "isolated_replica_initially_empty");
             command("importProviderChanges", new Class<?>[0]); waitIdle(); waitTokens((int)before.keySet().stream().filter(n -> n.matches("objects-v1/[0-9a-f]{64}")).count());
             check(field(isolated, "vault") == coordinator && field(coordinator, "session") == session
                     && field(coordinator, "store") == store && field(isolated, "owner") == owner, "same_session_owner_and_store");
-            check(Arrays.equals(wrapper, Files.readAllBytes(root.resolve("vault"))), "provider_vault_not_adopted");
+            check(Arrays.equals(canonicalVault, Files.readAllBytes(root.resolve("vault"))), "provider_vault_not_adopted");
             check(((String)call(call(isolated, "syncView"), "message")).contains("Changes imported"), "import_status_honest");
             Object firstToken = ((List<?>)call(call(call(isolated, "snapshot"), "view"), "tokens")).get(0);
             Object id = call(firstToken, "id");
@@ -173,7 +200,7 @@ public final class SafOutboundRegression extends Instrumentation {
             Object readerSession = session;
             writerDirectory = Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "m3b-writer-");
             Path writerRoot = writerDirectory.resolve("totipo-vault"); Files.createDirectories(writerRoot.resolve("objects-v1"));
-            Files.write(writerRoot.resolve("vault"), wrapper);
+            Files.write(writerRoot.resolve("vault"), canonicalVault);
             try (var files = Files.list(root.resolve("objects-v1"))) {
                 for (Path path : files.toList()) Files.copy(path, writerRoot.resolve("objects-v1").resolve(path.getFileName()));
             }
@@ -212,11 +239,11 @@ public final class SafOutboundRegression extends Instrumentation {
             check(tokens() == baselineTokens, "reader_unchanged_before_import");
             command("importProviderChanges", new Class<?>[0]); waitIdle(); waitTokens(baselineTokens + 1);
             check(field(field(isolated, "vault"), "session") == readerSession, "same_live_reader_observed_writer_token");
-            check(Arrays.equals(wrapper, Files.readAllBytes(root.resolve("vault"))), "reader_wrapper_unchanged");
+            check(Arrays.equals(canonicalVault, Files.readAllBytes(root.resolve("vault"))), "reader_canonicalVault_unchanged");
             command("lock", new Class<?>[0]); waitIdle(); call(isolated, "shutdown"); reader = null;
             isolated = writer; command("lock", new Class<?>[0]); waitIdle();
             check(field(isolated, "vault") == null, "isolated_session_closed_for_cleanup");
-            result.putString("stream", "M3B PASS checks=" + checks + "\n"); outcome = -1;
+            result.putString("stream", "R19 MATCH PASS checks=" + checks + "\n"); outcome = -1;
         } catch (Throwable failure) {
             result.putString("stream", "M3B FAIL step=" + step + " checks=" + checks + " category=" + failure.getClass().getSimpleName() + "\n");
         } finally {

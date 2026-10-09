@@ -21,7 +21,7 @@ public final class ProductControllerFixtures {
     public volatile ForegroundVaultCoordinator coordinator;
     private final ForegroundVaultCoordinator.Operations operations = new ForegroundVaultCoordinator.Operations() {
         CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws IOException {
-            var delegate = org.totipo.storage.nio.NioTotipoStore.openPrivate(lease.root());
+            var delegate = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(lease.root(), new org.totipo.storage.nio.NioDurability());
             var proxy = (org.totipo.spi.TotipoStore) java.lang.reflect.Proxy.newProxyInstance(
                     org.totipo.spi.TotipoStore.class.getClassLoader(), new Class<?>[]{org.totipo.spi.TotipoStore.class},
                     (ignored, method, arguments) -> {
@@ -34,19 +34,8 @@ public final class ProductControllerFixtures {
                         }
                         try {
                             Object result = method.invoke(delegate, arguments);
-                            if (method.getName().equals("prepareVault") && creationInstallFault != null
-                                    && result instanceof org.totipo.spi.VaultPrepare.Prepared ready) {
-                                org.totipo.spi.PreparedVault staged = ready.vault();
-                                return new org.totipo.spi.VaultPrepare.Prepared(new org.totipo.spi.PreparedVault() {
-                                    public org.totipo.spi.BoundedRead readBack(int size) { return staged.readBack(size); }
-                                    public org.totipo.spi.VaultInstall installCanonicalIfAbsent() {
-                                        staged.installCanonicalIfAbsent();
-                                        return new org.totipo.spi.VaultInstall.Uncertain(creationInstallFault);
-                                    }
-                                    public org.totipo.spi.VaultReplace replaceCanonical() { return staged.replaceCanonical(); }
-                                    public void close() { staged.close(); }
-                                });
-                            }
+                            if (method.getName().equals("createVault") && creationInstallFault != null)
+                                return new org.totipo.spi.VaultCreate.Uncertain(creationInstallFault);
                             return result;
                         } catch (java.lang.reflect.InvocationTargetException fault) { throw fault.getCause(); }
                     });

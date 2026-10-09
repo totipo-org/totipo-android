@@ -31,9 +31,9 @@ final class LocalNioQualification {
         LocalNioQualification probe = new LocalNioQualification();
         probe.line("M1C local NIO qualification v2 (private mode)");
         probe.line("API level=" + Build.VERSION.SDK_INT);
-        probe.line("Java boundary=core 0.1.5 + storage-nio 0.1.5; default NioDurability");
+        probe.line("Java boundary=core 0.2.0 + storage-nio 0.2.0; default NioDurability");
         probe.line("Storage=noBackupFilesDir/m1c-nio-qualification/<run-id>; disposable only");
-        probe.line("Mode=explicit openPrivate; harness exclusively owns root and serializes runs/handles");
+        probe.line("Mode=coordinatedDelegate with NioDurability; harness exclusively owns root and serializes runs/handles");
         probe.line("No independent writer, Syncthing, SAF or cloud process writes into this root.");
         probe.line("Private installation evidence comes from released workflow outcomes; no injected operations.");
         probe.line("Accepted force and reopen do not prove physical power-loss survival.");
@@ -159,7 +159,6 @@ final class LocalNioQualification {
             Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
             require(Files.readAllBytes(target)[0] == 5);
         });
-        line("Released fallback selection=NOT EXERCISED unless actual VAULT replacement encounters AtomicMoveNotSupportedException; no injection");
         line("POSIX mode/owner mutation=NOT EXERCISED (not used by released implementation)");
     }
     private void outcome(String name, Object result) {
@@ -169,14 +168,14 @@ final class LocalNioQualification {
                 || result instanceof BoundedRead.Unavailable || result instanceof ObjectScan.Incomplete)
             line("  classification=" + result);
     }
-    private VaultSession open(Path root, char[] credential, VaultFingerprint fingerprint) throws Exception {
+    private VaultSession open(Path root, char[] credential, VaultId vaultId) throws Exception {
         stage = "authenticate reopen";
-        OpenResult result = Totipo.open(NioTotipoStore.openPrivate(root), credential);
+        OpenResult result = Totipo.open(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()), credential);
         outcome("authenticate reopen", result);
         require(result instanceof OpenResult.Opened);
         VaultSession session = ((OpenResult.Opened) result).session();
-        if (!session.fingerprint().equals(fingerprint)) { session.close(); throw new IllegalStateException("Root changed"); }
-        line("Workflow same fingerprint=confirmed");
+        if (!session.vaultId().equals(vaultId)) { session.close(); throw new IllegalStateException("Root changed"); }
+        line("Workflow same VaultId=confirmed");
         try { awaitObservation(session); }
         catch (Exception | LinkageError failure) { session.close(); throw failure; }
         return session;
@@ -218,10 +217,9 @@ final class LocalNioQualification {
     }
     private void workflows(Path root) throws Exception {
         char[] initial = "M1C disposable initial credential - NOT SECRET".toCharArray();
-        char[] replacement = "M1C disposable replacement credential - NOT SECRET".toCharArray();
         try {
             stage = "store initialization";
-            try (NioTotipoStore store = NioTotipoStore.openPrivate(root)) {
+            try (TotipoStore store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability())) {
                 BoundedRead read = store.readVault(87); outcome("initial vault observation", read);
                 require(read instanceof BoundedRead.Absent);
                 ObjectScan scan = store.scanObjects(); outcome("initial namespace observation", scan);
@@ -230,12 +228,12 @@ final class LocalNioQualification {
             require(children(root).isEmpty());
             line("Workflow store open/close=completed; canonical VAULT and objects namespace remain absent");
             stage = "create vault (stage/force/read-back/private ordinary move/canonical file force/root force)";
-            CreateVaultResult created = Totipo.create(NioTotipoStore.openPrivate(root), initial);
+            CreateVaultResult created = Totipo.create(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()), initial);
             outcome("create vault", created);
             require(created instanceof CreateVaultResult.Created);
-            VaultFingerprint fingerprint;
+            VaultId vaultId;
             try (VaultSession session = ((CreateVaultResult.Created) created).session()) {
-                fingerprint = session.fingerprint();
+                vaultId = session.vaultId();
             }
             line("Workflow private initial VAULT installation=acknowledged by CreateVaultResult.Created");
             line("  Released path=complete forced stage -> ordinary move without replacement options -> canonical file force -> root force");
@@ -245,7 +243,7 @@ final class LocalNioQualification {
             line("Workflow close after create=completed; no abandoned VAULT stages");
             TokenId token;
             RevisionId revision;
-            try (VaultSession session = open(root, initial, fingerprint)) {
+            try (VaultSession session = open(root, initial, vaultId)) {
                 stage = "core immutable TOKEN save (mkdir/root force/stage force/private ordinary move/canonical file force/directory force)";
                 try (NewSecret secret = NewSecret.copyOf(new byte[] {1,2,3,4,5,6,7,8,9,10});
                      CreateToken builder = session.state().createToken()) {
@@ -264,7 +262,7 @@ final class LocalNioQualification {
             stage = "public SPI exact-existing acknowledgement";
             // These are the actual bytes authored above by core, never a fabricated envelope.
             // Session has closed before independent store ownership.
-            try (NioTotipoStore store = NioTotipoStore.openPrivate(root)) {
+            try (TotipoStore store = org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability())) {
                 ObjectScan scan = store.scanObjects(); outcome("created namespace scan", scan);
                 require(scan instanceof ObjectScan.Complete && scan.entries().size() == 1);
                 ObjectName name = new ObjectName(revision.hex());
@@ -287,27 +285,12 @@ final class LocalNioQualification {
                 require(children(root.resolve("objects-v1")).equals(Set.of(revision.hex())));
                 line("Workflow immutable stages cleaned; exact canonical object preserved");
             }
-            try (VaultSession session = open(root, initial, fingerprint)) {
+            try (VaultSession session = open(root, initial, vaultId)) {
                 stage = "core object observation after session reopen";
                 require(session.state().token(token).isPresent());
                 require(session.state().token(token).orElseThrow().heads().stream()
                         .anyMatch(head -> head.revision().equals(revision)));
                 line("Workflow core object persistence across reopen=confirmed");
-                stage = "VAULT replacement (core BASE/CURRENT/stage/move/root force)";
-                PasswordChangeResult changed = session.changePassword(initial, replacement);
-                line("Workflow password rewrap=" + changed.getClass().getName() + ":" + changed);
-                require(changed == PasswordChangeResult.CHANGED);
-            }
-            stage = "old credential check";
-            OpenResult old = Totipo.open(NioTotipoStore.openPrivate(root), initial);
-            outcome("old credential after rewrap", old);
-            if (old instanceof OpenResult.Opened opened) opened.session().close();
-            require(old instanceof OpenResult.AuthenticationFailed);
-            try (VaultSession session = open(root, replacement, fingerprint)) {
-                require(session.state().token(token).isPresent());
-                require(session.state().token(token).orElseThrow().heads().stream()
-                        .anyMatch(head -> head.revision().equals(revision)));
-                line("Workflow replacement credential, same root and token/revision persistence=confirmed");
             }
             stage = "final cleanup observation";
             require(children(root).equals(Set.of("vault", "objects-v1")));
@@ -317,6 +300,6 @@ final class LocalNioQualification {
             line("Workflow final layout=one complete VAULT + one complete immutable object; no abandoned stages/canonical partials");
             workflowsOk = true;
             line("Workflow clean final close=completed");
-        } finally { Arrays.fill(initial, '\0'); Arrays.fill(replacement, '\0'); }
+        } finally { Arrays.fill(initial, '\0'); }
     }
 }
