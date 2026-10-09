@@ -28,7 +28,8 @@ public final class OtpAuthSupplyChainGuardTest {
                 java.util.Map.entry("app/gradle.lockfile", "edd64f4193c53b5356998b60b1b739a32254a1c399bc0e32a3ff2a57063a2ca4"),
                 java.util.Map.entry("buildscript-gradle.lockfile", "22efaa36cdbc4212cb62beb29837199812865f2b303caaef124b07e9915fc1a0"),
                 java.util.Map.entry("flake.nix", "1ee5379470643f1699d65e7ba6ea834ffe4cc277d8df49cc59f68c1311b7a5a9"),
-                java.util.Map.entry("flake.lock", "cb6b924b5f79a0b74108aba9666151cef918dbab26c8d3b7bb17fe00b6a3c8ed"),
+                // Rebaselined for the intentional flake update in 5f2fdd8.
+                java.util.Map.entry("flake.lock", "44728fcfd8529462cb415b186ee4ce3400343dd911d325b6a965bd386b9f7749"),
                 java.util.Map.entry("package-deps.json", "62fb17a174f1664c3ea1a50ffe223bd5cd937b78f4209d67e92cdc8b398727fb"));
         for (var entry : baseline.entrySet()) {
             Path input = Path.of("../" + entry.getKey());
