@@ -38,14 +38,21 @@ The r19 `TotipoStore` consists of readVault/createVault/scanObjects/readObject/p
 There are no public PreparedVault, staging/replacement handles, password change or root
 fingerprint APIs. VAULT is immutable and create-once. Android presents Java's
 `OBJECT_DATA_OBSERVED` creation veto without a bypass or an Android implementation of
-its orphan-candidate scan.
+protocol parsing or crypto. Join also checks orphan-name evidence through the public SPI
+before exact enrollment; it never parses or unwraps VAULT in Android.
 
 Every explicit Import/Publish compares detached provider VAULT using `Totipo.vaultId`
 with the authoritative open `session.vaultId()`, outside the Android store gate.
 Recognition is structural validation plus SHA-256, without authentication, password,
 Argon2, freshness or origin evidence. Only a complete root listing and one exact valid
 matching 87-byte document allow object mutation. Multiple candidates conservatively
-block, even identical duplicates. Provider VAULT is never written/adopted/repaired.
+block, even identical duplicates. Import/Publish never write or adopt VAULT.
+M3C's separate explicit Join authenticates a detached exact provider VAULT with
+`Totipo.open` on a transient read-only public-SPI store, closes that session, fresh-rechecks
+the provider bytes and installs create-only through the coordinated SPI before normal open.
+Separate explicit Initialize snapshots canonical local VAULT under the bridge, compares
+identity after gate release, and creates the exact provider VAULT plus objects-v1.
+Neither operation replaces, repairs or migrates VAULT, changes its password or exports secrets.
 Folder READY describes accessibility and persisted permission, independently of identity.
 
 `verifyMavenBoundary` checks all four production configurations, the direct NIO edge,

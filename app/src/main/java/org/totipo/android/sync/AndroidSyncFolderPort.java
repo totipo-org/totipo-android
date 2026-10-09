@@ -11,13 +11,19 @@ import org.totipo.android.provider.ProviderTreeReader;
 import org.totipo.android.sync.SyncFolderBinding.*;
 
 /** Platform-only SAF adapter. Writes are restricted to newly created immutable documents. */
-public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, ProviderObjectWriter.Port {
+public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, ProviderObjectWriter.Port, ProviderVaultWriter.Port {
     private final ContentResolver resolver;
     private final SharedPreferences preferences;
     public AndroidSyncFolderPort(Context context) {
         resolver = context.getContentResolver();
         preferences = context.getSharedPreferences("sync_binding_v1", Context.MODE_PRIVATE);
     }
+    private AndroidProviderVaultPort bootstrap() { return new AndroidProviderVaultPort(resolver, this); }
+    public org.totipo.android.provider.ProviderSnapshot.Document createVault(org.totipo.android.provider.ProviderSnapshot.Document root) throws Exception { return bootstrap().createVault(root); }
+    public org.totipo.android.provider.ProviderSnapshot.Document createObjectsDirectory(org.totipo.android.provider.ProviderSnapshot.Document root) throws Exception { return bootstrap().createObjectsDirectory(root); }
+    public org.totipo.android.provider.ProviderSnapshot.Document vaultMetadata(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultMetadata(created); }
+    public java.io.OutputStream vaultOutput(org.totipo.android.provider.ProviderSnapshot.Document created) throws Exception { return bootstrap().vaultOutput(created); }
+    public org.totipo.android.provider.ProviderSnapshot.Bytes vaultReadBack(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultReadBack(created); }
     public Stored load() {
         try {
             if (!preferences.contains("tree_uri")) return null;

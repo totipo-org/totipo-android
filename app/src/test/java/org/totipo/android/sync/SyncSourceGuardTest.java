@@ -14,7 +14,7 @@ public final class SyncSourceGuardTest {
                 String source = Files.readString(path);
                 for (String forbidden : List.of("deleteDocument", "renameDocument", "moveDocument", "removeDocument", "copyDocument"))
                     assertFalse(path + ": " + forbidden, source.contains(forbidden));
-                if (!path.equals(root.resolve("sync/AndroidSyncFolderPort.java"))) {
+                if (!path.equals(root.resolve("sync/AndroidSyncFolderPort.java")) && !path.equals(root.resolve("sync/AndroidProviderVaultPort.java"))) {
                     assertFalse(path.toString(), source.contains("createDocument("));
                     assertFalse(path.toString(), source.contains("openOutputStream("));
                 }

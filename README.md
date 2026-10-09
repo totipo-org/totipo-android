@@ -8,7 +8,7 @@ and unresolved/conflict/integrity diagnostics. Refresh requests local observatio
 closing or reauthenticating the session. Vault work uses one bounded application worker;
 UI callbacks return to the main thread. Credentials are not persisted and operation-owned
 mutable buffers are cleared on completion, as best effort rather than guaranteed JVM erasure.
-Empty-password create/unlock requires explicit confirmation.
+Empty-password create/unlock/Join requires explicit confirmation.
 
 Production consumes released Java NIO/core 0.2.0 and Bouncy Castle 1.86 directly
 from Maven Central, targeting Totipo Vault Format v1/r19. One app-private local canonical
@@ -19,11 +19,12 @@ session calls and bridge batches. No second delegate or independent writer is al
 Explicit **Import changes** and **Publish local changes** exchange immutable token objects
 through one bounded provider I/O lane. Every operation first reads the provider's root
 immutable VAULT and compares its structural `VaultId` with the currently open session.
-The selected folder must already contain the same immutable VAULT. Missing, malformed,
+Import and Publish require the selected folder to contain the same immutable VAULT. Missing, malformed,
 unavailable, different or duplicate VAULT candidates block object mutation; duplicate
 candidates are conservatively ambiguous even if identical. No password/KDF is used for
 provider recognition. Folder READY means transport accessibility, not matching identity.
-Totipo never writes, replaces, repairs or adopts provider VAULT. VAULT is immutable;
+Only explicit Initialize may create an absent provider VAULT; only explicit Join may
+enroll an authenticated provider VAULT locally. Totipo never replaces or repairs VAULT. VAULT is immutable;
 password change and migration are absent. Cross-vault migration is separate future work.
 
 Inbound import retains the same authenticated session, Java object validation and exact
@@ -34,7 +35,7 @@ There is no automatic polling, background synchronization, cloud SDK or Internet
 Java's existing-token-data creation veto is presented without bypass.
 
 Manual enrollment, otpauth enrollment, reveal/copy, vault shell, explicit lock and token
-list behavior remain. Credentials are not persisted. Empty-password create/unlock requires
+list behavior remain. Credentials are not persisted. Empty-password create/unlock/Join requires
 confirmation. Backgrounding/rotation does not lock. Java Flow requires API 30 for vault
 operations; minSdk remains 26 and older devices receive the unsupported-runtime message.
 
@@ -192,8 +193,21 @@ publish releases. The revised workflow has not yet run remotely.
 
 ## Limitations
 
-Object-only foreground synchronization requires a pre-existing matching immutable VAULT;
-complete vault bootstrap, migration and provider VAULT publication are unimplemented.
+M3C adds two explicit same-vault bootstrap actions. **Join existing vault** authenticates
+an exact provider immutable VAULT through Java before installing those same bytes into
+an empty local canonical store, then opens normally. Wrong passwords leave local VAULT
+absent. A fresh provider recheck precedes installation; local orphan token evidence blocks it.
+**Initialize sync folder** publishes the exact open local canonical VAULT create-only,
+verifies readback and fresh provider evidence, and establishes the exact objects-v1 directory.
+Provider token evidence without a VAULT vetoes initialization. A verified VAULT is retained
+if directory initialization fails; an explicit retry can create only the missing directory.
+Neither operation replaces VAULT, changes a password or root, performs migration or copies
+across vaults. Different local/provider VaultIds are never reconciled automatically.
+Join does not import tokens; Initialize does not publish tokens. Use **Import changes** and
+**Publish local changes** separately, each with its own fresh matching-VAULT preflight.
+No bootstrap runs on startup, unlock, folder selection or access restoration.
+The next milestone is **M3D — real Syncthing desktop ↔ Android end-to-end qualification**;
+that qualification remains deferred.
 There is no background sync, Syncthing integration, biometric unlock, inactivity lock timer,
 conflict repair, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
 and universal Android filesystem/runtime or interoperability qualification are not claimed.

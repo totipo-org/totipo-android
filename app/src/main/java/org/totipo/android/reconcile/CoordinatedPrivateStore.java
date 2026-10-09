@@ -83,6 +83,33 @@ final class CoordinatedPrivateStore implements AutoCloseable {
             }
             return java.util.List.copyOf(result);
         }
+        byte[] snapshotVault() {
+            held(); usable();
+            var read = delegate.readVault(87);
+            if (!(read instanceof BoundedRead.Present present) || present.bytes().length != 87)
+                throw new IllegalStateException("Local VAULT unavailable");
+            return present.bytes();
+        }
+        void verifyEmptyEnrollment() {
+            held(); usable();
+            if (!(delegate.readVault(87) instanceof BoundedRead.Absent)) throw new IllegalStateException("Local VAULT present");
+            var scan = delegate.scanObjects();
+            if (scan.entries().stream().anyMatch(e -> e.name().value().matches("[0-9a-f]{64}")))
+                throw new ForegroundVaultCoordinator.LocalObjectEvidence();
+            if (!(scan instanceof ObjectScan.Complete)) throw new IllegalStateException("Local namespace unavailable");
+        }
+        VaultCreate enrollVault(byte[] exact, java.util.function.BooleanSupplier cancelled) {
+            held(); usable();
+            if (cancelled.getAsBoolean()) throw new IllegalStateException("Enrollment stale");
+            if (!(delegate.readVault(87) instanceof BoundedRead.Absent)) return new VaultCreate.AlreadyPresent();
+            verifyEmptyEnrollment();
+            if (cancelled.getAsBoolean()) throw new IllegalStateException("Enrollment stale");
+            try {
+                var result = delegate.createVault(exact);
+                if (result instanceof VaultCreate.Failed || result instanceof VaultCreate.Uncertain) unsafe = true;
+                return result;
+            } catch (RuntimeException | Error failure) { unsafe = true; throw failure; }
+        }
         void markUnsafe() { held(); unsafe = true; }
         ObjectWrite publish(ImmutableCandidateImporter.Selection selected) {
             held(); usable();

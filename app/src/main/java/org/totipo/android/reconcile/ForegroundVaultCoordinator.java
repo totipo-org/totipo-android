@@ -98,7 +98,13 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     public static Discovery discover(LocalReplicaOwner owner) throws IOException {
         return discover(owner, new Operations());
     }
+    public static Discovery inspectEnrollment(LocalReplicaOwner owner) throws IOException {
+        return discover(owner, new Operations(), true);
+    }
     static Discovery discover(LocalReplicaOwner owner, Operations operations) throws IOException {
+        return discover(owner, operations, false);
+    }
+    private static Discovery discover(LocalReplicaOwner owner, Operations operations, boolean enrollment) throws IOException {
         var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
         LocalStatus status = LocalStatus.UNAVAILABLE;
         Throwable failure = null;
@@ -110,7 +116,10 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                     : read instanceof org.totipo.spi.BoundedRead.Unavailable unavailable
                             && unavailable.reason() != org.totipo.spi.StoreFailure.UNSAFE_NAMESPACE
                             ? LocalStatus.UNAVAILABLE : LocalStatus.UNSAFE;
-        } catch (Exception cause) { failure = cause; }
+            if (enrollment && status == LocalStatus.ABSENT) {
+                try (var bridge = vault.store.bridge()) { bridge.verifyEmptyEnrollment(); }
+            }
+        } catch (Exception cause) { failure = cause; status = enrollment ? LocalStatus.UNSAFE : LocalStatus.UNAVAILABLE; }
         vault.transition(State.FAILED_CLOSED);
         try { vault.close(); }
         catch (RuntimeException cause) { failure = cause; }
@@ -139,6 +148,49 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                 return new Creation(vault, null, failure);
             }
         } finally { Arrays.fill(credential, '\0'); }
+    }
+    public static final class LocalObjectEvidence extends IllegalStateException { }
+    /** Exact authenticated enrollment, then ordinary Java open using this same domain. */
+    public static Opening join(LocalReplicaOwner owner, byte[] exact, char[] credential,
+                               java.util.function.BooleanSupplier cancelled) throws IOException {
+        return join(owner, exact, credential, cancelled, new Operations());
+    }
+    static Opening join(LocalReplicaOwner owner, byte[] exact, char[] credential,
+                        java.util.function.BooleanSupplier cancelled, Operations operations) throws IOException {
+        var id = Totipo.vaultId(exact);
+        var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
+        try {
+            vault.store = operations.storage(vault.lease);
+            org.totipo.spi.VaultCreate outcome;
+            try (var bridge = vault.store.bridge()) { outcome = bridge.enrollVault(exact, cancelled); }
+            if (!(outcome instanceof org.totipo.spi.VaultCreate.Created)
+                    && !(outcome instanceof org.totipo.spi.VaultCreate.AlreadyPresent))
+                throw new IllegalStateException("Enrollment not affirmed");
+            byte[] installed;
+            try (var bridge = vault.store.bridge()) { installed = bridge.snapshotVault(); }
+            if (!Arrays.equals(exact, installed) || cancelled.getAsBoolean())
+                throw new IllegalStateException("Enrollment changed");
+            OpenResult failure = vault.establish(credential);
+            if (failure == null && !id.equals(vault.session.vaultId()))
+                throw new IllegalStateException("Enrollment identity mismatch");
+            if (failure == null) vault.transition(State.OPEN);
+            return new Opening(vault, failure, null);
+        } catch (Exception failure) {
+            vault.failClosed(failure);
+            return new Opening(vault, null, failure);
+        }
+    }
+    public boolean matchesVault(byte[] exact) {
+        requireOpen(); return Totipo.vaultId(exact).equals(session.vaultId());
+    }
+    /** Gate releases before structural identity/session access. */
+    public byte[] snapshotVault() {
+        requireOpen();
+        byte[] exact;
+        try (var bridge = store.bridge()) { exact = bridge.snapshotVault(); }
+        if (!matchesVault(exact))
+            throw new IllegalStateException("Local identity mismatch");
+        return exact;
     }
     public void requestRefresh() {
         begin(State.REQUESTING_REFRESH);
@@ -414,7 +466,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                 refresh == Refresh.SKIPPED_UNSAFE ? null : session.state().observation(), failure);
     }
     private OpenResult establish(char[] credential) throws Exception {
-        store = operations.storage(lease);
+        if (store == null) store = operations.storage(lease);
         OpenResult result = operations.open(store, credential);
         if (!(result instanceof OpenResult.Opened opened)) {
             transition(State.FAILED_CLOSED); return result;

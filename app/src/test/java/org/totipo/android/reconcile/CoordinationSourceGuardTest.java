@@ -20,7 +20,7 @@ public final class CoordinationSourceGuardTest {
         }
         String domain = Files.readString(Path.of("src/main/java/org/totipo/android/reconcile/CoordinatedPrivateStore.java"));
         String bridge = block(domain, "final class Bridge");
-        for (String forbidden : List.of("createVault", "replaceCanonical", "readVault", "VaultSession", "session.", "Totipo.open")) {
+        for (String forbidden : List.of("replaceCanonical", "VaultSession", "session.", "Totipo.open")) {
             assertFalse(forbidden, bridge.contains(forbidden));
         }
         assertTrue(domain.contains("org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability())"));
@@ -28,7 +28,7 @@ public final class CoordinationSourceGuardTest {
     }
     @Test public void exclusiveScopeNeverCallsBackIntoJavaAndSyncNeedsNoAuthentication() throws Exception {
         String source = Files.readString(Path.of("src/main/java/org/totipo/android/reconcile/ForegroundVaultCoordinator.java"));
-        String exclusive = block(source, "try (var bridge = store.bridge())");
+        String exclusive = block(source.substring(source.indexOf("public Report sync(Scan scan")), "try (var bridge = store.bridge())");
         for (String forbidden : List.of("session.", "requestRefresh", "validateObject", "operations.refresh", "operations.close", "operations.open")) {
             assertFalse(forbidden, exclusive.contains(forbidden));
         }

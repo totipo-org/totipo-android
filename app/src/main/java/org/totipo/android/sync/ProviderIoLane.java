@@ -44,5 +44,14 @@ public final class ProviderIoLane implements AutoCloseable {
             try { delivery.accept(result); } catch (Throwable dispatchUnavailable) { }
         });
     }
+    public void initialize(SyncFolderBinding.Port transport, SyncFolderBinding.Request request,
+                           byte[] exact, java.util.function.BooleanSupplier cancelled,
+                           Consumer<ProviderVaultWriter.Result> delivery) {
+        byte[] owned = exact.clone();
+        executor.execute(() -> {
+            var result = ProviderVaultWriter.initialize(transport, request.uri(), owned, cancelled);
+            try { delivery.accept(result); } catch (Throwable dispatchUnavailable) { }
+        });
+    }
     @Override public void close() { executor.shutdown(); }
 }

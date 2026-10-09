@@ -52,6 +52,13 @@ public final class AndroidVaultController {
         ForegroundVaultCoordinator.Creation create(LocalReplicaOwner owner, char[] credential) throws IOException {
             return ForegroundVaultCoordinator.create(owner, credential);
         }
+        boolean authenticateCandidate(byte[] exact, char[] credential) {
+            return org.totipo.android.reconcile.DetachedVaultAuthentication.authenticate(exact, credential);
+        }
+        ForegroundVaultCoordinator.Opening join(LocalReplicaOwner owner, byte[] exact, char[] credential,
+                                                java.util.function.BooleanSupplier cancelled) throws IOException {
+            return ForegroundVaultCoordinator.join(owner, exact, credential, cancelled);
+        }
         ForegroundVaultCoordinator.TotpResult generateTotp(ForegroundVaultCoordinator vault, TokenId id, Instant now,
                                                          ForegroundVaultCoordinator.ObservedToken expected) {
             return vault.generateTotp(id, now, expected);
@@ -211,9 +218,9 @@ public final class AndroidVaultController {
         try {
             worker.execute(() -> {
                 dispatcher.assertWorkerThread();
-                try { operation.run(); }
+                try { discardCancelledJoin(); operation.run(); }
                 finally { synchronized (this) {
-                    operating = false; scheduleView();
+                    discardCancelledJoin(); operating = false; scheduleView();
                     // Admission-dependent controls must also observe worker completion.
                     for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
                 } }
@@ -254,6 +261,7 @@ public final class AndroidVaultController {
         try {
             State expected = create ? State.NO_LOCAL_VAULT : State.LOCKED;
             if (snapshot.state() != expected) return false;
+            cancelOutbound();
             admitted = submit(create ? State.CREATING : State.UNLOCKING,
                     create ? "Creating vault…" : "Unlocking vault…", () -> {
                 try {
@@ -380,6 +388,228 @@ public final class AndroidVaultController {
             catch (RuntimeException failure) { publish(State.ERROR_OPEN, Error.OPEN_FAILED, "Refresh failed. Lock the vault before retrying.", null); }
         });
     }
+    public synchronized boolean canJoinExistingVault() {
+        return !operating && !providerActive && syncBinding != null && snapshot.state() == State.NO_LOCAL_VAULT
+                && syncView.binding().status() == SyncFolderBinding.Status.READY && syncView.binding().readable();
+    }
+    private byte[] preparedJoinCandidate; // Detached non-secret bytes; never a cached mutation authorization.
+    private SyncFolderBinding.Request preparedJoinBinding;
+    public synchronized boolean hasJoinCandidate() {
+        return preparedJoinCandidate != null && preparedJoinBinding != null && syncBinding.current(preparedJoinBinding);
+    }
+    /** Collect and structurally identify before the UI asks for a credential. */
+    public synchronized boolean prepareJoin() {
+        dispatcher.assertDispatchThread();
+        if (!canJoinExistingVault()) return false;
+        preparedJoinCandidate = null; preparedJoinBinding = null;
+        providerActive = true;
+        var cancelled = new java.util.concurrent.atomic.AtomicBoolean(); outboundCancelled = cancelled;
+        long generation = sessionGeneration;
+        updateBinding("Checking existing vault…"); notifySync();
+        outboundDispatch(cancelled, () -> {
+            ForegroundVaultCoordinator.Discovery local;
+            try { local = ForegroundVaultCoordinator.inspectEnrollment(owner); }
+            catch (IOException unavailable) { finishOutbound(cancelled, "Local canonical store unavailable."); return; }
+            if (local.vault().lifecycle() != ForegroundVaultCoordinator.State.CLOSED) {
+                vault = local.vault(); failedClose(); finishOutbound(cancelled, "Local canonical store closure needs attention."); return;
+            }
+            if (local.status() != ForegroundVaultCoordinator.LocalStatus.ABSENT) {
+                finishOutbound(cancelled, local.cause() instanceof ForegroundVaultCoordinator.LocalObjectEvidence
+                        ? "Totipo found existing local token data and will not replace it." : "Local canonical store is not empty and usable."); return;
+            }
+            syncBinding.check(); var request = syncBinding.request(); outboundIdentity = request;
+            providerIo.submit(syncBinding.transport(), request, true, result -> outboundDispatch(cancelled, () -> {
+                if (!joinCurrent(request, generation, cancelled)) { finishOutbound(cancelled, null); return; }
+                syncBinding.accessibility(request, result.accessible());
+                if (!result.accessible()) { finishOutbound(cancelled, "Sync folder vault cannot be verified."); return; }
+                try {
+                    byte[] exact = org.totipo.android.sync.VaultBootstrapEvidence.joinCandidate(result.scan());
+                    synchronized (this) { preparedJoinCandidate = exact; preparedJoinBinding = request; }
+                    finishOutbound(cancelled, "Enter the existing vault password.");
+                } catch (IllegalStateException invalid) {
+                    finishOutbound(cancelled, org.totipo.android.sync.VaultBootstrapEvidence.completeRoot(result.scan())
+                            && result.scan().root().rows().stream().noneMatch(r -> "vault".equals(r.displayName()))
+                            ? "Sync folder has no Totipo vault." : "Sync folder vault cannot be verified.");
+                }
+            }));
+        });
+        return true;
+    }
+    /** Exclusive credential ownership stays on the vault worker; transport callbacks only hand off evidence. */
+    public synchronized boolean joinExistingVault(char[] credential) {
+        dispatcher.assertDispatchThread();
+        if (!canJoinExistingVault() || !hasJoinCandidate()) { Arrays.fill(credential, '\0'); return false; }
+        providerActive = true;
+        var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        outboundCancelled = cancelled;
+        long generation = sessionGeneration;
+        updateBinding("Joining existing vault…"); notifySync();
+        try { worker.execute(() -> {
+            dispatcher.assertWorkerThread();
+            joinCredential = new JoinCredential(credential);
+            beginJoin(cancelled, generation);
+        }); } catch (RejectedExecutionException busy) {
+            Arrays.fill(credential, '\0'); finishOutbound(cancelled, "Provider busy. Try again."); return false;
+        }
+        return true;
+    }
+    private JoinCredential joinCredential; // Accessed by vault worker, never handed to provider callbacks.
+    private static final class JoinCredential {
+        final char[] value;
+        JoinCredential(char[] value) { this.value = value; }
+        void clear() { Arrays.fill(value, '\0'); }
+    }
+    private void beginJoin(java.util.concurrent.atomic.AtomicBoolean cancelled, long generation) {
+        try {
+            syncBinding.check();
+            var request = syncBinding.request(); outboundIdentity = request;
+            providerIo.submit(syncBinding.transport(), request, true, result -> joinDispatch(cancelled, () -> {
+                if (!joinCurrent(request, generation, cancelled)) { finishJoin(cancelled, null); return; }
+                syncBinding.accessibility(request, result.accessible());
+                if (!result.accessible()) { finishJoin(cancelled, "Sync folder vault cannot be verified."); return; }
+                byte[] exact;
+                try { exact = org.totipo.android.sync.VaultBootstrapEvidence.joinCandidate(result.scan()); }
+                catch (IllegalStateException blocked) {
+                    finishJoin(cancelled, result.scan() != null
+                            && org.totipo.android.sync.VaultBootstrapEvidence.completeRoot(result.scan())
+                            && result.scan().root().rows().stream().noneMatch(r -> "vault".equals(r.displayName()))
+                            ? "Sync folder has no Totipo vault." : "Sync folder vault cannot be verified."); return;
+                }
+                if (!Arrays.equals(exact, preparedJoinCandidate)) {
+                    synchronized (this) { preparedJoinCandidate = null; preparedJoinBinding = null; }
+                    finishJoin(cancelled, "Sync folder changed. Try again."); return;
+                }
+                synchronized (this) { preparedJoinBinding = request; }
+                boolean authenticated;
+                try { authenticated = backend.authenticateCandidate(exact, joinCredential.value); }
+                catch (IllegalArgumentException invalid) { authenticated = false; }
+                if (!authenticated) { finishJoin(cancelled, "Could not unlock this vault."); return; }
+                if (!joinCurrent(request, generation, cancelled)) { finishJoin(cancelled, null); return; }
+                // Temporary session has closed. Never authenticate a changed replacement candidate.
+                providerIo.submit(syncBinding.transport(), request, true, fresh -> joinDispatch(cancelled, () -> {
+                    if (!joinCurrent(request, generation, cancelled)) { finishJoin(cancelled, null); return; }
+                    byte[] rechecked;
+                    try { rechecked = fresh.accessible() ? org.totipo.android.sync.VaultBootstrapEvidence.joinCandidate(fresh.scan()) : null; }
+                    catch (IllegalStateException stale) { rechecked = null; }
+                    if (!Arrays.equals(exact, rechecked)) { finishJoin(cancelled, "Sync folder changed. Try again."); return; }
+                    synchronized (this) {
+                        if (!joinCurrent(request, generation, cancelled) || operating) { finishJoin(cancelled, null); return; }
+                        operating = true;
+                    }
+                    try {
+                        ForegroundVaultCoordinator.Opening enrolled;
+                        try { enrolled = backend.join(owner, exact, joinCredential.value,
+                                () -> cancelled.get() || generation != sessionGeneration); }
+                        catch (IOException unavailable) { throw new IllegalStateException("Local unavailable"); }
+                        vault = enrolled.vault();
+                        if (cancelled.get() || generation != sessionGeneration || !syncBinding.current(request)) { if (closeOwned()) discover(); return; }
+                        if (enrolled.failure() == null && enrolled.cause() == null) {
+                            opened(); render("Joined existing Totipo vault.");
+                        } else if (closeOwned()) {
+                            discover();
+                            if (enrolled.cause() instanceof ForegroundVaultCoordinator.LocalObjectEvidence)
+                                publish(snapshot().state(), Error.CREATE_FAILED,
+                                    "Totipo found existing local token data and will not replace it.", null);
+                        }
+                    } finally {
+                        synchronized (this) { operating = false; scheduleView(); }
+                        finishJoin(cancelled, snapshot().state() == State.OPEN
+                                ? "Joined existing Totipo vault." : snapshot().message().equals("Totipo found existing local token data and will not replace it.")
+                                    ? snapshot().message() : "Local enrollment was not affirmed. Check local storage.");
+                    }
+                }));
+            }));
+        } catch (RuntimeException failure) { finishJoin(cancelled, "Sync folder vault cannot be verified."); }
+    }
+    public synchronized void cancelJoin() {
+        if (snapshot.state() != State.NO_LOCAL_VAULT || outboundCancelled == null) return;
+        var cancelled = outboundCancelled; cancelled.set(true);
+        try { worker.execute(() -> { if (joinCredential != null) { joinCredential.clear(); joinCredential = null; } }); }
+        catch (RejectedExecutionException closed) { }
+    }
+    private synchronized boolean joinCurrent(SyncFolderBinding.Request request, long generation,
+                                              java.util.concurrent.atomic.AtomicBoolean cancelled) {
+        return !cancelled.get() && generation == sessionGeneration && syncBinding.current(request)
+                && snapshot.state() == State.NO_LOCAL_VAULT && vault == null
+                && syncBinding.transport().grants(request.uri()).read();
+    }
+    private void joinDispatch(java.util.concurrent.atomic.AtomicBoolean cancelled, Runnable action) {
+        try { worker.execute(() -> {
+            dispatcher.assertWorkerThread();
+            try { action.run(); }
+            catch (RuntimeException failure) { finishJoin(cancelled, "Local enrollment was not affirmed. Check local storage."); }
+        }); }
+        catch (RejectedExecutionException busy) {
+            // No handoff was queued: revoke enrollment and release this finished transport operation.
+            // Incompatible queued commands/shutdown own worker-side credential cleanup.
+            cancelled.set(true);
+            finishOutbound(cancelled, null);
+        }
+    }
+    private void discardCancelledJoin() {
+        if (joinCredential != null && outboundCancelled != null && outboundCancelled.get()) {
+            joinCredential.clear(); joinCredential = null;
+        }
+    }
+    private void finishJoin(java.util.concurrent.atomic.AtomicBoolean cancelled, String message) {
+        if (joinCredential != null) { joinCredential.clear(); joinCredential = null; }
+        finishOutbound(cancelled, message);
+    }
+    public synchronized boolean canInitializeSyncFolder() { return canPublishLocalChanges(); }
+    public synchronized boolean initializeSyncFolder() {
+        dispatcher.assertDispatchThread();
+        if (!canInitializeSyncFolder()) return false;
+        providerActive = true;
+        var cancelled = new java.util.concurrent.atomic.AtomicBoolean(); outboundCancelled = cancelled;
+        long generation = sessionGeneration;
+        updateBinding("Initializing sync folder…"); notifySync();
+        outboundDispatch(cancelled, () -> {
+            syncBinding.check(); var request = syncBinding.request(); outboundIdentity = request;
+            if (!outboundCurrent(request, generation, cancelled)) { finishOutbound(cancelled, null); return; }
+            byte[] exact = vault.snapshotVault();
+            providerIo.submit(syncBinding.transport(), request, true, result -> outboundDispatch(cancelled, () -> {
+                if (!outboundCurrent(request, generation, cancelled)) { finishOutbound(cancelled, null); return; }
+                syncBinding.accessibility(request, result.accessible());
+                if (!result.accessible()) { finishOutbound(cancelled, "Sync folder vault cannot be verified."); return; }
+                byte[] existing;
+                try { existing = org.totipo.android.sync.VaultBootstrapEvidence.candidate(result.scan()); }
+                catch (IllegalStateException unusable) { finishOutbound(cancelled, "Sync folder vault cannot be verified."); return; }
+                if (existing != null) {
+                    var status = org.totipo.android.provider.ProviderVaultIdentity.classify(result.scan(), org.totipo.Totipo.vaultId(exact));
+                    if (status != org.totipo.android.provider.ProviderVaultIdentity.Status.MATCH || !Arrays.equals(existing, exact)) {
+                        finishOutbound(cancelled, status.message()); return;
+                    }
+                }
+                try { org.totipo.android.sync.VaultBootstrapEvidence.namespace(result.scan(), existing == null); }
+                catch (IllegalStateException veto) {
+                    finishOutbound(cancelled, existing == null
+                            ? "Sync folder contains unverified token data or namespace evidence but no vault. Totipo will not initialize it automatically."
+                            : "Sync folder namespace cannot be verified."); return;
+                }
+                providerIo.initialize(syncBinding.transport(), request, exact, cancelled::get,
+                    written -> outboundDispatch(cancelled, () -> {
+                        if (!outboundCurrent(request, generation, cancelled)) { finishOutbound(cancelled, null); return; }
+                        var status = written.status();
+                        if (status == org.totipo.android.sync.ProviderVaultWriter.Status.VERIFIED
+                                || status == org.totipo.android.sync.ProviderVaultWriter.Status.ALREADY_INITIALIZED) {
+                            if (!Arrays.equals(exact, org.totipo.android.sync.VaultBootstrapEvidence.joinCandidate(written.postflight()))
+                                    || !vault.matchesVault(org.totipo.android.sync.VaultBootstrapEvidence.joinCandidate(written.postflight()))) {
+                                finishOutbound(cancelled, "Initialization uncertain. Check again before retrying."); return;
+                            }
+                        }
+                        finishOutbound(cancelled, switch (status) {
+                            case VERIFIED -> "Sync folder initialized. Publish local changes explicitly.";
+                            case ALREADY_INITIALIZED -> "Sync folder already initialized.";
+                            case PARTIAL -> "Sync folder vault verified; token directory initialization incomplete. Try Initialize again.";
+                            case UNCERTAIN -> "Initialization uncertain. Check again before retrying.";
+                            case BLOCKED -> "Sync folder cannot be initialized safely.";
+                            case CANCELLED -> "Initialization cancelled; provider changes may have finished.";
+                        });
+                    }));
+            }));
+        });
+        return true;
+    }
     /** Internal production boundary; no provider selection or product Sync button yet.
      * Uses the SAME coordinator/session and accepts no credential. */
     public synchronized boolean sync(Scan scan) {
@@ -421,6 +651,7 @@ public final class AndroidVaultController {
         if (!canManageSyncFolder()) return false;
         Snapshot before = snapshot;
         return submit(before.state(), before.message(), () -> {
+            if (joinCredential != null && outboundCancelled != null && outboundCancelled.get()) { joinCredential.clear(); joinCredential = null; }
             operation.run();
             if (before.state() == State.OPEN) render(before.message());
             else publish(before.state(), before.error(), before.message(), before.view());
@@ -630,6 +861,9 @@ public final class AndroidVaultController {
     public synchronized void shutdown() {
         cancelOutbound();
         sessionGeneration++; // Invalidate even results already queued before executor shutdown.
+        try { worker.execute(() -> {
+            if (joinCredential != null) { joinCredential.clear(); joinCredential = null; }
+        }); } catch (RejectedExecutionException busy) { }
         providerIo.close(); worker.shutdown();
     }
     static String importMessage(ForegroundVaultCoordinator.Report report) {

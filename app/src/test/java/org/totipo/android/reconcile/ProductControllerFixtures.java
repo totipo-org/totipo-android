@@ -72,6 +72,10 @@ public final class ProductControllerFixtures {
         var result = ForegroundVaultCoordinator.open(owner, credential, operations);
         coordinator = result.vault(); return result;
     }
+    public ForegroundVaultCoordinator.Opening join(LocalReplicaOwner owner, byte[] exact, char[] credential, java.util.function.BooleanSupplier cancelled) throws IOException {
+        var result = ForegroundVaultCoordinator.join(owner, exact, credential, cancelled, operations);
+        coordinator = result.vault(); return result;
+    }
     public ForegroundVaultCoordinator.Creation create(LocalReplicaOwner owner, char[] credential) throws IOException {
         var result = ForegroundVaultCoordinator.create(owner, credential, operations);
         coordinator = result.vault(); return result;

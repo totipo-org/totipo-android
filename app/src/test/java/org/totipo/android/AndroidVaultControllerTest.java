@@ -19,6 +19,7 @@ public final class AndroidVaultControllerTest {
     private final Queue<Runnable> deliveries = new ConcurrentLinkedQueue<>();
     private final AtomicReference<Throwable> threadError = new AtomicReference<>();
     private final AtomicInteger workerChecks = new AtomicInteger(), uiChecks = new AtomicInteger();
+    private final AtomicInteger candidateAuthentications = new AtomicInteger();
     private final ProductControllerFixtures real = new ProductControllerFixtures();
     private LocalReplicaOwner owner;
     private AndroidVaultController controller;
@@ -40,6 +41,12 @@ public final class AndroidVaultControllerTest {
         }
         ForegroundVaultCoordinator.Opening open(LocalReplicaOwner owner, char[] password) throws IOException {
             assertNotSame(ui, Thread.currentThread()); return real.open(owner, password);
+        }
+        boolean authenticateCandidate(byte[] exact, char[] credential) {
+            assertEquals("Totipo-vault", Thread.currentThread().getName()); candidateAuthentications.incrementAndGet(); return super.authenticateCandidate(exact,credential);
+        }
+        ForegroundVaultCoordinator.Opening join(LocalReplicaOwner owner, byte[] exact, char[] password, BooleanSupplier cancelled) throws IOException {
+            assertEquals("Totipo-vault", Thread.currentThread().getName()); return real.join(owner, exact, password, cancelled);
         }
         ForegroundVaultCoordinator.Creation create(LocalReplicaOwner owner, char[] password) throws IOException {
             assertNotSame(ui, Thread.currentThread()); return real.create(owner, password);
@@ -149,7 +156,13 @@ public final class AndroidVaultControllerTest {
     @Test public void busyAdmissionWipesRejectedCredentialAndDoesNotQueueDuplicateOperations() throws Exception {
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         start(new RealBackend() {
-            ForegroundVaultCoordinator.Creation create(LocalReplicaOwner owner, char[] password) throws IOException {
+            boolean authenticateCandidate(byte[] exact, char[] credential) {
+            assertEquals("Totipo-vault", Thread.currentThread().getName()); candidateAuthentications.incrementAndGet(); return super.authenticateCandidate(exact,credential);
+        }
+        ForegroundVaultCoordinator.Opening join(LocalReplicaOwner owner, byte[] exact, char[] password, BooleanSupplier cancelled) throws IOException {
+            assertEquals("Totipo-vault", Thread.currentThread().getName()); return real.join(owner, exact, password, cancelled);
+        }
+        ForegroundVaultCoordinator.Creation create(LocalReplicaOwner owner, char[] password) throws IOException {
                 entered.countDown();
                 try { assertTrue(release.await(30, TimeUnit.SECONDS)); }
                 catch (InterruptedException failure) { throw new AssertionError(failure); }
@@ -268,11 +281,12 @@ public final class AndroidVaultControllerTest {
     private Path localRoot() throws Exception {
         var field = LocalReplicaOwner.class.getDeclaredField("root"); field.setAccessible(true); return (Path) field.get(owner);
     }
-    private org.totipo.android.sync.SyncFolderBindingTest.MemoryPort startBound() throws Exception {
+    private org.totipo.android.sync.SyncFolderBindingTest.MemoryPort startBound() throws Exception { return startBound(new RealBackend()); }
+    private org.totipo.android.sync.SyncFolderBindingTest.MemoryPort startBound(Backend backend) throws Exception {
         var port = new org.totipo.android.sync.SyncFolderBindingTest.MemoryPort();
         port.stored = new org.totipo.android.sync.SyncFolderBinding.Stored("content://fixture/tree/a", true, false);
         port.permissions.put(port.stored.uri(), new org.totipo.android.sync.SyncFolderBinding.Grants(true, false));
-        controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
+        controller = new AndroidVaultController(owner, dispatcher, backend, new TotpPresentation.Time() {
             public java.time.Instant wall() { return java.time.Instant.now(); }
             public long elapsedMillis() { return System.nanoTime() / 1000000; }
         }, null, new org.totipo.android.sync.SyncFolderBinding(port));
@@ -454,6 +468,117 @@ public final class AndroidVaultControllerTest {
         port.offline = true; accept(() -> controller.checkSyncFolder()); await(this::providerDone);
         assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.UNAVAILABLE, controller.syncView().binding().status());
         assertEquals(1, threads.size());
+    }
+    private void prepareJoin() throws Exception { accept(() -> controller.prepareJoin()); await(this::providerDone); }
+    @Test public void joinWrongPasswordThenExactEnrollmentThenManualImportOnly() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            var port = startBound(); port.snapshot = ForegroundVaultCoordinatorTest.productFixtureScan();
+            prepareJoin(); char[] wrong = "wrong".toCharArray(); accept(() -> controller.joinExistingVault(wrong)); await(this::providerDone);
+            assertEquals(State.NO_LOCAL_VAULT, controller.snapshot().state()); assertArrayEquals(new char[wrong.length],wrong);
+            assertFalse(Files.exists(localRoot().resolve("vault")));
+            char[] correct = "M1H disposable fixture".toCharArray(); accept(() -> controller.joinExistingVault(correct)); await(this::providerDone);
+            assertEquals(State.OPEN,controller.snapshot().state()); assertArrayEquals(new char[correct.length],correct);
+            byte[] exact = port.snapshot.vaultCandidates().get(0).bytes();
+            assertArrayEquals(exact,Files.readAllBytes(localRoot().resolve("vault")));
+            assertEquals(org.totipo.Totipo.vaultId(exact),real.session.vaultId()); assertTrue(controller.snapshot().view().tokens().isEmpty());
+            var session = real.session; accept(() -> controller.importProviderChanges()); await(this::providerDone);
+            await(() -> controller.snapshot().view().tokens().size()==3); assertSame(session,real.session);
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    @Test public void joinInvalidInputMalformedMissingAndUnavailableLeaveAbsent() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            var port=startBound(); var scan=ForegroundVaultCoordinatorTest.productFixtureScan();
+            port.snapshot=scan;
+            prepareJoin(); char[] invalid=new char[]{'\ud800'}; accept(() -> controller.joinExistingVault(invalid)); await(this::providerDone);
+            assertArrayEquals(new char[1],invalid); assertFalse(Files.exists(localRoot().resolve("vault")));
+            for(String kind:List.of("missing","malformed","size","directory","duplicate","loading")) {
+                port.snapshot=scan;
+                var row=scan.vaultCandidates().get(0).document();
+                var rows=new ArrayList<>(scan.root().rows());
+                var candidates=new ArrayList<>(scan.vaultCandidates());
+                if(kind.equals("missing")) { rows.remove(row); candidates.clear(); }
+                if(kind.equals("duplicate")) rows.add(row);
+                if(kind.equals("directory")) { rows.remove(row); rows.add(new org.totipo.android.provider.ProviderSnapshot.Document(row.tree(),row.locator(),row.id(),row.parentId(),"vault","vnd.android.document/directory",null,null)); }
+                if(kind.equals("malformed") || kind.equals("size")) {
+                    byte[] bytes=kind.equals("size")?new byte[86]:row==null?null:scan.vaultCandidates().get(0).bytes();
+                    if(kind.equals("malformed")) bytes[0]^=1;
+                    candidates= new ArrayList<>(List.of(new org.totipo.android.provider.ProviderSnapshot.Bytes(scan.epoch(),row,87,org.totipo.android.provider.ProviderSnapshot.ByteState.PRESENT,bytes,org.totipo.android.provider.ProviderSnapshot.Issue.NONE)));
+                }
+                port.snapshot=new org.totipo.android.provider.ProviderSnapshot.Scan(scan.epoch(),scan.tree(),
+                    new org.totipo.android.provider.ProviderSnapshot.Listing(scan.epoch(),scan.tree().rootId(),rows,kind.equals("loading")?org.totipo.android.provider.ProviderSnapshot.State.INCOMPLETE_LOADING:org.totipo.android.provider.ProviderSnapshot.State.COMPLETE,List.of()),scan.directories(),scan.state(),scan.issues(),candidates);
+                prepareJoin(); char[] credential=password();assertFalse(controller.joinExistingVault(credential));await(this::providerDone);
+                assertArrayEquals(new char[credential.length],credential);assertFalse(kind,Files.exists(localRoot().resolve("vault")));assertEquals(0,real.opens);assertEquals(1,candidateAuthentications.get());
+            }
+            port.offline=true;prepareJoin();await(this::providerDone);
+            assertFalse(Files.exists(localRoot().resolve("vault")));
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    @Test public void joinFreshRecheckRejectsChangedCandidateAndLocalOrphans() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            var port=startBound();var scan=ForegroundVaultCoordinatorTest.productFixtureScan();port.snapshot=scan;
+            var count=new AtomicInteger();port.onScan=() -> { if(count.incrementAndGet()==3) {
+                byte[] bytes=scan.vaultCandidates().get(0).bytes();bytes[86]^=1;
+                port.snapshot=ForegroundVaultCoordinatorTest.withVault(new org.totipo.android.provider.ProviderSnapshot.Scan(scan.epoch(),scan.tree(),
+                    new org.totipo.android.provider.ProviderSnapshot.Listing(scan.epoch(),scan.tree().rootId(),scan.root().rows().stream().filter(r -> !"vault".equals(r.displayName())).toList(),scan.root().state(),List.of()),scan.directories(),scan.state(),List.of()),bytes);
+            }};
+            prepareJoin(); accept(() -> controller.joinExistingVault("M1H disposable fixture".toCharArray()));await(this::providerDone);
+            assertEquals("Sync folder changed. Try again.",controller.syncView().message());assertFalse(Files.exists(localRoot().resolve("vault")));
+            port.onScan=() -> {};port.snapshot=scan;
+            Files.createDirectories(localRoot().resolve("objects-v1"));Files.write(localRoot().resolve("objects-v1").resolve("a".repeat(64)),new byte[]{1});
+            prepareJoin(); assertFalse(controller.joinExistingVault("M1H disposable fixture".toCharArray()));await(this::providerDone);
+            assertFalse(Files.exists(localRoot().resolve("vault")));assertEquals(0,real.opens);
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    @Test public void joinCancellationDuringBlockedProviderWipesCredentialAndLeavesLaneOccupied() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            var port=startBound();port.snapshot=ForegroundVaultCoordinatorTest.productFixtureScan();
+            prepareJoin(); var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+            port.onScan=() -> { assertEquals("Totipo-provider-io",Thread.currentThread().getName());block(entered,release); };
+            char[] credential="M1H disposable fixture".toCharArray();accept(() -> controller.joinExistingVault(credential));assertTrue(entered.await(10,TimeUnit.SECONDS));
+            try {
+                controller.cancelJoin();await(() -> Arrays.equals(new char[credential.length],credential));
+                assertFalse(controller.canJoinExistingVault());assertFalse(controller.checkSyncFolder());
+                assertFalse(Files.exists(localRoot().resolve("vault")));
+            } finally { release.countDown(); }
+            await(this::providerDone);assertEquals(0,real.opens);assertEquals(State.NO_LOCAL_VAULT,controller.snapshot().state());
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    @Test public void folderChangeBeforeAuthenticationResultSuppressesEnrollment() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+            var port=startBound(new RealBackend() {
+                boolean authenticateCandidate(byte[] exact,char[] credential) { block(entered,release);return super.authenticateCandidate(exact,credential); }
+            });
+            port.snapshot=ForegroundVaultCoordinatorTest.productFixtureScan();prepareJoin();
+            char[] credential="M1H disposable fixture".toCharArray();accept(() -> controller.joinExistingVault(credential));assertTrue(entered.await(10,TimeUnit.SECONDS));
+            try { assertTrue(controller.disconnectSyncFolder()); } finally { release.countDown(); }
+            await(this::providerDone);assertFalse(Files.exists(localRoot().resolve("vault")));assertArrayEquals(new char[credential.length],credential);
+            assertEquals(0,real.opens);assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.NOT_CONFIGURED,controller.syncView().binding().status());
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    @Test public void initializeLockDuringBlockedCreatePreventsWriteAndStaleCompletion() throws Exception {
+        var port=outboundFixture(1);port.vaultBytes=null;port.directoryPresent=false;
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        port.onVaultCreate=() -> block(entered,release);
+        accept(() -> controller.initializeSyncFolder());assertTrue(entered.await(10,TimeUnit.SECONDS));
+        try {
+            assertFalse(controller.initializeSyncFolder());accept(() -> controller.lock());state(State.LOCKED);
+            assertFalse(controller.canPublishLocalChanges());
+        } finally { release.countDown(); }
+        await(this::providerDone);assertEquals(0,port.vaultOutputs);assertEquals(0,port.directoryCreates);assertEquals(State.LOCKED,controller.snapshot().state());
+    }
+    @Test public void initializeThenManualPublishOnlyAndRepeatedInitializationNoWrites() throws Exception {
+        var port=outboundFixture(1);var session=real.session;byte[] exact=port.vaultBytes.clone();port.vaultBytes=null;port.directoryPresent=false;
+        accept(() -> controller.initializeSyncFolder());await(this::providerDone);
+        assertArrayEquals(exact,port.vaultBytes);assertTrue(port.directoryPresent);assertTrue(port.objects.isEmpty());assertEquals(1,port.vaultCreates);
+        accept(() -> controller.publishLocalChanges());await(this::providerDone);assertEquals(1,port.objects.size());assertSame(session,real.session);
+        accept(() -> controller.initializeSyncFolder());await(this::providerDone);assertEquals(1,port.vaultCreates);assertEquals(1,port.directoryCreates);
+        assertArrayEquals(exact,Files.readAllBytes(localRoot().resolve("vault")));
     }
     private org.totipo.android.sync.PublicationPort outboundFixture() throws Exception { return outboundFixture(3); }
     private org.totipo.android.sync.PublicationPort outboundFixture(int count) throws Exception {

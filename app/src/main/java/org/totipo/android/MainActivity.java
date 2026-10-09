@@ -33,7 +33,8 @@ public final class MainActivity extends Activity {
     private EditText password, confirmation;
     private Button action, refresh, lock;
     private TextView syncStatus;
-    private Button publishChanges;
+    private Button publishChanges, joinVault, initializeFolder;
+    private boolean joining;
     private Button chooseFolder, importChanges, disconnectFolder, checkFolder;
     private static final int SYNC_TREE_REQUEST = 310;
     private String surface;
@@ -74,7 +75,7 @@ public final class MainActivity extends Activity {
         if (state.state() != State.OPEN && state.state() != State.BUSY) { clearSecret(); adding = submitted = false; }
 
         String next = switch (state.state()) {
-            case NO_LOCAL_VAULT, CREATING -> "create";
+            case NO_LOCAL_VAULT, CREATING -> joining && controller.hasJoinCandidate() && state.state() == State.NO_LOCAL_VAULT ? "join" : "create";
             case LOCKED, UNLOCKING -> "unlock";
             case OPEN, BUSY -> adding ? "add" : "open";
             default -> "status";
@@ -91,6 +92,10 @@ public final class MainActivity extends Activity {
         chooseFolder.setEnabled(controller.canManageSyncFolder());
         importChanges.setEnabled(controller.canImportProviderChanges());
         publishChanges.setEnabled(controller.canPublishLocalChanges());
+        joinVault.setVisibility(state.state() == State.NO_LOCAL_VAULT ? View.VISIBLE : View.GONE);
+        joinVault.setEnabled(controller.canJoinExistingVault());
+        initializeFolder.setVisibility(state.state() == State.OPEN ? View.VISIBLE : View.GONE);
+        initializeFolder.setEnabled(controller.canInitializeSyncFolder());
         disconnectFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
         disconnectFolder.setEnabled(controller.canManageSyncFolder());
         checkFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
@@ -157,7 +162,7 @@ public final class MainActivity extends Activity {
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         label("Sync folder").setTextSize(20);
         syncStatus = label("");
-        label("Totipo imports and publishes immutable token objects. This folder must already contain the same immutable Totipo vault. Totipo reads its vault to verify identity and never writes, replaces, repairs or adopts it.");
+        label("Join authenticates the existing immutable folder vault into an empty local canonical store. Initialize publishes the exact local vault create-only. Import and Publish synchronize token objects separately. No vault replacement, password change, migration or automatic sync.");
         LinearLayout folderActions = new LinearLayout(this); content.addView(folderActions);
         chooseFolder = buttonIn(folderActions, "Choose folder", this::chooseSyncFolder);
         importChanges = buttonIn(folderActions, "Import changes", () -> controller.importProviderChanges());
@@ -165,11 +170,14 @@ public final class MainActivity extends Activity {
         LinearLayout folderSettings = new LinearLayout(this); content.addView(folderSettings);
         checkFolder = buttonIn(folderSettings, "Retry access", () -> controller.checkSyncFolder());
         disconnectFolder = buttonIn(folderSettings, "Disconnect", () -> controller.disconnectSyncFolder());
-        if (next.equals("create") || next.equals("unlock")) {
-            label(next.equals("create") ? "Create Vault" : "Unlock Vault").setTextSize(22);
+        joinVault = button("Join existing vault", () -> { joining = true; controller.prepareJoin(); render(controller.snapshot()); });
+        initializeFolder = button("Initialize sync folder", () -> controller.initializeSyncFolder());
+        if (next.equals("create") || next.equals("unlock") || next.equals("join")) {
+            label(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock Vault").setTextSize(22);
             password = passwordField("Password");
             if (next.equals("create")) confirmation = passwordField("Confirm password");
-            action = button(next.equals("create") ? "Create Vault" : "Unlock", () -> authenticate(false));
+            action = button(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock", () -> authenticate(false));
+            if (next.equals("join")) button("Cancel Join", () -> { controller.cancelJoin(); clearPasswords(); joining = false; build("create"); render(controller.snapshot()); });
             password.requestFocus();
         } else if (next.equals("add")) {
             label("Add token").setTextSize(22);
@@ -316,7 +324,8 @@ public final class MainActivity extends Activity {
         // Copy only at submission; controller takes exclusive ownership and clears even rejection.
         char[] credential = new char[password.length()];
         password.getText().getChars(0, credential.length, credential, 0);
-        boolean accepted = create ? controller.create(credential) : controller.unlock(credential);
+        boolean accepted = surface.equals("join") ? controller.joinExistingVault(credential) : create ? controller.create(credential) : controller.unlock(credential);
+        if (accepted) clearPasswords();
         if (accepted) {
             ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(password.getWindowToken(), 0);
         }
