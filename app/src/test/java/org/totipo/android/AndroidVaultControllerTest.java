@@ -67,6 +67,14 @@ public final class AndroidVaultControllerTest {
             } catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }
         }
     }
+    private boolean providerDone() {
+        synchronized (controller) {
+            try {
+                var field = AndroidVaultController.class.getDeclaredField("providerActive"); field.setAccessible(true);
+                return idle() && !field.getBoolean(controller);
+            } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
+        }
+    }
     private void accept(BooleanSupplier operation) throws Exception { await(this::idle); assertTrue(operation.getAsBoolean()); }
     private void state(State next) throws Exception { await(() -> controller.snapshot().state() == next); }
     private char[] password() { return "M1J disposable".toCharArray(); }
@@ -238,6 +246,196 @@ public final class AndroidVaultControllerTest {
             assertEquals(1, real.opens); assertEquals(0, real.creates); assertEquals(0, real.closes);
             assertThrows(UnsupportedOperationException.class, () -> controller.snapshot().view().tokens().clear());
         } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    private Path localRoot() throws Exception {
+        var field = LocalReplicaOwner.class.getDeclaredField("root"); field.setAccessible(true); return (Path) field.get(owner);
+    }
+    private org.totipo.android.sync.SyncFolderBindingTest.MemoryPort startBound() throws Exception {
+        var port = new org.totipo.android.sync.SyncFolderBindingTest.MemoryPort();
+        port.stored = new org.totipo.android.sync.SyncFolderBinding.Stored("content://fixture/tree/a", true, false);
+        port.permissions.put(port.stored.uri(), new org.totipo.android.sync.SyncFolderBinding.Grants(true, false));
+        controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
+            public java.time.Instant wall() { return java.time.Instant.now(); }
+            public long elapsedMillis() { return System.nanoTime() / 1000000; }
+        }, null, new org.totipo.android.sync.SyncFolderBinding(port));
+        await(this::providerDone); return port;
+    }
+    @Test public void manualProviderImportUsesWorkerSameSessionAndHonestCoverage() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            byte[] wrapper = ForegroundVaultCoordinatorTest.productFixtureVault();
+            try (var lease = owner.acquire()) { Files.write(lease.root().resolve("vault"), wrapper); }
+            var port = startBound();
+            assertFalse(controller.canImportProviderChanges()); assertFalse(controller.importProviderChanges());
+            assertFalse(controller.syncView().toString().contains("content://"));
+            accept(() -> controller.unlock("M1H disposable fixture".toCharArray())); state(State.OPEN); await(this::idle);
+            assertTrue(controller.canImportProviderChanges());
+            var same = real.session;
+            var scan = ForegroundVaultCoordinatorTest.productFixtureScan();
+            port.snapshot = org.totipo.android.provider.ProviderSnapshotTest.boundedFixture(scan);
+            accept(() -> controller.importProviderChanges());
+            await(() -> providerDone() && controller.snapshot().view().tokens().size() == 3);
+            assertTrue(controller.syncView().message().contains("Provider view incomplete"));
+            assertTrue(controller.syncView().message().contains("Changes imported"));
+            assertNull(controller.snapshot().revealedCode()); assertSame(same, real.session);
+            assertEquals(1, real.opens); assertEquals(0, real.closes);
+            assertArrayEquals(wrapper, Files.readAllBytes(localRoot().resolve("vault")));
+            port.snapshot = new org.totipo.android.provider.ProviderSnapshot.Scan(scan.epoch(), scan.tree(), scan.root(),
+                    scan.directories(), org.totipo.android.provider.ProviderSnapshot.State.INCOMPLETE_LOADING, scan.issues());
+            accept(() -> controller.importProviderChanges()); await(this::providerDone);
+            assertEquals("Provider view incomplete. No new objects.", controller.syncView().message());
+            port.snapshot = scan; accept(() -> controller.importProviderChanges()); await(this::providerDone);
+            assertEquals("No new objects.", controller.syncView().message());
+            port.offline = true; accept(() -> controller.importProviderChanges()); await(this::providerDone);
+            assertEquals(State.OPEN, controller.snapshot().state());
+            assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.UNAVAILABLE, controller.syncView().binding().status());
+            assertFalse(controller.canImportProviderChanges());
+            port.offline = false; accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+            assertTrue(controller.canImportProviderChanges());
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    @Test public void importBusyAdmissionAndEmptyTreeStatus() throws Exception {
+        var port = startBound(); accept(() -> controller.create(password())); state(State.OPEN); await(this::idle);
+        var tree = new org.totipo.android.provider.ProviderSnapshot.Tree("fixture", "content://fixture/tree/a", "a");
+        port.snapshot = new org.totipo.android.provider.ProviderSnapshot.Scan("epoch", tree,
+                new org.totipo.android.provider.ProviderSnapshot.Listing("epoch", "a", List.of(),
+                        org.totipo.android.provider.ProviderSnapshot.State.COMPLETE, List.of()), List.of(),
+                org.totipo.android.provider.ProviderSnapshot.State.COMPLETE, List.of());
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        port.onScan = () -> {
+            assertNotSame(ui, Thread.currentThread()); entered.countDown();
+            try { assertTrue(release.await(30, TimeUnit.SECONDS)); } catch (InterruptedException e) { throw new AssertionError(e); }
+        };
+        accept(() -> controller.importProviderChanges()); assertTrue(entered.await(10, TimeUnit.SECONDS));
+        try {
+            assertFalse(controller.importProviderChanges()); assertFalse(controller.canImportProviderChanges());
+            assertFalse(controller.checkSyncFolder());
+            accept(() -> controller.refresh()); state(State.OPEN);
+            assertEquals(1, port.scans);
+        } finally { release.countDown(); }
+        await(this::providerDone); assertEquals("No new objects.", controller.syncView().message());
+    }
+    @Test public void productPublicationFailureAndExistingContradictionAreVisible() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            try (var lease = owner.acquire()) { Files.write(lease.root().resolve("vault"), ForegroundVaultCoordinatorTest.productFixtureVault()); }
+            var port = startBound(); port.snapshot = ForegroundVaultCoordinatorTest.productFixtureScan();
+            accept(() -> controller.unlock("M1H disposable fixture".toCharArray())); state(State.OPEN);
+            real.tokenWriteFault = new org.totipo.spi.ObjectWrite.ExistingDifferent();
+            accept(() -> controller.importProviderChanges()); await(this::providerDone);
+            assertTrue(controller.syncView().message().contains("Integrity problem"));
+            accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+            assertTrue(controller.syncView().message().contains("Integrity problem"));
+            real.tokenWriteFault = new org.totipo.spi.ObjectWrite.Failed(org.totipo.spi.StoreFailure.UNAVAILABLE);
+            accept(() -> controller.importProviderChanges()); await(this::providerDone);
+            assertEquals(State.ERROR_OPEN, controller.snapshot().state());
+            assertTrue(controller.syncView().message().contains("Local publication failed"));
+            assertEquals(1, real.opens); assertEquals(0, real.closes);
+            real.tokenWriteFault = null;
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    private static void block(CountDownLatch entered, CountDownLatch release) {
+        entered.countDown();
+        boolean interrupted = false;
+        for (;;) {
+            try { if (!release.await(30, TimeUnit.SECONDS)) throw new AssertionError("provider not released"); break; }
+            catch (InterruptedException ignored) { interrupted = true; }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+    }
+    @Test public void blockedProviderLockDisconnectAndReplacementDiscardWithoutRefresh() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            for (String action : List.of("lock", "disconnect", "replace", "permission")) {
+                owner = TestReplicaOwners.create(temporary.newFolder().toPath());
+                try (var lease = owner.acquire()) { Files.write(lease.root().resolve("vault"), ForegroundVaultCoordinatorTest.productFixtureVault()); }
+                var port = startBound(); port.snapshot = ForegroundVaultCoordinatorTest.productFixtureScan();
+                accept(() -> controller.unlock("M1H disposable fixture".toCharArray())); state(State.OPEN);
+                var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+                var threads = new HashSet<Thread>();
+                port.onScan = () -> { synchronized (threads) { threads.add(Thread.currentThread()); }
+                    assertEquals("Totipo-provider-io", Thread.currentThread().getName()); block(entered, release); };
+                Set<Path> beforeFiles;
+                try (var files = Files.walk(localRoot())) { beforeFiles = files.collect(java.util.stream.Collectors.toSet()); }
+                int refreshes = real.refreshes;
+                var vaultOps = new ArrayList<String>();
+                real.operationHook = name -> {
+                    if (name.equals("publishObject") || name.equals("requestRefresh"))
+                        assertEquals("Totipo-vault", Thread.currentThread().getName());
+                    synchronized (vaultOps) { vaultOps.add(name); }
+                };
+                accept(() -> controller.importProviderChanges()); assertTrue(entered.await(10, TimeUnit.SECONDS));
+                try {
+                    await(this::idle);
+                    assertEquals(State.OPEN, controller.snapshot().state()); // UI Lock remains enabled.
+                    assertEquals("Importing…", controller.syncView().message());
+                    for (int i = 0; i < 100; i++) assertFalse(controller.importProviderChanges());
+                    assertFalse(controller.checkSyncFolder()); assertEquals(1, port.scans);
+                    var laneField = AndroidVaultController.class.getDeclaredField("providerIo"); laneField.setAccessible(true);
+                    Object lane = laneField.get(controller);
+                    var executorField = lane.getClass().getDeclaredField("executor"); executorField.setAccessible(true);
+                    var executor = (ThreadPoolExecutor) executorField.get(lane);
+                    assertEquals(1, executor.getLargestPoolSize()); assertEquals(0, executor.getQueue().size());
+                    if (action.equals("lock")) {
+                        lock(); assertEquals(1, real.closes);
+                        accept(() -> controller.unlock("M1H disposable fixture".toCharArray())); state(State.OPEN);
+                    } else if (action.equals("disconnect")) {
+                        accept(() -> controller.disconnectSyncFolder()); await(this::idle);
+                        assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.NOT_CONFIGURED, controller.syncView().binding().status());
+                    } else if (action.equals("permission")) {
+                        port.permissions.clear(); // Grant revoked while a provider ignores cancellation.
+                    } else {
+                        accept(() -> controller.chooseSyncFolder(false, "content://fixture/tree/b", 1)); await(this::idle);
+                        assertEquals("content://fixture/tree/b", controller.initialTreeUri());
+                    }
+                    assertEquals(1L, release.getCount()); assertEquals(1, threads.size());
+                    synchronized (vaultOps) { vaultOps.clear(); }
+                } finally { release.countDown(); }
+                await(this::providerDone);
+                assertEquals(refreshes, real.refreshes);
+                assertTrue(controller.snapshot().view().tokens().isEmpty());
+                try (var files = Files.walk(localRoot())) {
+                    assertEquals(beforeFiles, files.collect(java.util.stream.Collectors.toSet()));
+                }
+                synchronized (vaultOps) { assertFalse(vaultOps.contains("requestRefresh")); assertFalse(vaultOps.contains("publishObject")); }
+                if (action.equals("replace")) {
+                    assertEquals("content://fixture/tree/b", controller.initialTreeUri());
+                    assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.READY, controller.syncView().binding().status());
+                }
+                if (action.equals("disconnect")) assertNull(controller.initialTreeUri());
+                if (action.equals("permission")) assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.ACCESS_LOST,
+                        controller.syncView().binding().status());
+                lock(); controller.shutdown(); real.operationHook = name -> {};
+            }
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
+    @Test public void startupAndRetryProbeCannotBlockLocalCreateOrAddAndUseOneThread() throws Exception {
+        var port = new org.totipo.android.sync.SyncFolderBindingTest.MemoryPort();
+        port.stored = new org.totipo.android.sync.SyncFolderBinding.Stored("content://fixture/tree/a", true, false);
+        port.permissions.put(port.stored.uri(), new org.totipo.android.sync.SyncFolderBinding.Grants(true, false));
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var threads = new HashSet<Thread>();
+        port.onProbe = () -> { synchronized (threads) { threads.add(Thread.currentThread()); }
+            assertEquals("Totipo-provider-io", Thread.currentThread().getName()); block(entered, release); };
+        controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
+            public java.time.Instant wall() { return java.time.Instant.now(); }
+            public long elapsedMillis() { return 0; }
+        }, null, new org.totipo.android.sync.SyncFolderBinding(port));
+        assertTrue(entered.await(10, TimeUnit.SECONDS));
+        try {
+            state(State.NO_LOCAL_VAULT); await(this::idle);
+            assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.CHECKING, controller.syncView().binding().status());
+            assertFalse(controller.canImportProviderChanges());
+            for (int i = 0; i < 100; i++) assertFalse(controller.checkSyncFolder());
+            accept(() -> controller.create(password())); state(State.OPEN);
+            add(enrollment("local", "", org.totipo.TotpAlgorithm.SHA1, 6, 30, rfcSecret()), AddTokenOutcome.Status.ADDED);
+            assertEquals(1, port.probes); assertEquals(1, threads.size()); assertEquals(1L, release.getCount());
+        } finally { release.countDown(); }
+        await(this::providerDone);
+        assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.READY, controller.syncView().binding().status());
+        port.offline = true; accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+        assertEquals(org.totipo.android.sync.SyncFolderBinding.Status.UNAVAILABLE, controller.syncView().binding().status());
+        assertEquals(1, threads.size());
     }
     private AddTokenRequest enrollment(String issuer, String account, org.totipo.TotpAlgorithm algorithm, int digits, long period, char[] text) {
         return new AddTokenRequest(issuer, account, algorithm, digits, period, text);

@@ -32,6 +32,9 @@ public final class MainActivity extends Activity {
     private org.totipo.TokenId selectedId;
     private EditText password, confirmation;
     private Button action, refresh, lock;
+    private TextView syncStatus;
+    private Button chooseFolder, importChanges, disconnectFolder, checkFolder;
+    private static final int SYNC_TREE_REQUEST = 310;
     private String surface;
     private boolean adding, submitted;
     private EditText issuer, account, secret, period;
@@ -77,6 +80,19 @@ public final class MainActivity extends Activity {
         };
         if (!next.equals(surface)) build(next);
         status.setText(state.message());
+        var sync = controller.syncView();
+        syncStatus.setText(sync.message() + (state.state() == State.LOCKED
+                ? " Unlock Totipo to import changes." : ""));
+        boolean configured = sync.binding().status() != org.totipo.android.sync.SyncFolderBinding.Status.NOT_CONFIGURED;
+        chooseFolder.setText(configured ? "Change folder" : "Choose folder");
+        if (sync.binding().status() == org.totipo.android.sync.SyncFolderBinding.Status.ACCESS_LOST)
+            chooseFolder.setText("Choose folder again");
+        chooseFolder.setEnabled(controller.canManageSyncFolder());
+        importChanges.setEnabled(controller.canImportProviderChanges());
+        disconnectFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
+        disconnectFolder.setEnabled(controller.canManageSyncFolder());
+        checkFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
+        checkFolder.setEnabled(controller.canManageSyncFolder());
         if (action != null) {
             action.setEnabled(state.state() == State.NO_LOCAL_VAULT || state.state() == State.LOCKED
                     || state.state() == State.ERROR_LOCKED || state.state() == State.FAILED_CLOSE || state.state() == State.ERROR_OPEN);
@@ -137,6 +153,15 @@ public final class MainActivity extends Activity {
         setContentView(root);
         label("Totipo").setTextSize(28);
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        label("Sync folder").setTextSize(20);
+        syncStatus = label("");
+        label("Totipo currently imports token changes from this folder.");
+        LinearLayout folderActions = new LinearLayout(this); content.addView(folderActions);
+        chooseFolder = buttonIn(folderActions, "Choose folder", this::chooseSyncFolder);
+        importChanges = buttonIn(folderActions, "Import changes", () -> controller.importProviderChanges());
+        LinearLayout folderSettings = new LinearLayout(this); content.addView(folderSettings);
+        checkFolder = buttonIn(folderSettings, "Retry access", () -> controller.checkSyncFolder());
+        disconnectFolder = buttonIn(folderSettings, "Disconnect", () -> controller.disconnectSyncFolder());
         if (next.equals("create") || next.equals("unlock")) {
             label(next.equals("create") ? "Create Vault" : "Unlock Vault").setTextSize(22);
             password = passwordField("Password");
@@ -194,6 +219,25 @@ public final class MainActivity extends Activity {
                 if (controller.snapshot().state() == State.ERROR_LOCKED) controller.retryDiscovery(); else controller.lock();
             });
         }
+    }
+    private void chooseSyncFolder() {
+        if (!controller.canManageSyncFolder()) return;
+        controller.hideCode();
+        android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE);
+        picker.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                | android.content.Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        String previous = controller.initialTreeUri();
+        if (previous != null) picker.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, android.net.Uri.parse(previous));
+        try { startActivityForResult(picker, SYNC_TREE_REQUEST); }
+        catch (android.content.ActivityNotFoundException unavailable) { syncStatus.setText("Folder picker unavailable."); }
+    }
+    @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == SYNC_TREE_REQUEST && controller != null) controller.chooseSyncFolder(
+                result != RESULT_OK, data == null || data.getData() == null ? null : data.getData().toString(),
+                data == null ? 0 : data.getFlags());
     }
     private void clearSecret() { if (secret != null) secret.setText(""); }
     private void cancelAdd() { clearSecret(); adding = submitted = false; render(controller.snapshot()); }

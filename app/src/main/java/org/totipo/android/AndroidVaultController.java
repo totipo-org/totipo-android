@@ -14,6 +14,8 @@ import org.totipo.CreateVaultResult;
 import org.totipo.TokenId;
 import java.time.Instant;
 import org.totipo.android.provider.ProviderSnapshot.Scan;
+import org.totipo.android.sync.SyncFolderBinding;
+import org.totipo.android.reconcile.ImmutableCandidateImporter;
 import org.totipo.android.reconcile.ForegroundVaultCoordinator;
 import org.totipo.android.reconcile.ForegroundVaultCoordinator.View;
 
@@ -55,6 +57,15 @@ public final class AndroidVaultController {
             return vault.generateTotp(id, now, expected);
         }
     }
+    public record SyncView(SyncFolderBinding.View binding, String message) {}
+    private final SyncFolderBinding syncBinding;
+    private final org.totipo.android.sync.ProviderIoLane providerIo = new org.totipo.android.sync.ProviderIoLane();
+    private boolean providerActive;
+    private long sessionGeneration;
+    private SyncView syncView = new SyncView(new SyncFolderBinding.View(
+            SyncFolderBinding.Status.NOT_CONFIGURED, false, false), "Not configured");
+    private String initialTreeUri;
+    private boolean importIntegrityAttention;
     private final LocalReplicaOwner owner;
     private final Dispatcher dispatcher;
     private final Backend backend;
@@ -83,6 +94,12 @@ public final class AndroidVaultController {
     }
     AndroidVaultController(LocalReplicaOwner owner, Dispatcher dispatcher, Backend backend,
                            TotpPresentation.Time time, TotpPresentation.Clipboard clipboard) {
+        this(owner, dispatcher, backend, time, clipboard, null);
+    }
+    AndroidVaultController(LocalReplicaOwner owner, Dispatcher dispatcher, Backend backend,
+                           TotpPresentation.Time time, TotpPresentation.Clipboard clipboard,
+                           SyncFolderBinding binding) {
+        this.syncBinding = binding;
         this.owner = owner; this.dispatcher = dispatcher; this.backend = backend;
         this.time = time;
         TotpPresentation.Clipboard marshalled = clipboard == null ? null : new TotpPresentation.Clipboard() {
@@ -95,7 +112,10 @@ public final class AndroidVaultController {
         };
         presentation = new TotpPresentation(time, (delay, action) -> dispatcher.after(delay,
                 () -> { synchronized (this) { action.run(); } }), marshalled, this::presentationChanged);
-        submit(State.STARTING, "Checking local vault…", this::discover);
+        submit(State.STARTING, "Checking local vault…", () -> {
+            if (syncBinding != null) { syncBinding.restore(); updateBinding(null); startProvider(false); }
+            discover();
+        });
     }
     public synchronized Snapshot snapshot() { presentation.display(); return snapshot; }
     public void attach(Listener listener) {
@@ -186,7 +206,11 @@ public final class AndroidVaultController {
             worker.execute(() -> {
                 dispatcher.assertWorkerThread();
                 try { operation.run(); }
-                finally { synchronized (this) { operating = false; scheduleView(); } }
+                finally { synchronized (this) {
+                    operating = false; scheduleView();
+                    // Admission-dependent controls must also observe worker completion.
+                    for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+                } }
             });
             return true;
         } catch (RejectedExecutionException rejected) {
@@ -359,10 +383,172 @@ public final class AndroidVaultController {
             }
         });
     }
+    public synchronized SyncView syncView() { return syncView; }
+    /** Private picker hint only; never rendered in product status. */
+    public synchronized String initialTreeUri() { return initialTreeUri; }
+    public synchronized boolean canManageSyncFolder() { return syncBinding != null && !operating; }
+    public synchronized boolean canImportProviderChanges() {
+        return canManageSyncFolder() && !providerActive && snapshot.state() == State.OPEN
+                && syncView.binding().status() == SyncFolderBinding.Status.READY;
+    }
+    private synchronized void updateBinding(String message) {
+        var binding = syncBinding.view();
+        initialTreeUri = syncBinding.initialUri();
+        String detail = message == null ? switch (binding.status()) {
+            case NOT_CONFIGURED -> "Not configured";
+            case CHECKING -> "Checking sync folder…";
+            case READY -> "Connected";
+            case ACCESS_LOST -> "Access needed. Choose folder again.";
+            case UNAVAILABLE -> "Sync folder unavailable. Retry access.";
+        } : message;
+        if (importIntegrityAttention && !detail.contains("Integrity problem")) detail += " Integrity problem. Token changes need attention.";
+        syncView = new SyncView(binding, detail);
+    }
+    private boolean folderOperation(Runnable operation) {
+        if (!canManageSyncFolder()) return false;
+        Snapshot before = snapshot;
+        return submit(before.state(), before.message(), () -> {
+            operation.run();
+            if (before.state() == State.OPEN) render(before.message());
+            else publish(before.state(), before.error(), before.message(), before.view());
+        });
+    }
+    public synchronized boolean chooseSyncFolder(boolean cancelled, String uri, int flags) {
+        dispatcher.assertDispatchThread();
+        return folderOperation(() -> {
+            boolean accepted = syncBinding.choose(cancelled, uri,
+                    (flags & android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0,
+                    (flags & android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0);
+            updateBinding(accepted ? null : "Folder access could not be saved. Choose folder again.");
+            if (accepted && !cancelled) startProvider(false);
+        });
+    }
+    public synchronized boolean disconnectSyncFolder() {
+        return folderOperation(() -> updateBinding(syncBinding.disconnect() ? null
+                : "Folder configuration could not be cleared. Try again."));
+    }
+    public synchronized boolean checkSyncFolder() {
+        if (providerActive) return false;
+        return folderOperation(() -> { syncBinding.check(); updateBinding(null); startProvider(false); });
+    }
+    public synchronized boolean importProviderChanges() {
+        dispatcher.assertDispatchThread();
+        if (!canImportProviderChanges()) return false;
+        clearPresentation(); presentationChanged();
+        updateBinding("Importing…");
+        return folderOperation(() -> {
+            syncBinding.check();
+            if (syncBinding.view().status() == SyncFolderBinding.Status.CHECKING) startProvider(true);
+            else updateBinding(null);
+        });
+    }
+    private synchronized boolean startProvider(boolean importing) {
+        if (providerActive || syncBinding.view().status() != SyncFolderBinding.Status.CHECKING) return false;
+        var request = syncBinding.request();
+        long session = sessionGeneration;
+        providerActive = true;
+        try {
+            providerIo.submit(syncBinding.transport(), request, importing,
+                    result -> dispatcher.post(() -> providerReturned(result, session)));
+            return true;
+        } catch (RejectedExecutionException rejected) {
+            providerActive = false;
+            syncBinding.unavailable(request); updateBinding("Provider busy. Retry access.");
+            return false;
+        }
+    }
+    private synchronized void providerReturned(org.totipo.android.sync.ProviderIoLane.Result result, long session) {
+        // The callback only admits detached transport data. All binding/session work runs on vault worker.
+        // A result arriving during an incompatible command is discarded, never retained for unlock.
+        try {
+            worker.execute(() -> {
+                dispatcher.assertWorkerThread();
+                synchronized (this) {
+                    providerActive = false;
+                    if (!syncBinding.current(result.request())) {
+                        // A replacement binding can be checked only after the old lane returns.
+                        startProvider(false);
+                        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+                        return;
+                    }
+                    // Persisted grants are local/platform metadata; recheck permission loss during IPC.
+                    syncBinding.check();
+                    if (!syncBinding.current(result.request())) {
+                        updateBinding(null);
+                        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+                        return;
+                    }
+                    if (result.importing() && (operating || session != sessionGeneration
+                            || snapshot.state() != State.OPEN || vault == null
+                            || vault.lifecycle() != ForegroundVaultCoordinator.State.OPEN)) {
+                        updateBinding(null);
+                        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+                        return;
+                    }
+                    syncBinding.accessibility(result.request(), result.accessible());
+                    updateBinding(null);
+                    if (!result.importing() || !result.accessible() || result.scan() == null) {
+                        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+                        return;
+                    }
+                    // Reserve normal vault admission only for local validation/publication.
+                    operating = true;
+                }
+                try {
+                    var scan = result.scan();
+                    if (scan.state() == org.totipo.android.provider.ProviderSnapshot.State.UNAVAILABLE)
+                        syncBinding.unavailable(result.request());
+                    var report = vault.sync(scan);
+                    synchronized (this) {
+                        importIntegrityAttention |= !report.contradictions().isEmpty()
+                                || report.count(ImmutableCandidateImporter.Status.BLOCKED_EXISTING_DIFFERENT) > 0;
+                    }
+                    updateBinding(importMessage(report));
+                    if (vault.lifecycle() == ForegroundVaultCoordinator.State.OPEN) render("Vault open");
+                    else publish(State.ERROR_OPEN, Error.LOCAL_STORAGE_UNSAFE,
+                            "Local publication failed. Lock the vault before retrying.", null);
+                } finally {
+                    synchronized (this) {
+                        operating = false; scheduleView();
+                        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+                    }
+                }
+            });
+        } catch (RejectedExecutionException busy) {
+            providerActive = false;
+            updateBinding(null);
+        }
+    }
+    /** Process/controller teardown: best effort, no wait for provider IPC termination. */
+    public synchronized void shutdown() {
+        sessionGeneration++; // Invalidate even results already queued before executor shutdown.
+        providerIo.close(); worker.shutdown();
+    }
+    static String importMessage(ForegroundVaultCoordinator.Report report) {
+        if (!report.contradictions().isEmpty()
+                || report.count(ImmutableCandidateImporter.Status.BLOCKED_EXISTING_DIFFERENT) > 0)
+            return "Integrity problem. Token changes need attention.";
+        if (report.refresh() == ForegroundVaultCoordinator.Refresh.SKIPPED_UNSAFE
+                || report.completion() == ForegroundVaultCoordinator.Completion.SESSION_FAILURE)
+            return "Local publication failed. Lock the vault before retrying.";
+        String admitted = report.count(ImmutableCandidateImporter.Status.IMPORTED) > 0
+                ? "Changes imported; refresh requested." : "No new objects.";
+        var coverage = report.evidence().transport().state();
+        if (coverage == org.totipo.android.provider.ProviderSnapshot.State.UNAVAILABLE)
+            return "Provider unavailable. " + admitted;
+        if (coverage != org.totipo.android.provider.ProviderSnapshot.State.COMPLETE)
+            return "Provider view incomplete. " + admitted;
+        boolean ignored = report.evidence().groups().stream().flatMap(g -> g.siblings().stream())
+                .anyMatch(c -> c.kind() != org.totipo.android.provider.ImmutableCandidateClassifier.Kind.VALID);
+        return admitted + (ignored ? " Invalid or unavailable candidates ignored." : "");
+    }
     public synchronized boolean lock() {
         State state = snapshot.state();
         return (state == State.OPEN || state == State.ERROR_OPEN || state == State.FAILED_CLOSE)
-                && submit(State.LOCKING, "Locking vault…", () -> { if (closeOwned()) discover(); });
+                && submit(State.LOCKING, "Locking vault…", () -> {
+                    synchronized (this) { sessionGeneration++; }
+                    if (closeOwned()) discover();
+                });
     }
     private boolean closeOwned() {
         try {

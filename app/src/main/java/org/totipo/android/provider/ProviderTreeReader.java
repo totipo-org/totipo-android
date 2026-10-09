@@ -22,7 +22,8 @@ public final class ProviderTreeReader {
     private final ContentResolver resolver;
     private final Uri treeUri;
     private final Tree tree;
-    private final ProviderTraversal.Source source = new ProviderTraversal.Source() {
+    private final ProviderTraversal.Source source;
+    private final ProviderTraversal.Source platformSource = new ProviderTraversal.Source() {
         @Override public Listing children(String epoch, String parent, int limit) {
             return queryChildren(epoch, parent, limit);
         }
@@ -38,11 +39,21 @@ public final class ProviderTreeReader {
             throw new IllegalArgumentException("Expected content tree URI");
         }
         tree = new Tree(treeUri.getAuthority(), treeUri.toString(), DocumentsContract.getTreeDocumentId(treeUri));
+        source = platformSource;
+    }
+
+    /** Eager transport seam: same production snapshot/traversal, no Android resources in JVM tests. */
+    ProviderTreeReader(Tree tree, ProviderTraversal.Source source) {
+        this.tree = Objects.requireNonNull(tree);
+        this.source = Objects.requireNonNull(source);
+        resolver = null; treeUri = null;
     }
 
     public Tree tree() { return tree; }
 
-    /** Eager bounded scan. Request 1024 for object transport; sizes do not imply validity. */
+    /** Eager bounded scan. Argument bounds bytes per candidate (plus one overflow byte),
+     * not document count. Independent traversal caps apply; exact row cap with proven EOF
+     * can be COMPLETE, but omitted rows/read attempts always make coverage incomplete. */
     public Scan snapshot(int expectedMaximum) { return ProviderTraversal.scan(tree, expectedMaximum, source); }
 
     /** Generic bounded read, e.g. a root VAULT row with maximum 87, associated with its scan epoch. */
@@ -74,37 +85,51 @@ public final class ProviderTreeReader {
                 state = State.UNAVAILABLE;
                 issues.add(Issue.NULL_CURSOR);
             } else {
-                state = state.combine(extras(cursor, issues));
-                // Probe one extra row so exactly limit rows with EOF is still complete.
-                while (cursor.moveToNext()) {
-                    if (Thread.currentThread().isInterrupted()) {
-                        state = state.combine(State.INCOMPLETE);
-                        issues.add(Issue.INTERRUPTED);
-                        break;
-                    }
-                    if (rows.size() == limit) {
-                        state = state.combine(State.INCOMPLETE);
-                        issues.add(Issue.RESOURCE_LIMIT);
-                        break;
-                    }
+                Listing listing = collectRows(epoch, parent, limit, cursor::moveToNext, () -> {
                     String id = string(cursor, Document.COLUMN_DOCUMENT_ID);
-                    String name = string(cursor, Document.COLUMN_DISPLAY_NAME);
-                    String mime = string(cursor, Document.COLUMN_MIME_TYPE);
-                    String locator = id == null ? null : DocumentsContract.buildDocumentUriUsingTree(treeUri, id).toString();
-                    rows.add(new ProviderSnapshot.Document(tree, locator, id, parent, name, mime,
-                            number(cursor, Document.COLUMN_SIZE), number(cursor, Document.COLUMN_FLAGS)));
-                    if (id == null || name == null || mime == null) {
-                        state = state.combine(State.INCOMPLETE);
-                        if (!issues.contains(Issue.MALFORMED_ROW)) issues.add(Issue.MALFORMED_ROW);
-                    }
-                }
-                state = state.combine(extras(cursor, issues));
+                    return new ProviderSnapshot.Document(tree,
+                            id == null ? null : DocumentsContract.buildDocumentUriUsingTree(treeUri, id).toString(),
+                            id, parent, string(cursor, Document.COLUMN_DISPLAY_NAME),
+                            string(cursor, Document.COLUMN_MIME_TYPE), number(cursor, Document.COLUMN_SIZE),
+                            number(cursor, Document.COLUMN_FLAGS));
+                }, () -> extras(cursor, issues), rows, issues);
+                state = listing.state();
             }
         } catch (RuntimeException e) {
             state = State.UNAVAILABLE;
             issues.add(Issue.EXCEPTION);
         }
         return new Listing(epoch, parent, rows, state, issues);
+    }
+
+    /** Shared production row collector. Probe one extra row: exact cap plus EOF is complete. */
+    static Listing collectRows(String epoch, String parent, int limit,
+                               java.util.function.BooleanSupplier advance,
+                               java.util.function.Supplier<ProviderSnapshot.Document> current,
+                               java.util.function.Supplier<State> coverage) {
+        return collectRows(epoch, parent, limit, advance, current, coverage, new ArrayList<>(), new ArrayList<>());
+    }
+    private static Listing collectRows(String epoch, String parent, int limit,
+                                      java.util.function.BooleanSupplier advance,
+                                      java.util.function.Supplier<ProviderSnapshot.Document> current,
+                                      java.util.function.Supplier<State> coverage,
+                                      List<ProviderSnapshot.Document> rows, List<Issue> issues) {
+        State state = coverage.get();
+        while (advance.getAsBoolean()) {
+            if (Thread.currentThread().isInterrupted()) {
+                state = state.combine(State.INCOMPLETE); issues.add(Issue.INTERRUPTED); break;
+            }
+            if (rows.size() == limit) {
+                state = state.combine(State.INCOMPLETE); issues.add(Issue.RESOURCE_LIMIT); break;
+            }
+            var row = current.get();
+            rows.add(row);
+            if (row.id() == null || row.displayName() == null || row.mimeType() == null) {
+                state = state.combine(State.INCOMPLETE);
+                if (!issues.contains(Issue.MALFORMED_ROW)) issues.add(Issue.MALFORMED_ROW);
+            }
+        }
+        return new Listing(epoch, parent, rows, state.combine(coverage.get()), issues);
     }
 
     private static State extras(Cursor cursor, List<Issue> issues) {

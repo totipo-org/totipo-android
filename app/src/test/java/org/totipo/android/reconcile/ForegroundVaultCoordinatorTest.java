@@ -145,6 +145,25 @@ public final class ForegroundVaultCoordinatorTest {
         catch (InterruptedException failureValue) { throw new AssertionError(failureValue); }
         finally { subscription.get().cancel(); }
     }
+    @Test public void providerVaultRowNeverPreparesOrReplacesLocalVault() throws Exception {
+        var owner = owner();
+        var ops = new Tracked();
+        Scan immutable = all();
+        var remoteVault = new Document(TREE, "content://fixture/remote-vault", "remote-vault", "root", "vault",
+                "application/octet-stream", 87L, null);
+        Scan withVault = new Scan(immutable.epoch(), TREE,
+                new Listing(immutable.epoch(), "root", List.of(remoteVault, immutable.root().rows().get(0)), State.COMPLETE, List.of()),
+                immutable.directories(), State.COMPLETE, List.of());
+        Path root;
+        try (var lease = owner.acquire()) { root = lease.root(); }
+        byte[] before = Files.readAllBytes(root.resolve("vault"));
+        try (var vault = opened(owner, ops)) {
+            var same = ops.first;
+            assertEquals(3, vault.sync(withVault).count(Status.IMPORTED));
+            assertArrayEquals(before, Files.readAllBytes(root.resolve("vault")));
+            assertSame(same, ops.first); assertEquals(1, ops.opens); assertEquals(0, ops.closes);
+        }
+    }
     @Test public void noEligibleKeepsSameSessionWithoutPublication() throws Exception {
         var ops = new Tracked();
         try (var vault = opened(owner(), ops)) {

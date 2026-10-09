@@ -16,7 +16,7 @@ public final class ProductControllerFixtures {
     public volatile org.totipo.spi.ObjectWrite tokenWriteFault;
     public volatile boolean persistBeforeTokenFault;
     public volatile SaveResult.Reason saveFailure;
-    public volatile int saves;
+    public volatile int saves, refreshes;
     public volatile VaultSession session;
     public volatile ForegroundVaultCoordinator coordinator;
     private final ForegroundVaultCoordinator.Operations operations = new ForegroundVaultCoordinator.Operations() {
@@ -67,6 +67,9 @@ public final class ProductControllerFixtures {
         SaveResult save(CreateToken editor) {
             saves++;
             return saveFailure == null ? super.save(editor) : new SaveResult.Failed(saveFailure);
+        }
+        void refresh(VaultSession session, CoordinatedPrivateStore store) {
+            operationHook.accept("requestRefresh"); refreshes++; super.refresh(session, store);
         }
         void close(VaultSession current) {
             if (failClose.get()) throw new IllegalStateException("test close failure");

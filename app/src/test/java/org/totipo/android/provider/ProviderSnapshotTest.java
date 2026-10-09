@@ -32,14 +32,71 @@ public final class ProviderSnapshotTest {
         @Override public Listing children(String epoch, String parent, int limit) {
             parents.add(parent);
             List<Document> all = rows.getOrDefault(parent, Collections.emptyList());
-            return new Listing(epoch, parent, all.subList(0, Math.min(limit, all.size())),
-                    all.size() > limit ? State.INCOMPLETE : states.getOrDefault(parent, State.COMPLETE),
-                    all.size() > limit ? Collections.singletonList(Issue.RESOURCE_LIMIT) : Collections.emptyList());
+            var iterator = all.iterator();
+            return ProviderTreeReader.collectRows(epoch, parent, limit,
+                    iterator::hasNext, iterator::next,
+                    () -> states.getOrDefault(parent, State.COMPLETE));
         }
         @Override public Bytes read(String epoch, Document document, int maximum) {
             readCalls++;
             return new Bytes(epoch, document, maximum, missing ? ByteState.MISSING : ByteState.PRESENT,
                     missing ? new byte[0] : new byte[maximum], Issue.NONE);
+        }
+    }
+    /** Real production snapshot with fixture bytes before a child-row exhaustion. */
+    public static Scan boundedFixture(Scan fixture) {
+        var source = new ProviderTraversal.Source() {
+            public Listing children(String epoch, String parent, int limit) {
+                List<Document> rows = new ArrayList<>(parent.equals(fixture.tree().rootId())
+                        ? fixture.root().rows() : fixture.directories().stream()
+                        .filter(d -> parent.equals(d.document().id())).findFirst().orElseThrow().children().rows());
+                if (!parent.equals(fixture.tree().rootId())) {
+                    while (rows.size() <= 1024) rows.add(new Document(fixture.tree(), "noise:" + rows.size(),
+                            "noise" + rows.size(), parent, "noise", "application/octet-stream", 0L, 0L));
+                }
+                var iterator = rows.iterator();
+                return ProviderTreeReader.collectRows(epoch, parent, limit,
+                        iterator::hasNext, iterator::next, () -> State.COMPLETE);
+            }
+            public Bytes read(String epoch, Document document, int maximum) {
+                var original = fixture.directories().stream().flatMap(d -> d.candidates().stream())
+                        .filter(b -> b.document().equals(document)).findFirst().orElseThrow();
+                return new Bytes(epoch, document, maximum, original.state(), original.bytes(), original.issue());
+            }
+        };
+        Scan result = new ProviderTreeReader(fixture.tree(), source).snapshot(1024);
+        assertEquals(State.INCOMPLETE, result.state());
+        assertTrue(result.directories().get(0).children().issues().contains(Issue.RESOURCE_LIMIT));
+        return result;
+    }
+    @Test public void productionSnapshot1024PinsRealRowAndCandidateLimits() {
+        for (int count : new int[]{1023, 1024, 1025}) {
+            Source source = new Source();
+            source.rows.put("root", List.of(row("A", "root", "objects-v1", true)));
+            List<Document> rows = new ArrayList<>();
+            // Noise rows count against CHILD_ROWS; only one candidate counts against reads.
+            rows.add(row("safe", "A", NAME, false));
+            for (int i = 1; i < count; i++) rows.add(row("noise" + i, "A", "noise", false));
+            source.rows.put("A", rows);
+            Scan scan = new ProviderTreeReader(TREE, source).snapshot(1024);
+            assertEquals(count <= 1024 ? State.COMPLETE : State.INCOMPLETE, scan.state());
+            assertEquals(Math.min(count, 1024), scan.directories().get(0).children().rows().size());
+            assertEquals(1, source.readCalls);
+            assertEquals(1024, scan.directories().get(0).candidates().get(0).expectedMaximum());
+            assertEquals(ByteState.PRESENT, scan.directories().get(0).candidates().get(0).state());
+            source.states.put("root", State.INCOMPLETE_LOADING);
+            assertNotEquals(State.COMPLETE, new ProviderTreeReader(TREE, source).snapshot(1024).state());
+        }
+        for (int count : new int[]{511, 512, 513}) {
+            Source source = new Source();
+            source.rows.put("root", List.of(row("A", "root", "objects-v1", true)));
+            List<Document> rows = new ArrayList<>();
+            for (int i = 0; i < count; i++) rows.add(row("candidate" + i, "A", NAME, false));
+            source.rows.put("A", rows);
+            Scan scan = new ProviderTreeReader(TREE, source).snapshot(1024);
+            assertEquals(count <= 512 ? State.COMPLETE : State.INCOMPLETE, scan.state());
+            assertEquals(Math.min(count, 512), source.readCalls);
+            if (count > 512) assertTrue(scan.issues().contains(Issue.RESOURCE_LIMIT));
         }
     }
     @Test public void namesAreOnlyLowercaseHexAndExactLength() {

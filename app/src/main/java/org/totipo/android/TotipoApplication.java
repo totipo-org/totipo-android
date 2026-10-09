@@ -30,7 +30,8 @@ public final class TotipoApplication extends Application {
             }, new ApplicationVaultBackend(), new TotpPresentation.Time() {
                 public Instant wall() { return Instant.now(); }
                 public long elapsedMillis() { return SystemClock.elapsedRealtime(); }
-            }, new PlatformCodeClipboard(getSystemService(ClipboardManager.class)));
+            }, new PlatformCodeClipboard(getSystemService(ClipboardManager.class)),
+                    new org.totipo.android.sync.SyncFolderBinding(new org.totipo.android.sync.AndroidSyncFolderPort(this)));
         }
     }
     public AndroidVaultController vaultController() { return vaultController; }

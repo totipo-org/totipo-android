@@ -24,7 +24,8 @@ manifest = subprocess.check_output([
     str(Path(sdk) / 'build-tools/36.0.0/aapt2'), 'dump', 'xmltree',
     str(args.apk), '--file', 'AndroidManifest.xml'], text=True)
 manifest = manifest.replace('http://schemas.android.com/apk/res/android:', 'android:')
-for permission in ('android.permission.CAMERA', 'android.permission.INTERNET'):
+for permission in ('android.permission.CAMERA', 'android.permission.INTERNET', 'android.permission.READ_EXTERNAL_STORAGE',
+                   'android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.MANAGE_EXTERNAL_STORAGE'):
     assert permission not in manifest, f'Forbidden APK permission: {permission}'
 enrollment_name = 'org.totipo.android.OtpAuthEnrollmentActivity'
 assert 'OtpAuthIntentProbeActivity' not in manifest, 'Obsolete qualification handler'
@@ -78,12 +79,12 @@ with zipfile.ZipFile(args.apk) as apk:
     assert 'AndroidManifest.xml' in names and 'resources.arsc' in names
     dex = b''.join(apk.read(name) for name in names if name.startswith('classes') and name.endswith('.dex'))
     assert dex.startswith(b'dex\n'), 'Missing DEX'
-    for descriptor in [b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/AddTokenRequest;', b'Lorg/totipo/android/AddTokenOutcome;', b'Lorg/totipo/android/Base32;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
+    for descriptor in [b'Lorg/totipo/android/sync/ProviderIoLane;', b'Lorg/totipo/android/sync/SyncFolderBinding;', b'Lorg/totipo/android/sync/AndroidSyncFolderPort;', b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/AddTokenRequest;', b'Lorg/totipo/android/AddTokenOutcome;', b'Lorg/totipo/android/Base32;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
     for descriptor in (b'Lorg/totipo/android/OtpAuthEnrollmentActivity;', b'Lorg/totipo/android/OtpAuthUriParser;', b'Lorg/totipo/android/OtpAuthTransport;'):
         assert descriptor in dex, f'Missing production enrollment class: {descriptor!r}'
     assert b'OtpAuthIntentProbeActivity' not in dex, 'Obsolete probe in APK'
-    for forbidden in (b'Lcom/google/zxing/', b'Landroidx/camera/', b'Lcom/google/mlkit/', b'Lcom/google/android/gms/'):
+    for forbidden in (b'Lcom/google/api/services/drive/', b'Lcom/google/android/apps/docs/', b'Lcom/nutomic/syncthingandroid/', b'Landroidx/work/', b'Landroidx/documentfile/', b'Lorg/totipo/safqualification/', b'Lcom/google/zxing/', b'Landroidx/camera/', b'Lcom/google/mlkit/', b'Lcom/google/android/gms/'):
         assert forbidden not in dex, f'Forbidden QR/camera/service dependency: {forbidden!r}'
     if args.debug_probe:
         for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;', b'Lorg/totipo/android/DebugTotpFixtureActivity;', b'Lorg/totipo/android/reconcile/DebugTotpFixture;']:
