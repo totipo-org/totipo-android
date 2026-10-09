@@ -13,7 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('apk', type=Path)
 parser.add_argument('--unsigned', action='store_true')
 parser.add_argument('--no-debug-probe', action='store_true', help='Require release DEX to exclude diagnostic classes')
-parser.add_argument('--debug-probe', action='store_true', help='Require the debug qualification Activity')
+parser.add_argument('--debug-probe', action='store_true', help='Require existing debug diagnostic classes')
 args = parser.parse_args()
 assert not (args.debug_probe and (args.unsigned or args.no_debug_probe)), 'Conflicting APK boundaries'
 data = args.apk.read_bytes()
@@ -26,46 +26,51 @@ manifest = subprocess.check_output([
 manifest = manifest.replace('http://schemas.android.com/apk/res/android:', 'android:')
 for permission in ('android.permission.CAMERA', 'android.permission.INTERNET'):
     assert permission not in manifest, f'Forbidden APK permission: {permission}'
-probe_name = 'org.totipo.android.debug.OtpAuthIntentProbeActivity'
-if args.debug_probe:
-    # xmltree nests attributes and filters beneath their owning Activity.
-    activities = []
-    lines = manifest.splitlines()
-    for index, line in enumerate(lines):
-        match = re.match(r'^( +)E: activity ', line)
-        if match:
-            depth = len(match[1])
-            end = index + 1
-            while end < len(lines):
-                element = re.match(r'^( *)E:', lines[end])
-                if element and len(element[1]) <= depth:
-                    break
-                end += 1
-            activities.append('\n'.join(lines[index:end]))
-    probe = [activity for activity in activities if probe_name in activity]
-    assert len(probe) == 1, 'Missing/duplicate debug otpauth probe Activity'
-    probe = probe[0]
-    assert re.search(r'android:exported\([^)]*\)=true', probe), 'Probe must be exported'
-    assert probe.count('E: intent-filter ') == 2, 'Unexpected probe intent filters'
-    filters = re.split(r'^ +E: intent-filter .*$', probe, flags=re.MULTILINE)[1:]
-    assert len(filters) == 2
-    view, send = filters
-    for value in ('android.intent.action.VIEW', 'android.intent.category.DEFAULT',
-                  'android.intent.category.BROWSABLE'):
-        assert f'="{value}"' in view, f'Missing debug VIEW boundary: {value}'
-    assert view.count('E: action ') == 1 and view.count('E: category ') == 2 and view.count('E: data ') == 1
-    for attribute, value in (('scheme', 'otpauth'), ('host', 'totp')):
-        assert re.search(r'android:' + attribute + r'\([^)]*\)="' + value + '"', view), f'Wrong VIEW {attribute}'
-    assert send.count('E: action ') == 1 and send.count('E: category ') == 1 and send.count('E: data ') == 1
-    for value in ('android.intent.action.SEND', 'android.intent.category.DEFAULT'):
-        assert f'="{value}"' in send, f'Missing debug SEND boundary: {value}'
-    assert re.search(r'android:mimeType\([^)]*\)="text/plain"', send), 'Wrong SEND MIME'
-    assert 'android:scheme(' not in send and 'android:host(' not in send
-    assert 'android:mimeType(' not in view
-    assert 'android.intent.action.SEND_MULTIPLE' not in probe and '*/*' not in probe
-if args.no_debug_probe:
-    assert probe_name not in manifest and 'otpauth' not in manifest, 'Debug otpauth surface in release manifest'
-    assert 'android.intent.action.SEND' not in manifest, 'SEND enrollment surface in release manifest'
+enrollment_name = 'org.totipo.android.OtpAuthEnrollmentActivity'
+assert 'OtpAuthIntentProbeActivity' not in manifest, 'Obsolete qualification handler'
+assert len(re.findall(r'android:scheme\([^)]*\)="otpauth"', manifest)) == 1, 'Duplicate/aliased otpauth filters'
+for forbidden in ('android.intent.action.SEND_MULTIPLE', '*/*', 'image/*', 'otpauth-migration'):
+    assert forbidden not in manifest, f'Forbidden enrollment registration: {forbidden}'
+# Every APK has the exact production ingress boundary.
+# xmltree nests attributes and filters beneath their owning Activity.
+activities = []
+lines = manifest.splitlines()
+for index, line in enumerate(lines):
+    match = re.match(r'^( +)E: activity ', line)
+    if match:
+        depth = len(match[1])
+        end = index + 1
+        while end < len(lines):
+            element = re.match(r'^( *)E:', lines[end])
+            if element and len(element[1]) <= depth:
+                break
+            end += 1
+        activities.append('\n'.join(lines[index:end]))
+assert len([activity for activity in activities if 'otpauth' in activity]) == 1, 'Duplicate otpauth handler'
+assert len([activity for activity in activities if 'android.intent.action.SEND' in activity]) == 1, 'Duplicate SEND handler'
+enrollment = [activity for activity in activities if enrollment_name in activity]
+assert len(enrollment) == 1, 'Missing/duplicate production enrollment Activity'
+enrollment = enrollment[0]
+assert re.search(r'android:exported\([^)]*\)=true', enrollment), 'Enrollment must be exported'
+assert enrollment.count('E: intent-filter ') == 2, 'Unexpected enrollment filters'
+filters = re.split(r'^ +E: intent-filter .*$', enrollment, flags=re.MULTILINE)[1:]
+assert len(filters) == 2
+view, send = filters
+for value in ('android.intent.action.VIEW', 'android.intent.category.DEFAULT',
+              'android.intent.category.BROWSABLE'):
+    assert f'="{value}"' in view, f'Missing VIEW boundary: {value}'
+assert view.count('E: action ') == 1 and view.count('E: category ') == 2 and view.count('E: data ') == 1
+for attribute, value in (('scheme', 'otpauth'), ('host', 'totp')):
+    assert re.search(r'android:' + attribute + r'\([^)]*\)="' + value + '"', view), f'Wrong VIEW {attribute}'
+assert send.count('E: action ') == 1 and send.count('E: category ') == 1 and send.count('E: data ') == 1
+for value in ('android.intent.action.SEND', 'android.intent.category.DEFAULT'):
+    assert f'="{value}"' in send, f'Missing SEND boundary: {value}'
+assert re.search(r'android:mimeType\([^)]*\)="text/plain"', send), 'Wrong SEND MIME'
+assert 'android:scheme(' not in send and 'android:host(' not in send
+assert 'android:mimeType(' not in view
+assert 'android:path' not in enrollment and 'android:port(' not in enrollment
+assert not re.search(r'android:host\([^)]*\)="hotp"', manifest)
+assert 'android.intent.action.SEND_MULTIPLE' not in enrollment and '*/*' not in enrollment
 with zipfile.ZipFile(args.apk) as apk:
     assert apk.testzip() is None, 'Corrupt APK entry'
     names = apk.namelist()
@@ -75,8 +80,12 @@ with zipfile.ZipFile(args.apk) as apk:
     assert dex.startswith(b'dex\n'), 'Missing DEX'
     for descriptor in [b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/AddTokenRequest;', b'Lorg/totipo/android/AddTokenOutcome;', b'Lorg/totipo/android/Base32;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
+    for descriptor in (b'Lorg/totipo/android/OtpAuthEnrollmentActivity;', b'Lorg/totipo/android/OtpAuthUriParser;', b'Lorg/totipo/android/OtpAuthTransport;'):
+        assert descriptor in dex, f'Missing production enrollment class: {descriptor!r}'
+    assert b'OtpAuthIntentProbeActivity' not in dex, 'Obsolete probe in APK'
+    for forbidden in (b'Lcom/google/zxing/', b'Landroidx/camera/', b'Lcom/google/mlkit/', b'Lcom/google/android/gms/'):
+        assert forbidden not in dex, f'Forbidden QR/camera/service dependency: {forbidden!r}'
     if args.debug_probe:
-        assert b'Lorg/totipo/android/debug/OtpAuthIntentProbeActivity;' in dex, 'Missing debug otpauth probe class'
         for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;', b'Lorg/totipo/android/DebugTotpFixtureActivity;', b'Lorg/totipo/android/reconcile/DebugTotpFixture;']:
             assert descriptor in dex, f'Missing debug qualification class: {descriptor!r}'
     if args.no_debug_probe:
@@ -98,7 +107,7 @@ with zipfile.ZipFile(args.apk) as apk:
                        b'Lorg/totipo/android/reconcile/CoordinatedPrivateStoreTest',
                        b'Lorg/totipo/android/reconcile/CoordinationSourceGuardTest']:
         assert descriptor not in dex, f'Coordination tests/historical scaffolding in APK: {descriptor!r}'
-    assert b'OtpAuthShareQualification' not in dex and b'OtpAuthResolverObserver' not in dex, 'Standalone device tests in APK'
+    assert b'Lorg/totipo/qualification/' not in dex and b'Lorg/totipo/ingresstest/' not in dex, 'Standalone device tests in APK'
     assert b'Lorg/junit/' not in dex and b'Lorg/totipo/android/CoreDependencySmokeTest;' not in dex and b'Lorg/totipo/android/LocalReplicaOwnerTest;' not in dex and b'Lorg/totipo/android/provider/ImmutableCandidateClassifierTest' not in dex and b'Lorg/totipo/android/provider/ProviderSnapshotTest;' not in dex, 'Test classes in APK'
     if args.unsigned:
         assert not any(name.upper().startswith('META-INF/') and name.upper().endswith(('.RSA', '.DSA', '.EC', '.SF')) for name in names), 'JAR signature present'

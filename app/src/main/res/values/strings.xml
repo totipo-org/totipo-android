@@ -2,4 +2,15 @@
 <resources>
     <string name="app_name">Totipo</string>
     <string name="unsupported_runtime">Totipo vault operations require Android 11 or newer.</string>
+    <string name="enrollment_label">Add to Totipo</string>
+    <string name="enrollment_unsupported">This authenticator link isn\'t supported by Totipo.</string>
+    <string name="enrollment_invalid">This authenticator link is invalid.</string>
+    <string name="enrollment_unlock">Unlock Totipo, then scan or share the QR again.</string>
+    <string name="enrollment_expired">Enrollment expired. Scan or share the QR again.</string>
+    <string name="enrollment_busy">Totipo is busy. Scan or share the QR again.</string>
+    <string name="enrollment_adding">Adding token…</string>
+    <string name="enrollment_unavailable">Enrollment unavailable. Open Totipo to check the vault.</string>
+    <string name="scan_qr">Scan QR with camera</string>
+    <string name="scan_qr_help">Scan the QR with your camera. If it offers Open, open it with Totipo. If it offers Share, share it to Totipo.</string>
+    <string name="camera_unavailable">Camera unavailable. You can still add a token manually.</string>
 </resources>

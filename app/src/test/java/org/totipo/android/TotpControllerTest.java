@@ -91,6 +91,38 @@ public final class TotpControllerTest {
         }
         pump();
     }
+    @Test public void parsedEnrollmentUsesSameSessionAndOnlyAuthorsAfterTransfer() throws Exception {
+        int before = controller.snapshot().view().tokens().size();
+        var session = real.session;
+        assertTrue(controller.canAddToken());
+        try (var cancelled = OtpAuthUriParser.parse("otpauth://totp/Public:account?secret=MY&issuer=Public")) {
+            assertEquals(before, controller.snapshot().view().tokens().size());
+        }
+        assertEquals(before, controller.snapshot().view().tokens().size());
+        try (var draft = OtpAuthUriParser.parse("otpauth://totp/Public:account?secret=MY&issuer=Public")) {
+            assertTrue(controller.addToken(draft.transfer()));
+        }
+        await(() -> idle() && controller.snapshot().state() == State.OPEN);
+        assertEquals(AddTokenOutcome.Status.ADDED, controller.snapshot().addOutcome().status());
+        // Saved acknowledgement precedes asynchronous session observation; controller idle
+        // does not mean the newly authored token has reached the rendered snapshot yet.
+        await(() -> controller.snapshot().view().tokens().size() == before + 1);
+        assertEquals(before + 1, controller.snapshot().view().tokens().size());
+        assertNull(controller.snapshot().revealedCode());
+        assertSame(session, real.session); assertEquals(1, real.creates); assertEquals(0, real.opens);
+    }
+    @Test public void parsedEnrollmentRejectedAdmissionWipesTransferredBuffer() throws Exception {
+        assertTrue(controller.lock());
+        assertFalse(controller.canAddToken());
+        try (var draft = OtpAuthUriParser.parse("otpauth://totp/account?secret=MY")) {
+            var field = draft.getClass().getDeclaredField("secret"); field.setAccessible(true);
+            char[] owned = (char[]) field.get(draft);
+            assertFalse(controller.addToken(draft.transfer()));
+            assertArrayEquals(new char[owned.length], owned);
+        }
+        await(() -> idle() && controller.snapshot().state() == State.LOCKED);
+        assertFalse(controller.canAddToken()); assertEquals(0, real.opens);
+    }
     @Test public void sameSessionOneRevealAndNoCryptoOnTicks() throws Exception {
         var session = real.session; var vault = real.coordinator;
         clock.wall = Instant.ofEpochSecond(31);

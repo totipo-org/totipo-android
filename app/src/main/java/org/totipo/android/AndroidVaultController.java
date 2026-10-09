@@ -306,12 +306,14 @@ public final class AndroidVaultController {
         publish(State.OPEN, diagnostics ? Error.OBSERVATION_DIAGNOSTICS : Error.NONE,
                 diagnostics && !message.contains(attention) ? message + " " + attention : message, view);
     }
+    /** Admission observation only; addToken still rechecks atomically and owns every rejection. */
+    public synchronized boolean canAddToken() { return snapshot.state() == State.OPEN && !operating; }
     /** Takes ownership on every path. Uses existing bounded admission and the live session. */
     public synchronized boolean addToken(AddTokenRequest request) {
         dispatcher.assertDispatchThread();
         boolean admitted = false;
         try {
-            if (snapshot.state() != State.OPEN || operating) return false;
+            if (!canAddToken()) return false;
             addOutcome = null;
             admitted = submit(State.BUSY, "Adding token…", () -> {
                 try {

@@ -36,7 +36,7 @@ public final class MainActivity extends Activity {
     private boolean adding, submitted;
     private EditText issuer, account, secret, period;
     private Spinner algorithm, digits;
-    private Button add, cancel;
+    private Button add, cancel, scan;
 
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -88,7 +88,7 @@ public final class MainActivity extends Activity {
         }
         if (next.equals("add")) {
             boolean enabled = state.state() == State.OPEN;
-            for (View field : new View[]{issuer, account, secret, period, algorithm, digits, add, cancel}) field.setEnabled(enabled);
+            for (View field : new View[]{issuer, account, secret, period, algorithm, digits, add, cancel, scan}) field.setEnabled(enabled);
         }
         if (add != null && next.equals("open")) add.setEnabled(state.state() == State.OPEN);
         if (refresh != null) {
@@ -121,7 +121,7 @@ public final class MainActivity extends Activity {
         clearSecret();
         clearCodeWidgets();
         code = remaining = selected = null; tokens = null; revealPanel = null;
-        issuer = account = secret = period = null; algorithm = digits = null; add = cancel = null;
+        issuer = account = secret = period = null; algorithm = digits = null; add = cancel = scan = null;
         surface = next; password = confirmation = null; action = refresh = lock = null;
         ScrollView scroll = new ScrollView(this);
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
@@ -145,6 +145,14 @@ public final class MainActivity extends Activity {
             password.requestFocus();
         } else if (next.equals("add")) {
             label("Add token").setTextSize(22);
+            scan = button(getString(R.string.scan_qr), () -> {
+                clearSecret();
+                try { startActivity(new android.content.Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)); }
+                catch (android.content.ActivityNotFoundException | SecurityException unavailable) {
+                    status.setText(R.string.camera_unavailable);
+                }
+            });
+            label(getString(R.string.scan_qr_help));
             issuer = textField("Issuer"); account = textField("Account / label");
             secret = passwordField("Base32 secret");
             label("Letters A–Z and digits 2–7, case insensitive. Spaces, tabs, line breaks and hyphens are ignored. Optional RFC 4648 padding.");
