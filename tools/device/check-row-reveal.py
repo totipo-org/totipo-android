@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Run detached row assertions in a temporary self-targeted Android test package.
+"""Run detached row and MainActivity Sync layout assertions in a temporary self-targeted Android test package.
 Requires the normal debug build, existing SDK/dependency cache, and one authorized adb device.
 Does not install/launch Totipo or read its data. Installs/removes only its own test package.
+Optional baseline comparison: ROW_REVEAL_APP_APK=<retained debug APK>,
+SYNC_LAYOUT_BASELINE=1; SYNC_LAYOUT_ONLY=1 skips the established row suite.
 """
 import os
 from pathlib import Path
@@ -21,7 +23,7 @@ cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) /
 core = list((cache / 'org.totipo/totipo-core/0.2.0').glob('*/*.jar'))
 assert len(core) == 1
 app = root / 'app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes'
-app_apk = root / 'app/build/outputs/apk/debug/app-debug.apk'
+app_apk = Path(os.environ.get('ROW_REVEAL_APP_APK', str(root / 'app/build/outputs/apk/debug/app-debug.apk')))
 assert app.exists() and app_apk.exists(), 'Run normal debug build first'
 subprocess.run([str(java / 'javac'), '-source', '17', '-target', '17', '-classpath',
                 os.pathsep.join(map(str, [platform, app, core[0]])), '-d', str(classes),
@@ -60,8 +62,10 @@ assert not existing.stdout.strip(), 'Test package already exists; inspect/remove
 subprocess.run([adb, 'install', '--no-incremental', str(signed)], check=True)
 try:
     result = subprocess.run([adb, 'shell', 'am', 'instrument', '-w',
+                             *(['-e', 'syncBaseline', 'true'] if os.environ.get('SYNC_LAYOUT_BASELINE') == '1' else []),
+                             *(['-e', 'syncOnly', 'true'] if os.environ.get('SYNC_LAYOUT_ONLY') == '1' else []),
                              package + '/org.totipo.android.RowRevealRegression'],
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=420)
     print(result.stdout, end='', flush=True)
     assert result.returncode == 0 and 'ROW_REVEAL_PASS' in result.stdout, 'Android view assertions failed'
 finally:

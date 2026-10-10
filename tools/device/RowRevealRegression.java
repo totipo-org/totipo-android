@@ -367,7 +367,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             throw new AssertionError(stage + ": " + controller.snapshot().state() + ": " + controller.snapshot().message() + ": " + failure);
         } finally { release[0].countDown(); controller.shutdown(); }
     }
-    @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
+    @Override public void onCreate(Bundle args) { syncBaseline = "true".equals(args.getString("syncBaseline")); syncOnly = "true".equals(args.getString("syncOnly")); super.onCreate(args); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle(); int status = -1;
         try {
@@ -376,12 +376,13 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             if (problem[0] != null) throw new AssertionError(problem[0]);
             result.putString("stream", "ROW_REVEAL_PASS checks=" + checks + "\n" + geometry);
         } catch (Throwable failure) {
-            status = 1; result.putString("stream", "ROW_REVEAL_FAIL " + failure + "\n");
+            status = 1; result.putString("stream", "ROW_REVEAL_FAIL " + android.util.Log.getStackTraceString(failure) + "\n" + geometry);
         }
         finish(status, result);
     }
     private static void run(Context context) throws Exception {
         context.setTheme(android.R.style.Theme_Material_Light);
+        if (syncOnly) { delayedSyncScreen(context); return; }
         int[] taps = {0}, retired = {0}; TokenChange.Kind[] changed = {null};
         var adapter = new TokenListAdapter(context, id -> taps[0]++, (id, kind) -> changed[0] = kind, () -> retired[0]++);
         var parent = new LinearLayout(context);
@@ -467,5 +468,191 @@ public final class RowRevealRegression extends android.app.Instrumentation {
         check(retired[0] == beforeDelete + 1 && row.code.getText().length() == 0, "deletion retires bound presentation");
         scaledLayouts(context);
         delayedControllerScreen(context);
+        geometry.append("ROW_REVEAL_BASE checks=" + checks + "\n");
+        int rowChecks = checks;
+        delayedSyncScreen(context);
+        geometry.append("SYNC_LAYOUT_PASS checks=" + (checks - rowChecks) + "\n");
     }
+    // Exercise the actual MainActivity tree against the existing provider/controller seam.
+    // Blocking queue and latches control completion; elapsed time never releases Sync.
+    private static void syncAwait(java.util.concurrent.BlockingQueue<Runnable> queue,
+                                  java.util.function.BooleanSupplier done) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(120);
+        while (!done.getAsBoolean()) {
+            Runnable next = queue.poll(Math.max(1, deadline - System.nanoTime()), java.util.concurrent.TimeUnit.NANOSECONDS);
+            if (next == null) throw new AssertionError("Sync delivery timeout");
+            next.run();
+        }
+        Runnable next; while ((next = queue.poll()) != null) next.run();
+    }
+    private static Object field(Object owner, String name) throws Exception {
+        var field = owner.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(owner);
+    }
+    private static String syncGeometry(LinearLayout root) {
+        StringBuilder value = new StringBuilder();
+        for (int i = 0; i < root.getChildCount(); i++) {
+            View child = root.getChildAt(i);
+            if (i == 1 || child.getVisibility() == View.GONE) continue; // Status has no bounds while GONE.
+            value.append(i).append('=').append(bounds(child)).append(';');
+            if (child instanceof LinearLayout bar) for (int j = 0; j < bar.getChildCount(); j++)
+                value.append("bar").append(j).append('=').append(bounds(bar.getChildAt(j))).append(';');
+            if (child instanceof android.widget.ListView list) {
+                value.append("first=").append(list.getFirstVisiblePosition()).append(';');
+                for (int j = 0; j < list.getChildCount(); j++) value.append("row").append(j).append('=').append(bounds(list.getChildAt(j))).append(';');
+            }
+        }
+        return value.toString();
+    }
+    private static void delayedSyncScreen(Context context) throws Exception {
+        var queue = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        var directory = java.nio.file.Files.createTempDirectory(context.getCacheDir().toPath(), "sync-layout-");
+        var port = new LayoutPort(directory.resolve("totipo-vault"));
+        var binding = new org.totipo.android.sync.SyncFolderBinding(port);
+        var dispatcher = new AndroidVaultController.Dispatcher() {
+            public void post(Runnable action) { queue.add(action); }
+            public void assertDispatchThread() { if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) throw new AssertionError("Sync UI thread"); }
+            public void assertWorkerThread() { if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) throw new AssertionError("Sync worker"); }
+            public Runnable after(long delay, Runnable action) { return () -> {}; }
+        };
+        var controller = new AndroidVaultController(new LocalReplicaOwner(directory), dispatcher,
+                new AndroidVaultController.Backend(), new TotpPresentation.Time() {
+                    public Instant wall() { return Instant.ofEpochSecond(31); }
+                    public long elapsedMillis() { return 0; }
+                }, null, binding);
+        controller.attach(state -> {}); // Every state transition wakes the blocking delivery pump.
+        try {
+            syncAwait(queue, () -> controller.snapshot().state() == AndroidVaultController.State.NO_LOCAL_VAULT && controller.canManageSyncFolder());
+            check(controller.create("detached-sync-only".toCharArray()), "Sync fixture create");
+            syncAwait(queue, controller::canAddToken);
+            for (int i = 0; i < 8; i++) {
+                try (var draft = OtpAuthUriParser.parse("otpauth://totp/Fixture:account" + i + "?secret=MY&issuer=Fixture")) {
+                    check(controller.addToken(draft.transfer()), "Sync fixture token");
+                }
+                int count = i + 1;
+                syncAwait(queue, () -> controller.canAddToken() && controller.snapshot().view().tokens().size() == count);
+            }
+            check(controller.chooseSyncFolder(false, LayoutPort.URI, 3), "Sync fixture bind");
+            syncAwait(queue, controller::canSync);
+            check(controller.sync(), "initial quiet Sync");
+            syncAwait(queue, () -> controller.canSync() && !controller.dailySyncStatus().equals("Syncing…"));
+            check(controller.dailySyncStatus().isEmpty(), "initial Sync success quiet: " + controller.diagnostics());
+            for (float scale : new float[]{1f, 1.5f, 2f}) for (int width : new int[]{320, 640}) {
+                var configuration = new android.content.res.Configuration(context.getResources().getConfiguration());
+                configuration.fontScale = scale;
+                Context scaled = context.createConfigurationContext(configuration);
+                var info = new android.content.pm.ActivityInfo(); info.theme = android.R.style.Theme_Material_Light_NoActionBar;
+                var activity = (MainActivity) new android.app.Instrumentation().newActivity(MainActivity.class,
+                        scaled, null, new android.app.Application(), new android.content.Intent().setClass(scaled, MainActivity.class), info, "Totipo", null, null, null);
+                activity.setTheme(android.R.style.Theme_Material_Light_NoActionBar);
+                var controllerField = MainActivity.class.getDeclaredField("controller"); controllerField.setAccessible(true); controllerField.set(activity, controller);
+                var render = MainActivity.class.getDeclaredMethod("render", AndroidVaultController.Snapshot.class); render.setAccessible(true);
+                var listener = (AndroidVaultController.Listener) field(activity, "listener");
+                controller.attach(listener);
+                syncAwait(queue, () -> true);
+                var root = (LinearLayout) field(activity, "content");
+                var status = (TextView) field(activity, "status");
+                var sync = (android.widget.Button) field(activity, "syncAction");
+                var list = (android.widget.ListView) root.getChildAt(root.getChildCount() - 2);
+                measureGroup(root, scaled, width, width == 640 ? 360 : 640);
+                list.setSelectionFromTop(2, -11); root.requestLayout(); measureGroup(root, scaled, width, width == 640 ? 360 : 640);
+                check(list.getChildCount() > 0, "Sync fixture has visible token rows");
+                String before = syncGeometry(root);
+                String syncBounds = bounds(sync), toolbarBounds = bounds(root.getChildAt(0));
+                for (boolean failure : new boolean[]{false, true}) {
+                    port.entered = new java.util.concurrent.CountDownLatch(1); port.release = new java.util.concurrent.CountDownLatch(1);
+                    port.fail = failure; port.hold = true;
+                    check(sync.performClick(), "existing Sync control clicked");
+                    check(port.entered.await(10, java.util.concurrent.TimeUnit.SECONDS), "provider Sync held");
+                    syncAwait(queue, () -> true);
+                    measureGroup(root, scaled, width, width == 640 ? 360 : 640);
+                    String during = syncGeometry(root);
+                    geometry.append("SYNC_GEOMETRY scale=" + scale + " widthDp=" + width + " failure=" + failure
+                            + " before=" + before + " during=" + during + " status=" + status.getText() + "\n");
+                    boolean baseline = syncBaseline;
+                    if (baseline) {
+                        check(!before.equals(during) && "Syncing…".contentEquals(status.getText()), "baseline transient row moves screen");
+                    } else {
+                        check(before.equals(during), "entering Sync preserves toolbar/search/list/rows/Add/Sync");
+                        check(status.getVisibility() == View.GONE && status.getText().length() == 0, "no transient status row");
+                        check("Syncing…".contentEquals(sync.getText()) && !sync.isEnabled(), "Sync control active");
+                        check("Syncing".contentEquals(sync.getContentDescription()), "active Sync accessible");
+                        check(sync.getAccessibilityLiveRegion() == View.ACCESSIBILITY_LIVE_REGION_NONE, "Sync has no live announcements");
+                        render.invoke(activity, controller.snapshot());
+                        check(sync.getAccessibilityLiveRegion() == View.ACCESSIBILITY_LIVE_REGION_NONE, "repeat render remains quiet");
+                        check(sync.getLayout().getLineCount() == 1, "Sync transient label stays one line");
+                        check(sync.getLayout().getLineWidth(0) <= sync.getWidth() - sync.getCompoundPaddingLeft() - sync.getCompoundPaddingRight(), "Sync transient label fits measured reservation");
+                    }
+                    port.hold = false; port.release.countDown();
+                    syncAwait(queue, () -> controller.canSync() && !controller.dailySyncStatus().equals("Syncing…"));
+                    measureGroup(root, scaled, width, width == 640 ? 360 : 640);
+                    String after = syncGeometry(root);
+                    geometry.append("SYNC_AFTER scale=" + scale + " widthDp=" + width + " failure=" + failure + " bounds=" + after + " status=" + status.getText() + "\n");
+                    check("Sync".contentEquals(sync.getText()) && "Sync".contentEquals(sync.getContentDescription()), "Sync returns ordinary name");
+                    check(syncBounds.equals(bounds(sync)) && toolbarBounds.equals(bounds(root.getChildAt(0))), "Sync and toolbar bounds stable after success or error");
+                    if (failure) {
+                        check(status.getVisibility() == View.VISIBLE && "Sync folder unavailable".contentEquals(status.getText()), "actionable provider failure visible");
+                    } else {
+                        check(before.equals(after), "successful Sync geometry restored/stable");
+                        check(status.getVisibility() == View.GONE && status.getText().length() == 0, "successful Sync quiet");
+                    }
+                }
+                controller.detach(listener);
+                port.fail = false;
+                check(controller.sync(), "reset error via success");
+                syncAwait(queue, () -> controller.canSync() && controller.dailySyncStatus().isEmpty());
+            }
+        } finally {
+            port.hold = false; port.release.countDown();
+            if (controller.lock()) syncAwait(queue, () -> controller.snapshot().state() == AndroidVaultController.State.LOCKED);
+            controller.shutdown();
+            try (var files = java.nio.file.Files.walk(directory)) {
+                for (var path : files.sorted(java.util.Comparator.reverseOrder()).toList()) java.nio.file.Files.deleteIfExists(path);
+            }
+        }
+    }
+    private static boolean syncBaseline, syncOnly;
+    private static final class LayoutPort implements org.totipo.android.sync.SyncFolderBinding.Port {
+        static final String URI = "content://fixture/tree/layout";
+        final java.nio.file.Path root;
+        org.totipo.android.sync.SyncFolderBinding.Stored stored;
+        volatile boolean hold, fail;
+        volatile java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1), release = new java.util.concurrent.CountDownLatch(1);
+        LayoutPort(java.nio.file.Path root) { this.root = root; }
+        public org.totipo.android.sync.SyncFolderBinding.Stored load() { return stored; }
+        public boolean save(org.totipo.android.sync.SyncFolderBinding.Stored value) { stored = value; return true; }
+        public boolean validTree(String uri) { return URI.equals(uri); }
+        public org.totipo.android.sync.SyncFolderBinding.Grants grants(String uri) { return new org.totipo.android.sync.SyncFolderBinding.Grants(true, true); }
+        public void take(String uri, boolean read, boolean write) {}
+        public void release(String uri, boolean read, boolean write) {}
+        public void probe(String uri) {
+            if (hold) {
+                entered.countDown();
+                try { if (!release.await(20, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("held Sync timeout"); }
+                catch (InterruptedException failure) { throw new AssertionError(failure); }
+            }
+            if (fail) throw new IllegalStateException("fixture unavailable");
+        }
+        public org.totipo.android.provider.ProviderSnapshot.Scan scan(String uri) {
+            try {
+                var tree = new org.totipo.android.provider.ProviderSnapshot.Tree("fixture", URI, "root");
+                var directory = new org.totipo.android.provider.ProviderSnapshot.Document(tree, "content://fixture/objects", "objects", "root", "objects-v1", "vnd.android.document/directory", null, 8L);
+                var vault = new org.totipo.android.provider.ProviderSnapshot.Document(tree, "content://fixture/vault", "vault", "root", "vault", "application/octet-stream", null, null);
+                var candidates = new java.util.ArrayList<org.totipo.android.provider.ProviderSnapshot.Bytes>();
+                try (var files = java.nio.file.Files.list(root.resolve("objects-v1"))) {
+                    for (var path : files.toList()) {
+                        String name = path.getFileName().toString();
+                        var doc = new org.totipo.android.provider.ProviderSnapshot.Document(tree, "content://fixture/" + name, name, "objects", name, "application/octet-stream", null, null);
+                        candidates.add(new org.totipo.android.provider.ProviderSnapshot.Bytes("e", doc, 1024, org.totipo.android.provider.ProviderSnapshot.ByteState.PRESENT, java.nio.file.Files.readAllBytes(path), org.totipo.android.provider.ProviderSnapshot.Issue.NONE));
+                    }
+                }
+                var complete = org.totipo.android.provider.ProviderSnapshot.State.COMPLETE;
+                return new org.totipo.android.provider.ProviderSnapshot.Scan("e", tree,
+                        new org.totipo.android.provider.ProviderSnapshot.Listing("e", "root", List.of(vault, directory), complete, List.of()),
+                        List.of(new org.totipo.android.provider.ProviderSnapshot.Directory(directory,
+                            new org.totipo.android.provider.ProviderSnapshot.Listing("e", "objects", candidates.stream().map(org.totipo.android.provider.ProviderSnapshot.Bytes::document).toList(), complete, List.of()), candidates)), complete, List.of(),
+                        List.of(new org.totipo.android.provider.ProviderSnapshot.Bytes("e", vault, 87, org.totipo.android.provider.ProviderSnapshot.ByteState.PRESENT, java.nio.file.Files.readAllBytes(root.resolve("vault")), org.totipo.android.provider.ProviderSnapshot.Issue.NONE)));
+            } catch (java.io.IOException failure) { throw new IllegalStateException(failure); }
+        }
+    }
+
 }

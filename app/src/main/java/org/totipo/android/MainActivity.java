@@ -124,7 +124,10 @@ public final class MainActivity extends Activity {
             for (View field : new View[]{issuer, account, secret, period, algorithm, digits, add, cancel, scan}) field.setEnabled(enabled);
         }
         if (add != null && (next.equals("open") || next.equals("add"))) add.setEnabled(controller.canAddToken());
-        if (syncAction != null) syncAction.setEnabled(controller.canSync());
+        if (syncAction != null) {
+            renderSyncControl(syncAction, controller.dailySyncStatus());
+            syncAction.setEnabled(controller.canSync());
+        }
         if (tokens != null) {
             var view = state.view();
             tokens.replace(view == null ? java.util.List.of() : view.tokens(), controller.canAddToken(),
@@ -162,6 +165,7 @@ public final class MainActivity extends Activity {
         if (next.equals("open")) {
             syncAction = buttonIn(toolbar, "Sync", () -> controller.sync());
             syncAction.setContentDescription("Sync");
+            reserveSyncControlWidth(syncAction);
         }
         Button more = buttonIn(toolbar, "⋮", () -> {}); more.setContentDescription("More options");
         more.setOnClickListener(ignored -> showOverflow(more));
@@ -218,10 +222,33 @@ public final class MainActivity extends Activity {
             });
         }
     }
+    private static void reserveSyncControlWidth(Button control) {
+        // Measure the styled/transformed labels, including normal Button padding and minimums.
+        // Reserve before the first layout so the title and overflow never move during Sync.
+        control.setMaxLines(1);
+        int width = 0;
+        for (String label : new String[]{"Sync", "Syncing…"}) {
+            control.setText(label);
+            control.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+            width = Math.max(width, control.getMeasuredWidth());
+        }
+        control.setMinWidth(width);
+        control.setText("Sync");
+        control.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
+    }
+    private static void renderSyncControl(Button control, String sync) {
+        boolean active = "Syncing…".equals(sync);
+        String label = active ? "Syncing…" : "Sync";
+        if (!TextUtils.equals(control.getText(), label)) control.setText(label);
+        String name = active ? "Syncing" : "Sync";
+        if (!TextUtils.equals(control.getContentDescription(), name)) control.setContentDescription(name);
+    }
     private String mainStatus(Snapshot state) {
         return mainStatus(state, controller.dailySyncStatus(), controller.tokenChangeResult());
     }
     static String mainStatus(Snapshot state, String sync, TokenChange.Result changeResult) {
+        // Transient progress belongs to the existing Sync control, never a new status row.
+        if ("Syncing…".equals(sync)) sync = "";
         String local = "";
         if (state.state() == State.BUSY) local = state.message();
         else if (state.view() != null && (!state.view().diagnostics().isEmpty() || !state.view().integrityProblems().isEmpty()))

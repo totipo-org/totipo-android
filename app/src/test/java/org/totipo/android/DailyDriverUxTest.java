@@ -75,4 +75,18 @@ public final class DailyDriverUxTest {
             assertEquals("Saving local change…" + (sync.isEmpty() ? "" : "\n" + sync), MainActivity.mainStatus(saving, sync, null));
         assertFalse(read("AndroidVaultController").contains("Generating code…"));
     }
+    @Test public void transientSyncNeverOccupiesMainStatusButActionableStatusesRemain() {
+        var open = new AndroidVaultController.Snapshot(AndroidVaultController.State.OPEN,
+                AndroidVaultController.Error.NONE, "Vault open", null);
+        assertEquals("", MainActivity.mainStatus(open, "Syncing…", null));
+        assertEquals("", MainActivity.mainStatus(open, "", null));
+        for (String status : List.of("Changes not synced", "Sync folder unavailable", "Sync folder needs attention",
+                "Sync failed", "This sync folder belongs to a different Totipo vault.", "Conflict needs attention"))
+            assertEquals(status, MainActivity.mainStatus(open, status, null));
+        assertEquals("Token changed. Review it and try again.",
+                MainActivity.mainStatus(open, "Syncing…", TokenChange.Result.STALE));
+        var saving = new AndroidVaultController.Snapshot(AndroidVaultController.State.BUSY,
+                AndroidVaultController.Error.NONE, "Saving local change…", null);
+        assertEquals("Saving local change…", MainActivity.mainStatus(saving, "Syncing…", null));
+    }
 }
