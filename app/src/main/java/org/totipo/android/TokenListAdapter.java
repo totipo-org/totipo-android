@@ -25,7 +25,7 @@ final class TokenListAdapter extends BaseAdapter {
     private List<ObservedToken> tokens = List.of();
     private boolean enabled;
     private RevealedTotp shown;
-    private Row shownRow;
+    private final java.util.Map<Row, ObservedToken> bound = new java.util.WeakHashMap<>();
     private long seconds;
     private final Runnable retire;
     private List<ObservedToken> source = List.of();
@@ -42,13 +42,15 @@ final class TokenListAdapter extends BaseAdapter {
     }
     void replace(List<ObservedToken> values, boolean enabled) {
         source = values;
-        tokens = values.stream().filter(t -> t.conflict() || !t.unresolved().isEmpty()
+        var filtered = values.stream().filter(t -> t.conflict() || !t.unresolved().isEmpty()
                 || t.alternatives().stream().anyMatch(d -> d.status() == TokenStatus.ACTIVE)).filter(t -> matchesSearch(t, query)).collect(java.util.stream.Collectors.toList());
+        boolean changed = !tokens.equals(filtered) || this.enabled != enabled;
+        tokens = filtered;
         this.enabled = enabled;
         if (shown != null && tokens.stream().noneMatch(t -> displays(t, shown))) {
-            setShown(null); seconds = 0; retire.run();
+            updateRevealPresentation(null, 0); retire.run();
         }
-        notifyDataSetChanged();
+        if (changed) notifyDataSetChanged();
     }
     static boolean matchesSearch(ObservedToken token, String text) {
         String query = text.toLowerCase(java.util.Locale.ROOT).trim();
@@ -82,18 +84,34 @@ final class TokenListAdapter extends BaseAdapter {
         return code != null && usable(token) && token.id().equals(code.tokenId());
     }
     void replace(List<ObservedToken> values, boolean enabled, RevealedTotp code, long remaining) {
-        setShown(code); seconds = remaining;
         replace(values, enabled);
+        updateRevealPresentation(code, remaining);
     }
-    private void setShown(RevealedTotp code) {
-        if (!java.util.Objects.equals(shown, code) && shownRow != null) {
-            shownRow.code.setText(""); shownRow.countdown.setText("");
-            shownRow.ring.setRemaining(0, 0); shownRow.ring.setVisibility(View.GONE);
-            shownRow.value.setVisibility(View.GONE); shownRow = null;
+    /** Update only rows owning the old/new presentation. Normal bind handles off-screen rows. */
+    void updateRevealPresentation(RevealedTotp code, long remaining) {
+        if (code != null && tokens.stream().noneMatch(t -> displays(t, code))) {
+            updateRevealPresentation(null, 0); retire.run(); return;
         }
-        shown = code;
+        if (java.util.Objects.equals(shown, code) && seconds == remaining) return;
+        RevealedTotp previous = shown;
+        shown = code; seconds = remaining;
+        for (var entry : bound.entrySet()) {
+            var token = entry.getValue();
+            if (displays(token, previous) || displays(token, code)) renderReveal(entry.getKey(), token);
+        }
     }
-    void clearWidgets() { setShown(null); seconds = 0; replace(List.of(), false); }
+    private void renderReveal(Row row, ObservedToken token) {
+        boolean revealed = displays(token, shown);
+        String formatted = revealed ? MainActivity.grouped(shown.code()) : "";
+        if (!android.text.TextUtils.equals(row.code.getText(), formatted)) row.code.setText(formatted);
+        row.countdown.setText(revealed ? seconds + " s" : "");
+        long period = revealed ? java.time.Duration.between(shown.validFrom(), shown.validUntil()).getSeconds() : 0;
+        row.countdownPeriod(period);
+        row.ring.setRemaining(revealed ? seconds : 0, period);
+        row.ring.setVisibility(revealed ? View.VISIBLE : View.GONE);
+        row.value.setVisibility(revealed ? View.VISIBLE : View.GONE);
+    }
+    void clearWidgets() { updateRevealPresentation(null, 0); bound.clear(); replace(List.of(), false); }
     private int dp(int value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
 
     final class Row extends LinearLayout {
@@ -184,7 +202,6 @@ final class TokenListAdapter extends BaseAdapter {
         if (convertView == null) row = new Row();
         else row = (Row) convertView;
         ObservedToken token = getItem(position);
-        boolean revealed = displays(token, shown);
         row.ordinary = usable(token);
         boolean actionable = enabled && (usable(token) || TokenChange.resolvable(token));
         if (usable(token)) {
@@ -195,22 +212,15 @@ final class TokenListAdapter extends BaseAdapter {
         row.issuer.setSingleLine(usable(token)); row.account.setSingleLine(true);
         row.issuer.setEllipsize(android.text.TextUtils.TruncateAt.END);
         row.account.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        if (row == shownRow) shownRow = null;
-        if (revealed) shownRow = row;
-        String formatted = revealed ? MainActivity.grouped(shown.code()) : "";
-        if (!android.text.TextUtils.equals(row.code.getText(), formatted)) row.code.setText(formatted);
-        row.countdown.setText(revealed ? seconds + " s" : "");
-        long period = revealed ? java.time.Duration.between(shown.validFrom(), shown.validUntil()).getSeconds() : 0;
-        row.countdownPeriod(period);
-        row.ring.setRemaining(revealed ? seconds : 0, period);
-        row.ring.setVisibility(revealed ? View.VISIBLE : View.GONE);
-        row.value.setVisibility(revealed ? View.VISIBLE : View.GONE);
+        bound.put(row, token);
+        renderReveal(row, token);
         row.body.setEnabled(actionable);
         row.body.setContentDescription(rowText(token));
-        String action = token.conflict() ? "Resolve" : revealed ? "Copy code" : "Reveal code";
         row.body.setAccessibilityDelegate(new View.AccessibilityDelegate() {
             @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info);
+                boolean revealed = displays(token, shown);
+                String action = token.conflict() ? "Resolve" : revealed ? "Copy code" : "Reveal code";
                 if (actionable) info.addAction(new android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction(
                         android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK, action));
             }

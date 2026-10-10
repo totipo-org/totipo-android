@@ -78,7 +78,8 @@ public final class AndroidVaultControllerTest {
             try {
                 var field = AndroidVaultController.class.getDeclaredField("operating"); field.setAccessible(true);
                 var views = AndroidVaultController.class.getDeclaredField("viewQueued"); views.setAccessible(true);
-                return !field.getBoolean(controller) && !views.getBoolean(controller);
+                var reveal = AndroidVaultController.class.getDeclaredField("revealing"); reveal.setAccessible(true);
+                return !field.getBoolean(controller) && !views.getBoolean(controller) && !reveal.getBoolean(controller);
             } catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }
         }
     }
@@ -1034,7 +1035,7 @@ public final class AndroidVaultControllerTest {
         conflictBranch(port, deleted); var row = lifecycleRow(); assertTrue(TokenChange.resolvable(row));
         assertFalse(TokenListAdapter.usable(row)); assertTrue(TokenListAdapter.rowText(row).startsWith("Token conflict"));
         assertNull(controller.beginTokenChange(row.id(), TokenChange.Kind.EDIT));
-        accept(() -> controller.showCode(row.id())); await(this::idle); assertNull(controller.snapshot().revealedCode());
+        assertFalse(controller.showCode(row.id())); assertNull(controller.snapshot().revealedCode());
         var change = controller.beginTokenChange(row.id(), TokenChange.Kind.RESOLVE); assertNotNull(change);
         assertEquals(2, change.basis().alternatives().size());
         controller.cancelTokenChange(change); int before = real.coordinator.outboundSnapshot().size();

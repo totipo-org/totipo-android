@@ -60,7 +60,7 @@ public final class RowRevealCopyTest {
     @Test public void filteredPresentationRetiresThroughExistingPolicyAndEveryBindClearsSecrets() throws Exception {
         String row = source("TokenListAdapter");
         assertTrue(row.contains("tokens.stream().noneMatch(t -> displays(t, shown))"));
-        assertTrue(row.contains("setShown(null); seconds = 0; retire.run()"));
+        assertTrue(row.contains("updateRevealPresentation(null, 0); retire.run()"));
         assertTrue(row.contains("if (!hadShown) retire.run()")); // pending generation revoked on search
         assertTrue(source("MainActivity").contains("this::openTokenChange, controller::hideCode"));
         assertTrue(row.contains("row.countdown.setText(revealed ? seconds + \" s\" : \"\")"));

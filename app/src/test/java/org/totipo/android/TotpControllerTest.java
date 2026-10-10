@@ -24,11 +24,18 @@ public final class TotpControllerTest {
     private TokenId a, b;
     private int generations;
     private CountDownLatch entered, release;
+    private final CountDownLatch initialObservationRead = new CountDownLatch(1);
     private boolean generationError;
+    private final org.totipo.android.sync.SyncFolderBindingTest.MemoryPort port = new org.totipo.android.sync.SyncFolderBindingTest.MemoryPort();
     private final Dispatcher dispatcher = new Dispatcher() {
         public void post(Runnable action) { deliveries.add(action); }
         public void assertDispatchThread() { assertSame(ui, Thread.currentThread()); }
-        public void assertWorkerThread() { assertNotSame(ui, Thread.currentThread()); }
+        public void assertWorkerThread() {
+            assertNotSame(ui, Thread.currentThread());
+            // After create assigns the session, the fixture issues no further command
+            // until the controller has read its initial subscription replay.
+            if (real.session != null) initialObservationRead.countDown();
+        }
         public Runnable after(long delay, Runnable action) { return timer.after(delay, action); }
     };
     @Before public void setup() throws Exception {
@@ -44,17 +51,19 @@ public final class TotpControllerTest {
             ForegroundVaultCoordinator.TotpResult generateTotp(ForegroundVaultCoordinator vault, TokenId id, Instant now,
                                                               ForegroundVaultCoordinator.ObservedToken expected) {
                 assertNotSame(ui, Thread.currentThread()); generations++;
+                if (generationError) throw new IllegalStateException("Private internal failure");
+                var generated = super.generateTotp(vault, id, now, expected);
                 if (entered != null) {
                     entered.countDown();
                     try { assertTrue(release.await(20, TimeUnit.SECONDS)); }
                     catch (InterruptedException failure) { throw new AssertionError(failure); }
                 }
-                if (generationError) throw new IllegalStateException("Private internal failure");
-                return super.generateTotp(vault, id, now, expected);
+                return generated;
             }
-        }, clock, clipboard);
+        }, clock, clipboard, new org.totipo.android.sync.SyncFolderBinding(port));
         await(() -> controller.snapshot().state() == State.NO_LOCAL_VAULT && idle());
         assertTrue(controller.create("M2A disposable".toCharArray()));
+        assertTrue(initialObservationRead.await(20, TimeUnit.SECONDS));
         await(() -> controller.snapshot().state() == State.OPEN && idle());
     }
     private void pump() { for (Runnable task; (task = deliveries.poll()) != null;) task.run(); }
@@ -73,13 +82,14 @@ public final class TotpControllerTest {
             try {
                 var operating = AndroidVaultController.class.getDeclaredField("operating"); operating.setAccessible(true);
                 var views = AndroidVaultController.class.getDeclaredField("viewQueued"); views.setAccessible(true);
-                return !operating.getBoolean(controller) && !views.getBoolean(controller);
+                var reveal = AndroidVaultController.class.getDeclaredField("revealing"); reveal.setAccessible(true);
+                return !operating.getBoolean(controller) && !views.getBoolean(controller) && !reveal.getBoolean(controller);
             } catch (ReflectiveOperationException failed) { throw new AssertionError(failed); }
         }
     }
     private void show(TokenId id) throws Exception {
         await(this::idle); assertTrue(controller.showCode(id));
-        await(() -> idle() && controller.snapshot().state() == State.OPEN);
+        await(() -> idle() && controller.snapshot().revealedCode() != null);
         assertNotNull(controller.snapshot().revealedCode());
     }
     @After public void cleanup() throws Exception {
@@ -203,10 +213,122 @@ public final class TotpControllerTest {
         await(() -> controller.snapshot().revealedCode() == null && idle()
                 && controller.snapshot().view().tokens().stream().anyMatch(t -> t.alternatives().get(0).account().equals("Replaced")));
     }
-    @Test public void busyAdmissionAndHideRevokeInflightReveal() throws Exception {
+    private void delayedReveal() throws Exception {
+        clock.wall = Instant.ofEpochSecond(31);
         entered = new CountDownLatch(1); release = new CountDownLatch(1);
         assertTrue(controller.showCode(a)); assertTrue(entered.await(10, TimeUnit.SECONDS));
-        assertFalse(controller.showCode(b)); assertFalse(controller.copyShownCode()); assertFalse(controller.lock());
+    }
+    @Test public void lockAdmittedDuringGenerationRejectsAlreadyGeneratedResult() throws Exception {
+        List<Snapshot> events = new ArrayList<>(); controller.attach(events::add); pump();
+        delayedReveal(); pump(); int before = events.size();
+        assertTrue(controller.lock()); assertEquals(State.LOCKING, controller.snapshot().state());
+        release.countDown(); await(() -> idle() && controller.snapshot().state() == State.LOCKED);
+        assertTrue(events.subList(before, events.size()).stream().allMatch(e -> e.revealedCode() == null));
+        assertEquals(0, clipboard.copies);
+    }
+    @Test public void addAdmittedDuringGenerationKeepsRealBusyAndRejectsReveal() throws Exception {
+        delayedReveal(); assertTrue(controller.canAddToken());
+        try (var draft = OtpAuthUriParser.parse("otpauth://totp/new?secret=MY")) {
+            assertTrue(controller.addToken(draft.transfer()));
+        }
+        assertEquals(State.BUSY, controller.snapshot().state()); assertFalse(controller.canAddToken());
+        release.countDown(); await(() -> idle() && controller.snapshot().state() == State.OPEN);
+        assertEquals(AddTokenOutcome.Status.ADDED, controller.snapshot().addOutcome().status());
+        assertNull(controller.snapshot().revealedCode());
+        // Add acknowledgement/worker completion can precede the asynchronous session
+        // observation. Await the rendered token inventory, not just controller idle.
+        await(() -> controller.snapshot().view().tokens().size() == 3);
+        assertEquals(3, controller.snapshot().view().tokens().size());
+        assertNull(controller.snapshot().revealedCode());
+    }
+    @Test public void syncEnabledAndAdmittedDuringGenerationUsesExistingWorkerOrdering() throws Exception {
+        assertTrue(controller.chooseSyncFolder(false, "content://fixture/tree/a", 3));
+        await(() -> idle() && controller.syncView().binding().status() == org.totipo.android.sync.SyncFolderBinding.Status.READY);
+        assertTrue(controller.canSync()); boolean add = controller.canAddToken();
+        delayedReveal(); assertTrue(controller.canSync()); assertEquals(add, controller.canAddToken());
+        String message = controller.snapshot().message();
+        release.countDown(); await(() -> idle() && controller.snapshot().revealedCode() != null);
+        assertTrue(controller.canSync()); assertEquals(add, controller.canAddToken());
+        assertEquals(message, controller.snapshot().message());
+        controller.hideCode(); delayedReveal(); assertTrue(controller.canSync());
+        int probes = port.probes;
+        assertTrue(controller.sync()); assertFalse(controller.canSync());
+        release.countDown(); await(() -> idle() && controller.canSync() && port.probes > probes);
+        assertNull(controller.snapshot().revealedCode()); assertTrue(controller.canAddToken());
+    }
+    @Test public void editAdmittedDuringGenerationRetiresResult() throws Exception {
+        delayedReveal(); var change = controller.beginTokenChange(a, TokenChange.Kind.EDIT); assertNotNull(change);
+        assertTrue(controller.confirmTokenChange(change, "Updated", "Account", 0));
+        release.countDown(); await(() -> idle() && controller.snapshot().state() == State.OPEN);
+        assertEquals(TokenChange.Result.SAVED, controller.tokenChangeResult()); assertNull(controller.snapshot().revealedCode());
+        await(() -> controller.snapshot().view().tokens().stream().anyMatch(t -> t.alternatives().get(0).issuer().equals("Updated")));
+    }
+    @Test public void deleteAdmittedDuringGenerationRetiresResult() throws Exception {
+        delayedReveal(); var change = controller.beginTokenChange(a, TokenChange.Kind.DELETE); assertNotNull(change);
+        assertTrue(controller.confirmTokenChange(change, null, null, 0));
+        release.countDown(); await(() -> idle() && controller.snapshot().state() == State.OPEN);
+        assertEquals(TokenChange.Result.SAVED, controller.tokenChangeResult()); assertNull(controller.snapshot().revealedCode());
+    }
+    @Test public void conflictBeforeDelayedResultRetiresPresentation() throws Exception {
+        delayedReveal(); var captured = real.session.state(); var head = captured.token(a).orElseThrow().heads().get(0);
+        try (var first = captured.update(head); var second = captured.update(head)) {
+            assertTrue(first.account("Branch A").save() instanceof SaveResult.Saved);
+            assertTrue(second.account("Branch B").save() instanceof SaveResult.Saved);
+        }
+        TotpCoordinatorTest.await(real.session, state -> state.token(a).orElseThrow().hasConflict());
+        var dirty = AndroidVaultController.class.getDeclaredField("dirty"); dirty.setAccessible(true);
+        await(() -> { synchronized (controller) { try { return dirty.getBoolean(controller); } catch (IllegalAccessException failure) { throw new AssertionError(failure); } } });
+        release.countDown(); await(this::idle); assertNull(controller.snapshot().revealedCode());
+        await(() -> controller.snapshot().view().tokens().stream().anyMatch(t -> t.id().equals(a) && t.conflict()));
+        assertFalse(controller.showCode(a));
+    }
+    @Test public void reattachDuringDelayedRevealDoesNotGenerateAgainOrEnterBusy() throws Exception {
+        delayedReveal(); List<Snapshot> states = new ArrayList<>(); Listener listener = states::add;
+        controller.attach(listener); pump(); assertEquals(State.OPEN, states.get(0).state());
+        controller.detach(listener); controller.attach(listener); pump();
+        release.countDown(); await(() -> idle() && controller.snapshot().revealedCode() != null);
+        assertEquals(1, generations); assertTrue(states.stream().allMatch(e -> e.state() == State.OPEN));
+        controller.detach(listener);
+    }
+    @Test public void copyDoesNotDeliverOrChangeNormalScreenState() throws Exception {
+        clock.wall = Instant.ofEpochSecond(31); show(a);
+        List<Snapshot> states = new ArrayList<>(); Listener listener = states::add; controller.attach(listener); pump(); states.clear();
+        var before = controller.snapshot(); assertTrue(controller.copyShownCode()); pump();
+        assertTrue(states.isEmpty()); assertSame(before, controller.snapshot()); assertTrue(controller.canAddToken());
+        controller.detach(listener);
+    }
+    @Test public void queuedRevealYieldsPendingSlotToRealAdd() throws Exception {
+        var field = AndroidVaultController.class.getDeclaredField("worker"); field.setAccessible(true);
+        var worker = (ThreadPoolExecutor) field.get(controller);
+        var blocked = new CountDownLatch(1); var unblock = new CountDownLatch(1);
+        worker.execute(() -> { blocked.countDown(); try { assertTrue(unblock.await(10, TimeUnit.SECONDS)); }
+            catch (InterruptedException failure) { throw new AssertionError(failure); } });
+        try {
+            assertTrue(blocked.await(10, TimeUnit.SECONDS)); assertTrue(controller.showCode(a));
+            assertTrue(controller.canAddToken()); assertEquals(1, worker.getQueue().size());
+            try (var draft = OtpAuthUriParser.parse("otpauth://totp/new?secret=MY")) { assertTrue(controller.addToken(draft.transfer())); }
+            assertEquals(State.BUSY, controller.snapshot().state());
+        } finally { unblock.countDown(); }
+        await(() -> idle() && controller.snapshot().state() == State.OPEN);
+        assertEquals(0, generations); assertEquals(AddTokenOutcome.Status.ADDED, controller.snapshot().addOutcome().status());
+        assertNull(controller.snapshot().revealedCode());
+    }
+    @Test public void revealScreenSequence() throws Exception {
+        entered = new CountDownLatch(1); release = new CountDownLatch(1);
+        var before = controller.snapshot(); assertTrue(controller.canAddToken());
+        assertTrue(controller.showCode(a)); assertTrue(entered.await(10, TimeUnit.SECONDS));
+        assertEquals(State.OPEN, controller.snapshot().state());
+        assertEquals(before.message(), controller.snapshot().message());
+        assertTrue(controller.canAddToken()); assertFalse(controller.canSync());
+        assertSame(before.view(), controller.snapshot().view());
+        release.countDown(); await(() -> idle() && controller.snapshot().revealedCode() != null);
+        assertTrue(controller.canAddToken()); assertNotNull(controller.snapshot().revealedCode());
+        assertEquals(before.message(), controller.snapshot().message());
+    }
+    @Test public void revealOwnershipAndHideRevokeInflightReveal() throws Exception {
+        entered = new CountDownLatch(1); release = new CountDownLatch(1);
+        assertTrue(controller.showCode(a)); assertTrue(entered.await(10, TimeUnit.SECONDS));
+        assertFalse(controller.showCode(b)); assertFalse(controller.copyShownCode());
         controller.hideCode(); release.countDown();
         await(() -> idle() && controller.snapshot().state() == State.OPEN);
         assertNull(controller.snapshot().revealedCode());

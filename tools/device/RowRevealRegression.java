@@ -175,6 +175,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             var list = new android.widget.ListView(context); adapter.replace(tokens, true); list.setAdapter(adapter);
             root.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
             var add = new android.widget.Button(context); add.setText("Add token"); root.addView(add);
+            var syncButton = new android.widget.Button(context); syncButton.setText("Sync"); root.addView(syncButton);
             var open = new AndroidVaultController.Snapshot(AndroidVaultController.State.OPEN,
                     AndroidVaultController.Error.NONE, "Vault open", null);
             String message = MainActivity.mainStatus(open, sync, null);
@@ -183,21 +184,188 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             list.setSelectionFromTop(4, -11); root.requestLayout(); measureGroup(root, context, width, 640);
             String before = bounds(toolbar) + "/" + bounds(search) + "/" + bounds(list) + "/" + bounds(add);
             int first = list.getFirstVisiblePosition(), top = list.getChildAt(0).getTop();
+            int[] invalidations = {0}, neighborWrites = {0};
+            adapter.registerDataSetObserver(new android.database.DataSetObserver() {
+                @Override public void onChanged() { invalidations[0]++; }
+            });
+            var neighbor = (TokenListAdapter.Row) list.getChildAt(0);
+            neighbor.account.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+                public void onTextChanged(CharSequence text, int start, int before, int count) { neighborWrites[0]++; }
+                public void afterTextChanged(android.text.Editable text) {}
+            });
+            String neighborBefore = valueBounds(neighbor);
             for (int step = 0; step < 5; step++) {
-                boolean generating = step == 0;
                 var shown = step > 0 && step < 4 ? code(tokens.get(first + 1), "123456") : null;
                 long seconds = step == 1 ? 18 : shown == null ? 0 : 9;
-                var snapshot = new AndroidVaultController.Snapshot(generating ? AndroidVaultController.State.BUSY : AndroidVaultController.State.OPEN,
-                        AndroidVaultController.Error.NONE, generating ? "Generating code…" : "Vault open", null, shown, seconds);
+                var snapshot = new AndroidVaultController.Snapshot(AndroidVaultController.State.OPEN,
+                        AndroidVaultController.Error.NONE, "Vault open", null, shown, seconds);
                 message = MainActivity.mainStatus(snapshot, sync, null);
                 status.setText(message); status.setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
-                adapter.replace(tokens, !generating, shown, seconds);
+                adapter.updateRevealPresentation(shown, seconds);
                 root.requestLayout(); measureGroup(root, context, width, 640);
                 check(before.equals(bounds(toolbar) + "/" + bounds(search) + "/" + bounds(list) + "/" + bounds(add)),
                         "screen stable across generation/reveal/tick/copy/expiry step=" + step + " width=" + width + " sync=" + sync);
                 check(list.getFirstVisiblePosition() == first && list.getChildAt(0).getTop() == top, "screen ListView anchor stable");
+                check(search.isEnabled() && add.isEnabled() && syncButton.isEnabled() && toolbar.isEnabled(), "screen controls stable and enabled");
+                check(message.contentEquals(status.getText()) && status.getVisibility() == (message.isEmpty() ? View.GONE : View.VISIBLE), "status stable");
+                for (int child = 0; child < list.getChildCount(); child++) {
+                    var row = (TokenListAdapter.Row) list.getChildAt(child);
+                    check(row.body.isEnabled() && row.more.isEnabled(), "row and overflow remain enabled");
+                }
+                check(invalidations[0] == 0 && neighborWrites[0] == 0, "no adapter invalidation or neighboring rebind");
+                check(list.getChildAt(0) == neighbor && neighborBefore.equals(valueBounds(neighbor)), "neighbor presentation untouched");
             }
         }
+    }
+    private static void await(java.util.Queue<Runnable> deliveries, java.util.function.BooleanSupplier done) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(120);
+        do {
+            for (Runnable next; (next = deliveries.poll()) != null;) next.run();
+            if (done.getAsBoolean()) return;
+            Thread.sleep(5);
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("controller wait timed out");
+    }
+    private static String screenState(android.widget.ListView list, View... controls) {
+        StringBuilder value = new StringBuilder();
+        for (View control : controls) {
+            value.append(bounds(control)).append('/').append(control.isEnabled()).append('/').append(control.getVisibility());
+            if (control instanceof TextView text) value.append('/').append(text.getText());
+        }
+        value.append('/').append(bounds(list)).append('/').append(list.getFirstVisiblePosition());
+        for (int i = 0; i < list.getChildCount(); i++) {
+            var row = (TokenListAdapter.Row) list.getChildAt(i);
+            value.append('/').append(bounds(row)).append('/').append(row.body.isEnabled()).append('/').append(row.more.isEnabled());
+        }
+        return value.toString();
+    }
+    /** Real controller + real Android list, with crypto completion held by a latch. */
+    private static void delayedControllerScreen(Context context) throws Exception {
+        var deliveries = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
+        java.util.concurrent.CountDownLatch[] entered = {new java.util.concurrent.CountDownLatch(1)};
+        java.util.concurrent.CountDownLatch[] release = {new java.util.concurrent.CountDownLatch(1)};
+        Instant[] now = {Instant.ofEpochSecond(31)}; long[] elapsed = {0}; Runnable[] tick = {null};
+        int[] generations = {0}, copies = {0};
+        var dispatcher = new AndroidVaultController.Dispatcher() {
+            public void post(Runnable action) { deliveries.add(action); }
+            public void assertDispatchThread() { if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) throw new AssertionError("not UI"); }
+            public void assertWorkerThread() { if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) throw new AssertionError("not worker"); }
+            public Runnable after(long delay, Runnable action) { tick[0] = action; return () -> { if (tick[0] == action) tick[0] = null; }; }
+        };
+        var directory = java.nio.file.Files.createTempDirectory(context.getCacheDir().toPath(), "reveal-controller-");
+        var controller = new AndroidVaultController(new LocalReplicaOwner(directory), dispatcher, new AndroidVaultController.Backend() {
+            org.totipo.android.reconcile.ForegroundVaultCoordinator.TotpResult generateTotp(
+                    org.totipo.android.reconcile.ForegroundVaultCoordinator vault, TokenId id, Instant time, ObservedToken expected) {
+                generations[0]++;
+                var result = super.generateTotp(vault, id, time, expected);
+                entered[0].countDown();
+                try { if (!release[0].await(15, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("release timeout"); }
+                catch (InterruptedException failure) { throw new AssertionError(failure); }
+                return result;
+            }
+        }, new TotpPresentation.Time() {
+            public Instant wall() { return now[0]; }
+            public long elapsedMillis() { return elapsed[0]; }
+        }, new TotpPresentation.Clipboard() {
+            public boolean copy(String marker, String text) { copies[0]++; return true; }
+            public void clearIfOwned(String marker, String text) {}
+        });
+        String stage = "discover";
+        try {
+            await(deliveries, () -> controller.snapshot().state() == AndroidVaultController.State.NO_LOCAL_VAULT);
+            stage = "create";
+            check(controller.create("detached-only-test".toCharArray()), "device create admitted");
+            await(deliveries, controller::canAddToken);
+            for (int i = 0; i < 2; i++) {
+                stage = "add " + i;
+                try (var draft = OtpAuthUriParser.parse("otpauth://totp/Fixture:account" + i + "?secret=MY&issuer=Fixture")) {
+                    check(controller.addToken(draft.transfer()), "device add admitted");
+                }
+                int count = i + 1;
+                await(deliveries, () -> controller.canAddToken() && controller.snapshot().view().tokens().size() == count);
+            }
+            var root = new LinearLayout(context); root.setOrientation(LinearLayout.VERTICAL);
+            var toolbar = new TextView(context); toolbar.setText("Totipo"); root.addView(toolbar);
+            var status = new TextView(context); root.addView(status);
+            var search = new android.widget.EditText(context); search.setSingleLine(true); root.addView(search);
+            var list = new android.widget.ListView(context); root.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+            var add = new android.widget.Button(context); add.setText("Add token"); root.addView(add);
+            var sync = new android.widget.Button(context); sync.setText("Sync"); root.addView(sync);
+            var adapter = new TokenListAdapter(context, id -> {
+                var shown = controller.snapshot().revealedCode();
+                if (shown != null && shown.tokenId().equals(id)) controller.copyShownCode(); else controller.showCode(id);
+            }, (id, kind) -> {}, controller::hideCode);
+            list.setAdapter(adapter);
+            int[] globalRenders = {0}, notifications = {0}, neighborWrites = {0};
+            controller.attach(new AndroidVaultController.Listener() {
+                public void changed(AndroidVaultController.Snapshot state) {
+                    globalRenders[0]++;
+                    String message = MainActivity.mainStatus(state, controller.dailySyncStatus(), controller.tokenChangeResult());
+                    status.setText(message); status.setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
+                    add.setEnabled(controller.canAddToken()); sync.setEnabled(controller.canSync());
+                    adapter.replace(state.view() == null ? List.of() : state.view().tokens(), controller.canAddToken(), state.revealedCode(), state.remainingSeconds());
+                }
+                public void revealChanged(AndroidVaultController.Snapshot state) {
+                    adapter.updateRevealPresentation(state.revealedCode(), state.remainingSeconds());
+                }
+            });
+            stage = "attach";
+            await(deliveries, () -> adapter.getCount() == 2);
+            measureGroup(root, context, 320, 640);
+            var target = (TokenListAdapter.Row) list.getChildAt(0);
+            var neighbor = (TokenListAdapter.Row) list.getChildAt(1);
+            neighbor.issuer.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+                public void onTextChanged(CharSequence text, int start, int before, int count) { neighborWrites[0]++; }
+                public void afterTextChanged(android.text.Editable text) {}
+            });
+            adapter.registerDataSetObserver(new android.database.DataSetObserver() {
+                public void onChanged() { notifications[0]++; }
+            });
+            String before = screenState(list, toolbar, search, add, sync, status), neighborBefore = valueBounds(neighbor);
+            int renders = globalRenders[0];
+            target.body.performClick();
+            check(entered[0].await(10, java.util.concurrent.TimeUnit.SECONDS), "real generation in flight");
+            await(deliveries, () -> true);
+            check(controller.snapshot().state() == AndroidVaultController.State.OPEN && controller.canAddToken(), "in-flight controller OPEN/Add stable");
+            check(before.equals(screenState(list, toolbar, search, add, sync, status)), "in-flight whole screen stable");
+            release[0].countDown(); stage = "reveal";
+            await(deliveries, () -> controller.snapshot().revealedCode() != null);
+            await(deliveries, () -> true); // Apply the posted row event.
+            check(target.code.getText().length() > 0, "completion updates already-bound target"); action(target.body, "Copy code");
+            for (int step = 0; step < 4; step++) {
+                if (step == 0 || step == 1) { now[0] = now[0].plusSeconds(1); elapsed[0] += 1000; tick[0].run(); }
+                if (step == 2) { var code = controller.snapshot().revealedCode(); float ring = target.ring.progress(); target.body.performClick(); check(copies[0] == 1 && code == controller.snapshot().revealedCode() && ring == target.ring.progress(), "copy keeps presentation/deadline"); }
+                if (step == 3) { now[0] = Instant.ofEpochSecond(60); elapsed[0] = 29000; tick[0].run(); }
+                await(deliveries, () -> true); measureGroup(root, context, 320, 640);
+                if (step < 2) check(((28 - step) + " s").contentEquals(target.countdown.getText())
+                        && target.ring.progress() == CountdownRingView.fraction(28 - step, 30), "real tick updates target countdown/ring");
+                check(before.equals(screenState(list, toolbar, search, add, sync, status)), "real reveal/tick/copy/expiry screen stable");
+                check(globalRenders[0] == renders && notifications[0] == 0 && neighborWrites[0] == 0, "no global render/invalidation/neighbor rebind");
+                check(neighborBefore.equals(valueBounds(neighbor)) && neighbor.code.getText().length() == 0, "neighbor untouched");
+            }
+            check(target.code.getText().length() == 0 && target.ring.getVisibility() == View.GONE, "expiry clears bound target");
+            check(generations[0] == 1, "ticks/copy/expiry never generate");
+            entered[0] = new java.util.concurrent.CountDownLatch(1); release[0] = new java.util.concurrent.CountDownLatch(1);
+            check(controller.showCode(adapter.getItem(0).id()), "second delayed reveal admitted");
+            check(entered[0].await(10, java.util.concurrent.TimeUnit.SECONDS), "filter while real reveal pending");
+            adapter.search("no match");
+            check(adapter.getCount() == 0, "pending owner filtered out");
+            adapter.search(controller.snapshot().view().tokens().get(1).alternatives().get(0).account());
+            var recycled = (TokenListAdapter.Row) adapter.getView(0, target, list);
+            release[0].countDown();
+            var workerField = AndroidVaultController.class.getDeclaredField("worker"); workerField.setAccessible(true);
+            ((java.util.concurrent.ThreadPoolExecutor) workerField.get(controller)).submit(() -> {}).get(10, java.util.concurrent.TimeUnit.SECONDS);
+            await(deliveries, () -> true);
+            check(controller.snapshot().revealedCode() == null && recycled.code.getText().length() == 0, "delayed result cannot inject code into recycled row");
+            adapter.search("");
+            check(controller.snapshot().revealedCode() == null, "clearing search cannot resurrect retired result");
+            check(controller.lock(), "device cleanup lock");
+            await(deliveries, () -> controller.snapshot().state() == AndroidVaultController.State.LOCKED);
+        } catch (Exception | AssertionError failure) {
+            throw new AssertionError(stage + ": " + controller.snapshot().state() + ": " + controller.snapshot().message() + ": " + failure);
+        } finally { release[0].countDown(); controller.shutdown(); }
     }
     @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
     @Override public void onStart() {
@@ -212,7 +380,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
         }
         finish(status, result);
     }
-    private static void run(Context context) {
+    private static void run(Context context) throws Exception {
         context.setTheme(android.R.style.Theme_Material_Light);
         int[] taps = {0}, retired = {0}; TokenChange.Kind[] changed = {null};
         var adapter = new TokenListAdapter(context, id -> taps[0]++, (id, kind) -> changed[0] = kind, () -> retired[0]++);
@@ -298,5 +466,6 @@ public final class RowRevealRegression extends android.app.Instrumentation {
         int beforeDelete = retired[0]; adapter.replace(List.of(b), true);
         check(retired[0] == beforeDelete + 1 && row.code.getText().length() == 0, "deletion retires bound presentation");
         scaledLayouts(context);
+        delayedControllerScreen(context);
     }
 }

@@ -27,7 +27,12 @@ import org.totipo.android.AndroidVaultController.State;
 /** Presentation only: application controller commands and detached snapshots. */
 public final class MainActivity extends Activity {
     private AndroidVaultController controller;
-    private final AndroidVaultController.Listener listener = this::render;
+    private final AndroidVaultController.Listener listener = new AndroidVaultController.Listener() {
+        public void changed(Snapshot state) { render(state); }
+        public void revealChanged(Snapshot state) {
+            if (tokens != null) tokens.updateRevealPresentation(state.revealedCode(), state.remainingSeconds());
+        }
+    };
     private LinearLayout content;
     private TextView status;
     private TokenListAdapter tokens;
@@ -218,9 +223,7 @@ public final class MainActivity extends Activity {
     }
     static String mainStatus(Snapshot state, String sync, TokenChange.Result changeResult) {
         String local = "";
-        // Code generation is a row-local action. Its transient BUSY message must
-        // not add/remove a header line and move search and the whole list.
-        if (state.state() == State.BUSY && !"Generating code…".equals(state.message())) local = state.message();
+        if (state.state() == State.BUSY) local = state.message();
         else if (state.view() != null && (!state.view().diagnostics().isEmpty() || !state.view().integrityProblems().isEmpty()))
             local = "Vault needs attention";
         else if (changeResult != null && changeResult != TokenChange.Result.SAVED)

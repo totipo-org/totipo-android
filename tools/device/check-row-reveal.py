@@ -61,7 +61,7 @@ subprocess.run([adb, 'install', '--no-incremental', str(signed)], check=True)
 try:
     result = subprocess.run([adb, 'shell', 'am', 'instrument', '-w',
                              package + '/org.totipo.android.RowRevealRegression'],
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
     print(result.stdout, end='', flush=True)
     assert result.returncode == 0 and 'ROW_REVEAL_PASS' in result.stdout, 'Android view assertions failed'
 finally:

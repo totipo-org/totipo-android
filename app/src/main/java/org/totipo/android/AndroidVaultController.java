@@ -36,7 +36,10 @@ public final class AndroidVaultController {
         Snapshot(State state, Error error, String message, View view) { this(state, error, message, view, null, 0); }
         @Override public String toString() { return "Snapshot[" + state + ", " + error + "]"; }
     }
-    public interface Listener { void changed(Snapshot state); }
+    public interface Listener {
+        void changed(Snapshot state);
+        default void revealChanged(Snapshot state) { changed(state); }
+    }
     // Android dispatch/thread policy is supplied by Application; JVM tests exercise this seam.
     interface Dispatcher {
         void post(Runnable action); void assertDispatchThread(); void assertWorkerThread();
@@ -86,6 +89,8 @@ public final class AndroidVaultController {
     private final TotpPresentation presentation;
     private final TotpPresentation.Time time;
     private long presentationEpoch;
+    private boolean revealing;
+    private Runnable revealTask;
     private boolean clearingPresentation;
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(1), action -> {
@@ -187,12 +192,13 @@ public final class AndroidVaultController {
         dispatcher.assertDispatchThread();
         synchronized (this) { listeners.remove(listener); }
     }
-    private void deliver(Listener listener) {
+    private void deliver(Listener listener) { deliver(listener, false); }
+    private void deliver(Listener listener, boolean revealOnly) {
         dispatcher.post(() -> {
             dispatcher.assertDispatchThread();
             Snapshot value;
             synchronized (this) { if (!listeners.contains(listener)) return; value = snapshot(); }
-            listener.changed(value);
+            if (revealOnly) listener.revealChanged(value); else listener.changed(value);
         });
     }
     private void publish(State state, Error error, String message, View view) {
@@ -209,7 +215,7 @@ public final class AndroidVaultController {
         var display = presentation.display();
         snapshot = new Snapshot(snapshot.state(), snapshot.error(), snapshot.message(), snapshot.view(),
                 display.code(), display.seconds(), addOutcome);
-        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+        for (Listener listener : new ArrayList<>(listeners)) deliver(listener, true);
     }
     private void clearPresentation() {
         presentationEpoch++;
@@ -224,41 +230,57 @@ public final class AndroidVaultController {
         dispatcher.assertDispatchThread();
         if (operating || (unifiedSync && providerActive) || pendingChange != null || snapshot.state() != State.OPEN) return false;
         boolean copied = presentation.copy();
-        if (copied || presentation.display().code() != null) {
-            snapshot = new Snapshot(snapshot.state(), snapshot.error(),
-                    copied ? "Code copied" : "Clipboard unavailable; code was not copied.",
-                    snapshot.view(), snapshot.revealedCode(), snapshot.remainingSeconds());
-            presentationChanged();
-        }
+        if (snapshot.remainingSeconds() != presentation.display().seconds()) presentationChanged();
         return copied;
     }
+    /** Presentation work shares the bounded worker, but does not reserve vault admission. */
     public synchronized boolean showCode(TokenId id) {
         dispatcher.assertDispatchThread();
-        if (operating || (unifiedSync && providerActive) || pendingChange != null || snapshot.state() != State.OPEN) return false;
+        if (revealing || viewQueued || operating || (unifiedSync && providerActive)
+                || pendingChange != null || snapshot.state() != State.OPEN || snapshot.view() == null) return false;
         var expected = snapshot.view().tokens().stream().filter(token -> token.id().equals(id)).findFirst().orElse(null);
-        if (expected == null) return false;
-        long epoch = presentationEpoch + 1; // submit's publication revokes the previous reveal.
-        return submit(State.BUSY, "Generating code…", () -> {
-            ForegroundVaultCoordinator.TotpResult result;
-            try { result = backend.generateTotp(vault, id, time.wall(), expected); }
-            catch (RuntimeException unavailable) {
-                result = new ForegroundVaultCoordinator.TotpResult(ForegroundVaultCoordinator.TotpStatus.FAILED, null);
-            }
-            synchronized (this) {
-                // Observation/Hide can revoke an in-flight reveal while crypto runs.
-                if (epoch != presentationEpoch || dirty || observationFailed) {
-                    publish(State.OPEN, Error.NONE, "Vault changed; show the code again.", snapshot.view()); return;
+        if (expected == null || !TokenListAdapter.usable(expected)) return false;
+        clearPresentation(); presentationChanged();
+        long epoch = presentationEpoch, session = sessionGeneration;
+        var current = vault;
+        revealing = true;
+        try {
+            revealTask = () -> {
+                dispatcher.assertWorkerThread();
+                try {
+                    synchronized (this) {
+                        if (!revealCurrent(epoch, session, expected) || vault != current) return;
+                    }
+                    var result = backend.generateTotp(current, id, time.wall(), expected);
+                    synchronized (this) {
+                        if (!revealCurrent(epoch, session, expected) || vault != current) return;
+                        if (result.status() == ForegroundVaultCoordinator.TotpStatus.AVAILABLE)
+                            presentation.reveal(result.revealed());
+                    }
+                } catch (RuntimeException unavailable) {
+                    // Leave the row concealed; no global generation/failure status.
+                } finally {
+                    synchronized (this) { revealing = false; revealTask = null; scheduleView(); queueSyncDrain(); }
                 }
-                snapshot = new Snapshot(State.OPEN, snapshot.error(),
-                        result.status() == ForegroundVaultCoordinator.TotpStatus.AVAILABLE
-                                ? "Vault open" : "Code unavailable; token needs attention.", snapshot.view());
-                if (result.status() != ForegroundVaultCoordinator.TotpStatus.AVAILABLE
-                        || !presentation.reveal(result.revealed())) presentationChanged();
-            }
-        });
+            };
+            worker.execute(revealTask);
+            return true;
+        } catch (RejectedExecutionException busy) { revealing = false; revealTask = null; scheduleView(); return false; }
+    }
+    private boolean revealCurrent(long epoch, long session, ForegroundVaultCoordinator.ObservedToken expected) {
+        return epoch == presentationEpoch && session == sessionGeneration && !dirty && !observationFailed
+                && !operating && !unifiedSync && pendingChange == null && snapshot.state() == State.OPEN
+                && snapshot.view() != null && snapshot.view().tokens().contains(expected);
+    }
+    /** A queued presentation must not consume the sole pending slot of a real command. */
+    private void retireQueuedReveal() {
+        if (revealTask != null && worker.remove(revealTask)) {
+            revealing = false; revealTask = null;
+        }
     }
     private synchronized boolean submit(State state, String message, Runnable operation) {
         if (operating || pendingChange != null) return false;
+        retireQueuedReveal();
         operating = true;
         Snapshot before = snapshot;
         publish(state, Error.NONE, message, state == State.BUSY ? before.view() : null);
@@ -371,7 +393,7 @@ public final class AndroidVaultController {
         dirty = true; observationFailed |= failed; scheduleView();
     }
     private synchronized void scheduleView() {
-        if (!dirty || operating || viewQueued || unifiedSync) return;
+        if (!dirty || operating || revealing || viewQueued || unifiedSync) return;
         viewQueued = true;
         try {
             worker.execute(() -> {
@@ -757,6 +779,7 @@ public final class AndroidVaultController {
         return "Sync failed";
     }
     private synchronized boolean startSync() {
+        retireQueuedReveal();
         providerActive = unifiedSync = true;
         var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
         outboundCancelled = cancelled;
