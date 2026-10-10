@@ -21,7 +21,10 @@ public final class TotpSourceGuardTest {
         String adapter = read("TokenListAdapter"), activity = read("MainActivity");
         assertTrue(adapter.contains("return tokens.size()")); assertTrue(adapter.contains("if (convertView == null)"));
         assertTrue(adapter.contains("else row = (Row) convertView")); assertTrue(adapter.contains("return row;"));
-        assertFalse(adapter.contains("for (")); assertFalse(adapter.contains(".limit("));
+        // The row binder must not truncate the token list. Countdown width measurement
+        // separately iterates decimal digits, independently of list size.
+        String binding = adapter.substring(adapter.indexOf("public View getView"), adapter.indexOf("static int countdownWidth"));
+        assertFalse(binding.contains("for (")); assertFalse(adapter.contains(".limit("));
         assertTrue(activity.contains("new ListView(this)")); assertTrue(activity.contains("No matching tokens"));
         assertTrue(activity.contains("list.setEmptyView(empty)"));
         assertEquals("123 456", MainActivity.grouped("123456"));

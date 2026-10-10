@@ -1,6 +1,9 @@
 package org.totipo.android;
 
 import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
@@ -85,6 +88,7 @@ final class TokenListAdapter extends BaseAdapter {
     private void setShown(RevealedTotp code) {
         if (!java.util.Objects.equals(shown, code) && shownRow != null) {
             shownRow.code.setText(""); shownRow.countdown.setText("");
+            shownRow.ring.setRemaining(0, 0); shownRow.ring.setVisibility(View.GONE);
             shownRow.value.setVisibility(View.GONE); shownRow = null;
         }
         shown = code;
@@ -93,7 +97,11 @@ final class TokenListAdapter extends BaseAdapter {
     private int dp(int value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
 
     final class Row extends LinearLayout {
-        final LinearLayout body, identity, value;
+        final LinearLayout body, identity, value, countdownLine;
+        final CountdownRingView ring;
+        private long countdownPeriod = -1;
+        private boolean ordinary;
+        private final android.graphics.Paint codeMetrics = new android.graphics.Paint();
         final TextView issuer, account, code, countdown;
         final Button more, resolve;
         Row() {
@@ -114,7 +122,13 @@ final class TokenListAdapter extends BaseAdapter {
             code.setSingleLine(true); code.setHorizontallyScrolling(false);
             code.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
             countdown = text(12); countdown.setIncludeFontPadding(false); countdown.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            value.addView(code); value.addView(countdown);
+            countdown.setGravity(android.view.Gravity.RIGHT); countdown.setSingleLine(true);
+            countdownLine = new LinearLayout(context); countdownLine.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            countdownLine.addView(countdown);
+            ring = new CountdownRingView(context, countdown.getCurrentTextColor());
+            var ringParams = new LinearLayout.LayoutParams(dp(18), dp(18)); ringParams.leftMargin = dp(4);
+            countdownLine.addView(ring, ringParams);
+            value.addView(code); value.addView(countdownLine);
             body.addView(value, new LinearLayout.LayoutParams(-2, -2));
             resolve = new Button(context); resolve.setText("Resolve"); resolve.setSaveEnabled(false);
             body.addView(resolve);
@@ -124,18 +138,38 @@ final class TokenListAdapter extends BaseAdapter {
             more.setContentDescription("Token actions: Edit or Delete");
         }
         @Override protected void onMeasure(int widthSpec, int heightSpec) {
+            // Reserve the preferred two-line height in BOTH states, independently of
+            // horizontal code fitting. GONE still returns all value width to identity.
+            codeMetrics.set(code.getPaint());
+            codeMetrics.setTextSize(android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,
+                    24, getResources().getDisplayMetrics()));
+            body.setMinimumHeight(ordinary ? Math.max(dp(56), dp(16)
+                    + (int) Math.ceil(codeMetrics.getFontSpacing())
+                    + Math.max(dp(18), (int) Math.ceil(countdown.getPaint().getFontSpacing()))) : dp(56));
             if (value.getVisibility() == View.VISIBLE && MeasureSpec.getMode(widthSpec) != MeasureSpec.UNSPECIFIED) {
                 // Reserve readable identity width even with a large system font. Fit the
                 // full code by reducing its preferred size, never by clipping digits.
                 float preferred = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,
                         24, getResources().getDisplayMetrics());
-                float textWidth = code.getPaint().measureText(code.getText().toString()) * preferred / code.getTextSize();
+                float textWidth = codeMetrics.measureText(code.getText().toString());
                 float available = Math.max(1, MeasureSpec.getSize(widthSpec) - dp(48 + 16 + 8 + 56));
                 float size = preferred * Math.min(1, available / Math.max(1, textWidth));
                 if (Math.abs(code.getTextSize() - size) > 0.1f)
                     code.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, size);
             }
+            if (value.getVisibility() == View.VISIBLE) {
+                int width = value.getPaddingLeft() + Math.max(
+                        (int) Math.ceil(code.getPaint().measureText(code.getText().toString())),
+                        countdown.getLayoutParams().width + dp(4 + 18));
+                value.getLayoutParams().width = width;
+            }
             super.onMeasure(widthSpec, heightSpec);
+        }
+        void countdownPeriod(long period) {
+            if (countdownPeriod == period) return;
+            countdownPeriod = period;
+            countdown.getLayoutParams().width = countdownWidth(countdown.getPaint(), period);
+            countdown.requestLayout();
         }
         private TextView text(int size) {
             TextView text = new TextView(context); text.setTextSize(size);
@@ -151,6 +185,7 @@ final class TokenListAdapter extends BaseAdapter {
         else row = (Row) convertView;
         ObservedToken token = getItem(position);
         boolean revealed = displays(token, shown);
+        row.ordinary = usable(token);
         boolean actionable = enabled && (usable(token) || TokenChange.resolvable(token));
         if (usable(token)) {
             row.issuer.setText(token.alternatives().get(0).issuer());
@@ -165,6 +200,10 @@ final class TokenListAdapter extends BaseAdapter {
         String formatted = revealed ? MainActivity.grouped(shown.code()) : "";
         if (!android.text.TextUtils.equals(row.code.getText(), formatted)) row.code.setText(formatted);
         row.countdown.setText(revealed ? seconds + " s" : "");
+        long period = revealed ? java.time.Duration.between(shown.validFrom(), shown.validUntil()).getSeconds() : 0;
+        row.countdownPeriod(period);
+        row.ring.setRemaining(revealed ? seconds : 0, period);
+        row.ring.setVisibility(revealed ? View.VISIBLE : View.GONE);
         row.value.setVisibility(revealed ? View.VISIBLE : View.GONE);
         row.body.setEnabled(actionable);
         row.body.setContentDescription(rowText(token));
@@ -188,10 +227,71 @@ final class TokenListAdapter extends BaseAdapter {
         row.more.setOnClickListener(ignored -> overflow(row.more, token.id()).show());
         return row;
     }
+    /** Measure valid decimal candidates, bounded by the period (also handles uint32 periods).
+     * Decimal glyph advances are additive; measure complete candidates including the suffix.
+     * Work is bounded by digit count, never by the number of seconds in a period.
+     */
+    static int countdownWidth(android.graphics.Paint paint, long period) {
+        String maximum = Long.toString(Math.max(1, period));
+        char widest = '0';
+        for (char digit = '1'; digit <= '9'; digit++)
+            if (paint.measureText(String.valueOf(digit)) > paint.measureText(String.valueOf(widest))) widest = digit;
+        float width = paint.measureText(maximum + " s");
+        for (int length = 1; length <= maximum.length(); length++) {
+            String limit = length == maximum.length() ? maximum : "9".repeat(length);
+            width = Math.max(width, paint.measureText(limit + " s"));
+            for (int position = 0; position < length; position++)
+                for (char digit = position == 0 ? '1' : '0'; digit < limit.charAt(position); digit++) {
+                    String candidate = limit.substring(0, position) + digit
+                            + String.valueOf(widest).repeat(length - position - 1) + " s";
+                    width = Math.max(width, paint.measureText(candidate));
+                }
+        }
+        return (int) Math.ceil(width);
+    }
     PopupMenu overflow(View anchor, TokenId id) {
         PopupMenu menu = new PopupMenu(context, anchor);
         menu.getMenu().add(0, 1, 0, "Edit").setOnMenuItemClickListener(item -> { change.accept(id, TokenChange.Kind.EDIT); return true; });
         menu.getMenu().add(0, 2, 1, "Delete…").setOnMenuItemClickListener(item -> { change.accept(id, TokenChange.Kind.DELETE); return true; });
         return menu;
+    }
+}
+
+/** Decorative renderer. Clockwise arc from twelve o'clock drains on authoritative ticks. */
+final class CountdownRingView extends View {
+    private final Paint track = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint foreground = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF bounds = new RectF();
+    private float progress;
+
+    CountdownRingView(Context context, int color) {
+        super(context);
+        float stroke = 2 * getResources().getDisplayMetrics().density;
+        for (Paint paint : new Paint[]{track, foreground}) {
+            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(stroke); paint.setColor(color);
+        }
+        track.setAlpha(Math.round(android.graphics.Color.alpha(color) * 0.2f));
+        setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+        setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_NONE);
+        setFocusable(false); setClickable(false); setSaveEnabled(false);
+    }
+    static float fraction(long remaining, long period) {
+        if (period <= 0 || remaining <= 0) return 0;
+        return (float) Math.min(1.0, (double) remaining / period);
+    }
+    void setRemaining(long remaining, long period) {
+        progress = fraction(remaining, period); invalidate();
+    }
+    float progress() { return progress; }
+    @Override protected void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
+        float diameter = Math.min(getWidth() - getPaddingLeft() - getPaddingRight(),
+                getHeight() - getPaddingTop() - getPaddingBottom()) - foreground.getStrokeWidth();
+        if (diameter <= 0) return;
+        float left = getPaddingLeft() + (getWidth() - getPaddingLeft() - getPaddingRight() - diameter) / 2;
+        float top = getPaddingTop() + (getHeight() - getPaddingTop() - getPaddingBottom() - diameter) / 2;
+        bounds.set(left, top, left + diameter, top + diameter);
+        canvas.drawOval(bounds, track);
+        canvas.drawArc(bounds, -90, 360 * progress, false, foreground);
     }
 }

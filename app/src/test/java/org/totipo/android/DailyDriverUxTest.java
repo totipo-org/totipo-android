@@ -68,4 +68,20 @@ public final class DailyDriverUxTest {
         assertFalse(app.contains("vaultController.lock()"));
         for (String forbidden : List.of("WorkManager", "JobScheduler", "startForegroundService", "AlarmManager")) assertFalse(app.contains(forbidden));
     }
+    @Test public void rowRevealKeepsHeaderStableWhileOtherBusyMessagesRemainVisible() throws Exception {
+        var open = new AndroidVaultController.Snapshot(AndroidVaultController.State.OPEN,
+                AndroidVaultController.Error.NONE, "Vault open", null);
+        var generating = new AndroidVaultController.Snapshot(AndroidVaultController.State.BUSY,
+                AndroidVaultController.Error.NONE, "Generating code…", null);
+        var saving = new AndroidVaultController.Snapshot(AndroidVaultController.State.BUSY,
+                AndroidVaultController.Error.NONE, "Saving local change…", null);
+        for (String sync : List.of("", "Changes not synced")) {
+            assertEquals(MainActivity.mainStatus(open, sync, null), MainActivity.mainStatus(generating, sync, null));
+            assertEquals(MainActivity.mainStatus(open, sync, TokenChange.Result.INVALID),
+                    MainActivity.mainStatus(generating, sync, TokenChange.Result.INVALID));
+            assertEquals("Saving local change…" + (sync.isEmpty() ? "" : "\n" + sync), MainActivity.mainStatus(saving, sync, null));
+        }
+        // The exact existing operation label is the presentation-only discriminator.
+        assertTrue(read("AndroidVaultController").contains("submit(State.BUSY, \"Generating code…\""));
+    }
 }

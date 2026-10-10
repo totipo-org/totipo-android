@@ -101,6 +101,8 @@ public final class TotpPresentationTest {
         clock.advance(18000); assertTrue(presentation.copy());
         assertSame(value, presentation.display().code());
         assertEquals(11, presentation.display().seconds());
+        assertEquals(11f / 30, CountdownRingView.fraction(presentation.display().seconds(),
+                java.time.Duration.between(value.validFrom(), value.validUntil()).getSeconds()), 0f);
         assertSame(scheduled, timer.task); assertEquals(schedules, timer.schedules);
         clock.advance(11000); timer.fire();
         assertNull(presentation.display().code()); assertEquals(1, clipboard.clears);

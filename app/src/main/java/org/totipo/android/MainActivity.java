@@ -214,13 +214,17 @@ public final class MainActivity extends Activity {
         }
     }
     private String mainStatus(Snapshot state) {
-        String sync = controller.dailySyncStatus();
+        return mainStatus(state, controller.dailySyncStatus(), controller.tokenChangeResult());
+    }
+    static String mainStatus(Snapshot state, String sync, TokenChange.Result changeResult) {
         String local = "";
-        if (state.state() == State.BUSY) local = state.message();
+        // Code generation is a row-local action. Its transient BUSY message must
+        // not add/remove a header line and move search and the whole list.
+        if (state.state() == State.BUSY && !"Generating code…".equals(state.message())) local = state.message();
         else if (state.view() != null && (!state.view().diagnostics().isEmpty() || !state.view().integrityProblems().isEmpty()))
             local = "Vault needs attention";
-        else if (controller.tokenChangeResult() != null && controller.tokenChangeResult() != TokenChange.Result.SAVED)
-            local = switch (controller.tokenChangeResult()) {
+        else if (changeResult != null && changeResult != TokenChange.Result.SAVED)
+            local = switch (changeResult) {
                 case STALE -> "Token changed. Review it and try again.";
                 case INVALID -> "Check issuer and account.";
                 case PUBLICATION_UNCERTAIN -> "Local save needs attention";

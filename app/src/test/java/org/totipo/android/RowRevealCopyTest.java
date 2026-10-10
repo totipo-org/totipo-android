@@ -42,7 +42,7 @@ public final class RowRevealCopyTest {
         for (String forbidden : List.of("revealPanel", "Hide code", "new TextView[] {selected, code, remaining}"))
             assertFalse(forbidden, activity.contains(forbidden));
         for (String forbidden : List.of("Show code", "Tap to reveal", "Tap to copy")) assertFalse(row.contains(forbidden));
-        assertTrue(row.contains("value.addView(code); value.addView(countdown)"));
+        assertTrue(row.contains("value.addView(code); value.addView(countdownLine)"));
         assertTrue(row.contains("String formatted = revealed ? MainActivity.grouped(shown.code()) : \"\""));
         assertTrue(row.contains("row.value.setVisibility(revealed ? View.VISIBLE : View.GONE)"));
     }
@@ -75,5 +75,22 @@ public final class RowRevealCopyTest {
         assertTrue(row.contains("text.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE)"));
         assertFalse(row.contains("announceForAccessibility")); assertFalse(row.contains("ACCESSIBILITY_LIVE_REGION_POLITE"));
         assertTrue(row.contains("text.setSaveEnabled(false); text.setFreezesText(false)"));
+    }
+
+    @Test public void actualPeriodDefinesFraction() {
+        for (long period : new long[]{30, 45, 60, 4294967295L}) {
+            assertEquals(1f, CountdownRingView.fraction(period, period), 0f);
+            assertEquals((float) ((double) (period / 2) / period), CountdownRingView.fraction(period / 2, period), 0f);
+            assertEquals(1f / period, CountdownRingView.fraction(1, period), 0.000001f);
+            assertEquals(0f, CountdownRingView.fraction(0, period), 0f);
+        }
+    }
+    @Test public void invalidAndOutOfRangeInputIsClamped() {
+        assertEquals(0f, CountdownRingView.fraction(10, 0), 0f);
+        assertEquals(0f, CountdownRingView.fraction(10, -1), 0f);
+        assertEquals(0f, CountdownRingView.fraction(-1, 30), 0f);
+        assertEquals(1f, CountdownRingView.fraction(31, 30), 0f);
+        assertEquals(1f, CountdownRingView.fraction(Long.MAX_VALUE, 30), 0f);
+        assertTrue(Float.isFinite(CountdownRingView.fraction(Long.MAX_VALUE, Long.MAX_VALUE)));
     }
 }
