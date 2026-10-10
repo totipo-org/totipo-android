@@ -269,6 +269,116 @@ public final class AndroidVaultControllerTest {
         try (var lease = owner.acquire()) { assertTrue(Files.exists(lease.root().resolve("vault"))); }
         real.creationInstallFault = null; accept(() -> controller.unlock(password())); state(State.OPEN);
     }
+    private Object controllerField(String name) throws Exception {
+        synchronized (controller) {
+            var field = AndroidVaultController.class.getDeclaredField(name);
+            field.setAccessible(true); return field.get(controller);
+        }
+    }
+    @Test public void staleObservationSignalFromRetiredSessionCannotMutateReopenedSession() throws Exception {
+        observationOwnership(false, false);
+    }
+    @Test public void staleObservationTerminalFromRetiredSessionCannotFailReopenedSession() throws Exception {
+        observationOwnership(true, false);
+    }
+    @Test public void enteredObservationRetainsOwnershipAfterFailedClose() throws Exception {
+        observationOwnership(true, true);
+    }
+    private void observationOwnership(boolean terminal, boolean failedClose) throws Exception {
+        var armed = new AtomicBoolean();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var finished = new CountDownLatch(1);
+        var decorated = new AtomicInteger();
+        var stateDeliveries = new CopyOnWriteArrayList<Semaphore>();
+        real.observationCallback = (failed, callback) -> {
+            decorated.incrementAndGet();
+            var delivered = new Semaphore(0);
+            if (!failed) stateDeliveries.add(delivered);
+            return () -> {
+                boolean held = failed == terminal && armed.compareAndSet(true, false);
+                try {
+                    // FC has already passed its cancellation check before this Runnable.
+                    if (held) {
+                        entered.countDown();
+                        if (!release.await(30, TimeUnit.SECONDS)) throw new AssertionError("callback release timeout");
+                    }
+                    callback.run();
+                } catch (Throwable failure) { threadError.compareAndSet(null, failure); }
+                finally { delivered.release(); if (held) finished.countDown(); }
+            };
+        };
+        create();
+        assertTrue(stateDeliveries.get(0).tryAcquire(10, TimeUnit.SECONDS)); await(this::idle);
+        assertEquals(2, decorated.get());
+        var oldSession = real.session;
+        var oldCoordinator = real.coordinator;
+        armed.set(true);
+        Object epoch;
+        Snapshot healthy;
+        try {
+            if (terminal) oldSession.close(); else oldSession.requestRefresh();
+            assertTrue("old callback passed FC cancellation check", entered.await(10, TimeUnit.SECONDS));
+            if (failedClose) {
+                real.failClose.set(true);
+                accept(() -> controller.lock()); state(State.FAILED_CLOSE); await(this::idle);
+                assertSame(oldCoordinator, controllerField("observationOwner"));
+                epoch = controllerField("presentationEpoch");
+                release.countDown(); assertTrue(finished.await(10, TimeUnit.SECONDS));
+                assertNull(threadError.get());
+                assertEquals("entered callback still belongs to retained owner", true, controllerField("observationFailed"));
+                assertTrue((Long)controllerField("presentationEpoch") > (Long)epoch);
+                assertEquals(State.FAILED_CLOSE, controller.snapshot().state());
+                assertFalse(controller.canAddToken()); assertFalse(controller.unlock(password()));
+                real.failClose.set(false); lock();
+                assertNull(controllerField("observationOwner"));
+                return;
+            }
+            lock();
+            assertNull(controllerField("observationOwner"));
+            assertEquals(ForegroundVaultCoordinator.State.CLOSED, oldCoordinator.lifecycle());
+            accept(() -> controller.unlock(password())); state(State.OPEN);
+            assertTrue(stateDeliveries.get(1).tryAcquire(10, TimeUnit.SECONDS)); await(this::idle);
+            assertNotSame(oldSession, real.session); assertNotSame(oldCoordinator, real.coordinator);
+            assertSame(real.coordinator, controllerField("observationOwner"));
+            assertEquals(4, decorated.get());
+            synchronized (controller) {
+                // Epoch retains evidence even if the worker subsequently clears dirty.
+                assertEquals(false, controllerField("dirty"));
+                assertEquals(false, controllerField("observationFailed"));
+                epoch = controllerField("presentationEpoch");
+                healthy = controller.snapshot();
+                release.countDown();
+                // Callback needs the monitor: await completion outside this critical section.
+            }
+            assertTrue("old callback returned", finished.await(10, TimeUnit.SECONDS));
+            assertNull(threadError.get());
+            synchronized (controller) {
+                assertEquals("retired callback must not fail observation", false, controllerField("observationFailed"));
+                assertEquals("retired callback must not invalidate presentation", epoch, controllerField("presentationEpoch"));
+                assertEquals("retired callback must not render", healthy, controller.snapshot());
+                assertEquals(false, controllerField("dirty"));
+                assertEquals(false, controllerField("observationFailed"));
+                assertEquals(State.OPEN, controller.snapshot().state());
+                assertEquals(Error.NONE, controller.snapshot().error());
+                assertTrue(controller.canAddToken());
+            }
+            accept(() -> controller.refresh());
+            assertTrue(stateDeliveries.get(1).tryAcquire(10, TimeUnit.SECONDS)); await(this::idle);
+            assertTrue("current signal still invalidates presentation",
+                    (Long)controllerField("presentationEpoch") > (Long)epoch);
+            assertEquals(State.OPEN, controller.snapshot().state());
+            // Positive control uses the real replacement subscription, not a manual callback.
+            if (terminal) {
+                real.session.close(); state(State.ERROR_OPEN);
+                assertEquals(true, controllerField("observationFailed"));
+                assertFalse(controller.canAddToken()); assertFalse(controller.refresh());
+            }
+        } finally {
+            release.countDown();
+            if (entered.getCount() == 0) assertTrue(finished.await(10, TimeUnit.SECONDS));
+        }
+    }
     @Test public void endedJavaSubscriptionProducesErrorAndGatesOperations() throws Exception {
         create(); real.session.close();
         state(State.ERROR_OPEN); assertEquals(Error.OBSERVATION_DIAGNOSTICS, controller.snapshot().error());

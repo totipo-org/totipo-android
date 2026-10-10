@@ -159,6 +159,8 @@ public final class AndroidVaultController {
     }
     private ForegroundVaultCoordinator vault;
     private AutoCloseable observation;
+    // Controller-monitor ownership; retained if close fails, unlike request generations.
+    private ForegroundVaultCoordinator observationOwner;
     private boolean operating, dirty, viewQueued, observationFailed;
 
     AndroidVaultController(LocalReplicaOwner owner, Dispatcher dispatcher) { this(owner, dispatcher, new Backend()); }
@@ -448,12 +450,16 @@ public final class AndroidVaultController {
         ForegroundVaultCoordinator current = vault;
         synchronized (this) { addOutcome = null; changeResult = null; }
         synchronized (this) { vaultId = org.totipo.Totipo.vaultId(current.snapshotVault()).hex(); }
-        observation = current.observe(() -> signal(false), () -> signal(true));
+        synchronized (this) { observationOwner = current; }
+        observation = current.observe(() -> signal(current, false), () -> signal(current, true));
         synchronized (this) { if (lockRequested) return; inactivity.opened(); }
         render("Vault open");
         synchronized (this) { requestAutomaticSync(); }
     }
-    private synchronized void signal(boolean failed) {
+    private synchronized void signal(ForegroundVaultCoordinator source, boolean failed) {
+        // Cancellation cannot retract an application callback already past FC's check.
+        // Compare ownership in the same critical section as every signal mutation.
+        if (source != observationOwner || shuttingDown) return;
         clearPresentation(); presentationChanged();
         dirty = true; observationFailed |= failed; scheduleView();
     }
@@ -1221,7 +1227,7 @@ public final class AndroidVaultController {
         try {
             if (observation != null) { observation.close(); observation = null; }
             if (vault != null) { vault.close(); vault = null; }
-            synchronized (this) { vaultId = "Locked"; dirty = false; observationFailed = false; }
+            synchronized (this) { observationOwner = null; vaultId = "Locked"; dirty = false; observationFailed = false; }
             return true;
         } catch (Exception failure) { failedClose(); return false; }
     }

@@ -19,6 +19,32 @@ public final class ProductControllerFixtures {
     public volatile boolean persistBeforeTokenFault;
     public volatile SaveResult.Reason saveFailure;
     public volatile int saves, refreshes;
+    // Test-only seam after FC's cancelled check, before its captured controller Runnable.
+    // The released Java publisher still drives every callback and cancellation.
+    public java.util.function.BiFunction<Boolean, Runnable, Runnable> observationCallback;
+    private VaultSession instrumentObservations(VaultSession current) {
+        if (observationCallback == null) return current;
+        return (VaultSession) java.lang.reflect.Proxy.newProxyInstance(
+                VaultSession.class.getClassLoader(), new Class<?>[]{VaultSession.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("states")) {
+                        return (java.util.concurrent.Flow.Publisher<VaultState>) subscriber -> {
+                            for (var field : subscriber.getClass().getDeclaredFields()) {
+                                if (field.getType() != Runnable.class) continue;
+                                // FC.observe captures exactly these two application callbacks.
+                                if (!field.getName().equals("val$changed") && !field.getName().equals("val$failed")) continue;
+                                try {
+                                    field.setAccessible(true);
+                                    field.set(subscriber, observationCallback.apply(field.getName().equals("val$failed"),
+                                            (Runnable) field.get(subscriber)));
+                                } catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }
+                            }
+                            current.states().subscribe(subscriber);
+                        };
+                    }
+                    try { return method.invoke(current, args); }
+                    catch (java.lang.reflect.InvocationTargetException failure) { throw failure.getCause(); }
+                });
+    }
     public volatile VaultSession session;
     public volatile ForegroundVaultCoordinator coordinator;
     private final ForegroundVaultCoordinator.Operations operations = new ForegroundVaultCoordinator.Operations() {
@@ -49,13 +75,17 @@ public final class ProductControllerFixtures {
         OpenResult open(CoordinatedPrivateStore store, char[] password) {
             opens++;
             var result = super.open(store, password);
-            if (result instanceof OpenResult.Opened opened) session = opened.session();
+            if (result instanceof OpenResult.Opened opened) {
+                session = instrumentObservations(opened.session()); return new OpenResult.Opened(session);
+            }
             return result;
         }
         CreateVaultResult create(CoordinatedPrivateStore store, char[] password) {
             creates++;
             var result = super.create(store, password);
-            if (result instanceof CreateVaultResult.Created created) session = created.session();
+            if (result instanceof CreateVaultResult.Created created) {
+                session = instrumentObservations(created.session()); return new CreateVaultResult.Created(session);
+            }
             return result;
         }
         SaveResult save(CreateToken editor) {
