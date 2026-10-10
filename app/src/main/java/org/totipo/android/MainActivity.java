@@ -18,6 +18,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Spinner;
 import android.widget.ArrayAdapter;
+import android.widget.PopupMenu;
+import android.text.TextWatcher;
+import android.text.Editable;
 import org.totipo.android.AndroidVaultController.Snapshot;
 import org.totipo.android.AndroidVaultController.State;
 
@@ -31,11 +34,12 @@ public final class MainActivity extends Activity {
     private TokenListAdapter tokens;
     private org.totipo.TokenId selectedId;
     private EditText password, confirmation;
-    private Button action, refresh, lock;
+    private Button action, syncAction;
+    private boolean managing;
     private TextView syncStatus;
-    private Button publishChanges, joinVault, initializeFolder;
+    private Button joinVault, initializeFolder;
     private boolean joining;
-    private Button chooseFolder, importChanges, disconnectFolder, checkFolder;
+    private Button chooseFolder, disconnectFolder, checkFolder;
     private static final int SYNC_TREE_REQUEST = 310;
     private String surface;
     private boolean adding, submitted;
@@ -83,26 +87,26 @@ public final class MainActivity extends Activity {
             case OPEN, BUSY -> adding ? "add" : "open";
             default -> "status";
         };
+        if (managing && (state.state() == State.OPEN || state.state() == State.LOCKED || state.state() == State.NO_LOCAL_VAULT)) next = "manage";
         if (!next.equals(surface)) build(next);
-        status.setText(state.message());
+        String message = next.equals("open") ? mainStatus(state) : state.message();
+        if (!TextUtils.equals(status.getText(), message)) status.setText(message);
+        status.setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
         var sync = controller.syncView();
-        syncStatus.setText(sync.message() + (state.state() == State.LOCKED
-                ? " Unlock Totipo to import changes." : ""));
-        boolean configured = sync.binding().status() != org.totipo.android.sync.SyncFolderBinding.Status.NOT_CONFIGURED;
-        chooseFolder.setText(configured ? "Change folder" : "Choose folder");
-        if (sync.binding().status() == org.totipo.android.sync.SyncFolderBinding.Status.ACCESS_LOST)
-            chooseFolder.setText("Choose folder again");
-        chooseFolder.setEnabled(controller.canManageSyncFolder());
-        importChanges.setEnabled(controller.canImportProviderChanges());
-        publishChanges.setEnabled(controller.canPublishLocalChanges());
-        joinVault.setVisibility(state.state() == State.NO_LOCAL_VAULT ? View.VISIBLE : View.GONE);
-        joinVault.setEnabled(controller.canJoinExistingVault());
-        initializeFolder.setVisibility(state.state() == State.OPEN ? View.VISIBLE : View.GONE);
-        initializeFolder.setEnabled(controller.canInitializeSyncFolder());
-        disconnectFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
-        disconnectFolder.setEnabled(controller.canManageSyncFolder());
-        checkFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
-        checkFolder.setEnabled(controller.canManageSyncFolder());
+        if (chooseFolder != null) {
+            syncStatus.setText(sync.message());
+            boolean configured = sync.binding().status() != org.totipo.android.sync.SyncFolderBinding.Status.NOT_CONFIGURED;
+            chooseFolder.setText(configured ? "Change folder" : "Choose folder");
+            chooseFolder.setEnabled(controller.canManageSyncFolder());
+            joinVault.setVisibility(state.state() == State.NO_LOCAL_VAULT ? View.VISIBLE : View.GONE);
+            joinVault.setEnabled(controller.canJoinExistingVault());
+            initializeFolder.setVisibility(state.state() == State.OPEN ? View.VISIBLE : View.GONE);
+            initializeFolder.setEnabled(controller.canInitializeSyncFolder());
+            disconnectFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
+            disconnectFolder.setEnabled(controller.canManageSyncFolder());
+            checkFolder.setVisibility(configured ? View.VISIBLE : View.GONE);
+            checkFolder.setEnabled(controller.canManageSyncFolder());
+        }
         if (action != null) {
             action.setEnabled(state.state() == State.NO_LOCAL_VAULT || state.state() == State.LOCKED
                     || state.state() == State.ERROR_LOCKED || state.state() == State.FAILED_CLOSE || state.state() == State.ERROR_OPEN);
@@ -116,16 +120,16 @@ public final class MainActivity extends Activity {
             boolean enabled = state.state() == State.OPEN;
             for (View field : new View[]{issuer, account, secret, period, algorithm, digits, add, cancel, scan}) field.setEnabled(enabled);
         }
-        if (add != null && next.equals("open")) add.setEnabled(state.state() == State.OPEN);
-        if (refresh != null) {
-            refresh.setEnabled(state.state() == State.OPEN); lock.setEnabled(state.state() == State.OPEN);
+        if (add != null && (next.equals("open") || next.equals("add"))) add.setEnabled(controller.canAddToken());
+        if (syncAction != null) syncAction.setEnabled(controller.canSync());
+        if (tokens != null) {
             var view = state.view();
-            tokens.replace(view == null ? java.util.List.of() : view.tokens(), state.state() == State.OPEN);
+            tokens.replace(view == null ? java.util.List.of() : view.tokens(), controller.canAddToken());
             var shown = state.revealedCode();
             revealPanel.setVisibility(shown == null ? View.GONE : View.VISIBLE);
             String formatted = shown == null ? "" : grouped(shown.code());
             if (!TextUtils.equals(code.getText(), formatted)) code.setText(formatted);
-            remaining.setText(shown == null ? "" : state.remainingSeconds() + " s");
+            remaining.setText(shown == null ? "" : "Expires in " + state.remainingSeconds() + " s");
             if (shown == null) { selected.setText(""); selectedId = null; }
             if (shown != null && view != null && !shown.tokenId().equals(selectedId)) {
                 selectedId = shown.tokenId();
@@ -148,7 +152,8 @@ public final class MainActivity extends Activity {
         clearCodeWidgets();
         code = remaining = selected = null; tokens = null; revealPanel = null;
         issuer = account = secret = period = null; algorithm = digits = null; add = cancel = scan = null;
-        surface = next; password = confirmation = null; action = refresh = lock = null;
+        surface = next; password = confirmation = null; action = syncAction = null;
+        chooseFolder = disconnectFolder = checkFolder = joinVault = initializeFolder = null; syncStatus = null;
         ScrollView scroll = new ScrollView(this);
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         int padding = (int) (20 * getResources().getDisplayMetrics().density);
@@ -161,20 +166,18 @@ public final class MainActivity extends Activity {
         content.setSaveEnabled(false); content.setSaveFromParentEnabled(false);
         if (!next.equals("open")) { scroll.setFillViewport(true); scroll.addView(content); }
         setContentView(root);
-        label("Totipo").setTextSize(28);
+        LinearLayout toolbar = new LinearLayout(this); content.addView(toolbar);
+        TextView title = new TextView(this); title.setText("Totipo"); title.setTextSize(28);
+        toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        if (next.equals("open")) {
+            syncAction = buttonIn(toolbar, "Sync", () -> controller.sync());
+            syncAction.setContentDescription("Sync");
+        }
+        Button more = buttonIn(toolbar, "⋮", () -> {}); more.setContentDescription("More options");
+        more.setOnClickListener(ignored -> showOverflow(more));
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        label("Sync folder").setTextSize(20);
-        syncStatus = label("");
-        label("Join authenticates the existing immutable folder vault into an empty local canonical store. Initialize publishes the exact local vault create-only. Import and Publish synchronize token objects separately. No vault replacement, password change, migration or automatic sync.");
-        LinearLayout folderActions = new LinearLayout(this); content.addView(folderActions);
-        chooseFolder = buttonIn(folderActions, "Choose folder", this::chooseSyncFolder);
-        importChanges = buttonIn(folderActions, "Import changes", () -> controller.importProviderChanges());
-        publishChanges = buttonIn(folderActions, "Publish local changes", () -> controller.publishLocalChanges());
-        LinearLayout folderSettings = new LinearLayout(this); content.addView(folderSettings);
-        checkFolder = buttonIn(folderSettings, "Retry access", () -> controller.checkSyncFolder());
-        disconnectFolder = buttonIn(folderSettings, "Disconnect", () -> controller.disconnectSyncFolder());
-        joinVault = button("Join existing vault", () -> { joining = true; controller.prepareJoin(); render(controller.snapshot()); });
-        initializeFolder = button("Initialize sync folder", () -> controller.initializeSyncFolder());
+        if (next.equals("manage") || next.equals("create") || next.equals("join")) buildFolderManagement();
+        if (next.equals("manage")) button("Back", () -> { managing = false; surface = null; render(controller.snapshot()); });
         if (next.equals("create") || next.equals("unlock") || next.equals("join")) {
             label(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock Vault").setTextSize(22);
             password = passwordField("Password");
@@ -201,8 +204,16 @@ public final class MainActivity extends Activity {
             add = button("Add", this::submitToken);
             cancel = button("Cancel", this::cancelAdd);
         } else if (next.equals("open")) {
+            EditText search = new EditText(this); search.setHint("Search tokens…");
+            search.setContentDescription("Search tokens"); search.setSingleLine(true); search.setSaveEnabled(false);
+            content.addView(search);
             tokens = new TokenListAdapter(this, id -> controller.showCode(id), this::openTokenChange);
-            TextView empty = label("No tokens yet");
+            search.addTextChangedListener(new TextWatcher() {
+                public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+                public void onTextChanged(CharSequence text, int start, int before, int count) { tokens.search(text.toString()); }
+                public void afterTextChanged(Editable text) {}
+            });
+            TextView empty = label("No matching tokens");
             ListView list = new ListView(this); list.setSaveEnabled(false);
             list.setAdapter(tokens); list.setEmptyView(empty);
             content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -218,21 +229,68 @@ public final class MainActivity extends Activity {
             code.setTextSize(32);
             LinearLayout revealActions = new LinearLayout(this); revealPanel.addView(revealActions);
             buttonIn(revealActions, "Hide code", () -> controller.hideCode());
-            buttonIn(revealActions, "Copy code", () -> controller.copyShownCode());
+            buttonIn(revealActions, "Copy code", () -> android.widget.Toast.makeText(this,
+                    controller.copyShownCode() ? "Code copied" : "Code could not be copied", android.widget.Toast.LENGTH_SHORT).show());
             revealPanel.setVisibility(View.GONE); content.addView(revealPanel);
-            LinearLayout vaultActions = new LinearLayout(this); content.addView(vaultActions);
             add = button("Add token", () -> {
                 if (controller.snapshot().state() != State.OPEN) return;
                 controller.hideCode(); adding = true; render(controller.snapshot());
             });
-            refresh = buttonIn(vaultActions, "Refresh", () -> controller.refresh());
-            lock = buttonIn(vaultActions, "Lock", () -> { clearPasswords(); controller.lock(); });
-        } else {
+        } else if (!next.equals("manage")) {
             action = button("Retry", () -> {
                 clearPasswords();
                 if (controller.snapshot().state() == State.ERROR_LOCKED) controller.retryDiscovery(); else controller.lock();
             });
         }
+    }
+    private String mainStatus(Snapshot state) {
+        String sync = controller.dailySyncStatus();
+        String local = "";
+        if (state.state() == State.BUSY) local = state.message();
+        else if (state.view() != null && (!state.view().diagnostics().isEmpty() || !state.view().integrityProblems().isEmpty()))
+            local = "Vault needs attention";
+        else if (controller.tokenChangeResult() != null && controller.tokenChangeResult() != TokenChange.Result.SAVED)
+            local = switch (controller.tokenChangeResult()) {
+                case STALE -> "Token changed. Review it and try again.";
+                case INVALID -> "Check issuer and account.";
+                case PUBLICATION_UNCERTAIN -> "Local save needs attention";
+                default -> "Change could not be saved";
+            };
+        else if (state.addOutcome() != null) local = switch (state.addOutcome().status()) {
+            case ADDED -> "";
+            case INVALID_SECRET -> "Check the Base32 secret.";
+            case INVALID_FIELDS -> "Check token details.";
+            case PUBLICATION_UNCERTAIN -> "Local save needs attention";
+            case CONFLICT -> "Vault changed. Review the token list.";
+            case SESSION_UNAVAILABLE -> "Unlock the vault to continue";
+            case BUSY -> "Vault is busy";
+            case FAILED -> "Token could not be added";
+        };
+        return local.isEmpty() ? sync : sync.isEmpty() ? local : local + "\n" + sync;
+    }
+    private void showOverflow(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Manage sync folder").setOnMenuItemClickListener(item -> {
+            controller.hideCode(); managing = true; adding = false; surface = null; render(controller.snapshot()); return true;
+        });
+        menu.getMenu().add("Diagnostics").setOnMenuItemClickListener(item -> {
+            controller.hideCode();
+            new AlertDialog.Builder(this).setTitle("Diagnostics").setMessage(controller.diagnostics())
+                    .setPositiveButton("Close", null).show(); return true;
+        });
+        menu.getMenu().add("Lock").setEnabled(controller.snapshot().state() == State.OPEN)
+                .setOnMenuItemClickListener(item -> { managing = false; clearPasswords(); controller.lock(); return true; });
+        menu.show();
+    }
+    private void buildFolderManagement() {
+        label("Manage sync folder").setTextSize(20);
+        syncStatus = label("");
+        chooseFolder = button("Choose folder", this::chooseSyncFolder);
+        checkFolder = button("Retry access", () -> controller.checkSyncFolder());
+        disconnectFolder = button("Disconnect", () -> controller.disconnectSyncFolder());
+        joinVault = button("Join existing vault", () -> { managing = false; joining = true; controller.prepareJoin(); render(controller.snapshot()); });
+        initializeFolder = button("Initialize sync folder", () -> controller.initializeSyncFolder());
+        label("Choose the shared folder used by Syncthing. Join opens an existing vault on this device. Initialize sets up an empty shared folder for this vault. These setup actions never replace an existing vault.");
     }
     private void dismissTokenChange() {
         TokenChange previous = tokenChange; tokenChange = null;
@@ -291,7 +349,7 @@ public final class MainActivity extends Activity {
         String previous = controller.initialTreeUri();
         if (previous != null) picker.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, android.net.Uri.parse(previous));
         try { startActivityForResult(picker, SYNC_TREE_REQUEST); }
-        catch (android.content.ActivityNotFoundException unavailable) { syncStatus.setText("Folder picker unavailable."); }
+        catch (android.content.ActivityNotFoundException unavailable) { status.setText("Folder picker unavailable."); }
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
@@ -305,6 +363,7 @@ public final class MainActivity extends Activity {
     @android.annotation.SuppressLint("GestureBackNavigation")
     @Override public void onBackPressed() { navigateBack(); }
     private void navigateBack() {
+        if (managing) { managing = false; surface = null; render(controller.snapshot()); return; }
         if (adding) { if (controller.snapshot().state() == State.OPEN) cancelAdd(); return; }
         finish();
     }

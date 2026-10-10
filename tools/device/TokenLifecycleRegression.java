@@ -17,7 +17,8 @@ import static org.totipo.android.provider.ProviderSnapshot.State.COMPLETE;
 
 /** Standalone physical qualification. Only cache-isolated public vaults and file-backed
  * transport are touched; original app owner, SAF grant and M3D evidence are retained.
- * This qualifies product UI/controller + real Java, not SAF or Syncthing transport. */
+ * This qualifies product UI/controller + real Java, not SAF or Syncthing transport.
+ * Updated for automatic publication; historical results remain in their original reports. */
 public final class TokenLifecycleRegression extends Instrumentation {
     private AndroidVaultController controller;
     private MainActivity activity;
@@ -33,7 +34,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
         Bundle out=new Bundle();out.putString("stream","LIFECYCLE "+label+" PASS\n");sendStatus(0,out);
     }
     private boolean idle() {
-        try { synchronized(controller) { return !(Boolean)field(controller,"operating") && !(Boolean)field(controller,"viewQueued") && !(Boolean)field(controller,"providerActive"); } }
+        try { synchronized(controller) { return !(Boolean)field(controller,"operating") && !(Boolean)field(controller,"viewQueued") && !(Boolean)field(controller,"providerActive") && !(Boolean)field(controller,"syncPending") && !(Boolean)field(controller,"syncDrainQueued"); } }
         catch(Exception e){throw new AssertionError(e);}
     }
     private void await(BooleanSupplier condition) {
@@ -67,10 +68,13 @@ public final class TokenLifecycleRegression extends Instrumentation {
         Map<String,String> result=new TreeMap<>();try(var paths=Files.walk(root)){for(Path path:paths.filter(Files::isRegularFile).toList())
             result.put(root.relativize(path).toString(),java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path))));}return result;
     }
-    private void publish(FixturePort port) throws Exception {
-        int before=inventory(port.root).size();command(()->controller.publishLocalChanges());
-        check(controller.syncView().message().contains("Local changes published"),"explicit_publish_affirmed");
-        check(inventory(port.root).size()>before,"explicit_publish_gains_objects");
+    private void verifyAutomaticPublication(FixturePort port, Map<String,String> before) throws Exception {
+        await(this::idle);
+        check(controller.dailySyncStatus().isEmpty(),"automatic_sync_quiet");
+        var after=inventory(port.root);
+        check(after.size()>before.size(),"automatic_sync_gains_objects");
+        for(var entry:before.entrySet()) check(entry.getValue().equals(after.get(entry.getKey())),"immutable_provider_history_retained");
+        check(after.size()==vault().coordinator().outboundSnapshot().size()+1,"all_local_objects_in_fixture_folder");
     }
     @Override public void onCreate(Bundle args){super.onCreate(args);start();}
     @Override public void onStart(){Bundle output=new Bundle();int status=0;
@@ -103,8 +107,8 @@ public final class TokenLifecycleRegression extends Instrumentation {
             runOnMainSync(()->{var fields=edits(dialog().getWindow().getDecorView());check(fields.size()==2,"metadata_only_no_secret_field");
                 check(fields.get(1).getText().toString().equals("edit@example.test"),"edit_seeded_account");fields.get(1).setText("edited@example.test");});
             positive();await(()->row(edit).alternatives().get(0).account().equals("edited@example.test"));waitForIdleSync();
-            check(controller.tokenChangeResult()==TokenChange.Result.SAVED,"edit_saved");check(before.equals(inventory(port.root)),"edit_provider_unchanged");
-            check(vault().session()==session,"edit_same_session");check(controller.snapshot().revealedCode()==null,"edit_no_reveal");publish(port);
+            check(controller.tokenChangeResult()==TokenChange.Result.SAVED,"edit_saved");
+            check(vault().session()==session,"edit_same_session");check(controller.snapshot().revealedCode()==null,"edit_no_reveal");verifyAutomaticPublication(port,before);
             before=inventory(port.root);command(()->controller.showCode(delete));check(controller.snapshot().revealedCode()!=null,"delete_revealed_fixture");
             open(delete,TokenChange.Kind.DELETE);check(dialog()!=null,"delete_confirmation_visible");
             check(row(delete).alternatives().get(0).status()==TokenStatus.ACTIVE,"confirmation_has_not_authored");
@@ -113,7 +117,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
             check(controller.snapshot().revealedCode()==null,"delete_concealed");
             await(()->{try{return ((TokenListAdapter)field(activity,"tokens")).getCount()==1;}catch(Exception e){throw new AssertionError(e);}});
             check(((TokenListAdapter)field(activity,"tokens")).getCount()==1,"delete_absent_from_live_list");
-            check(before.equals(inventory(port.root)),"delete_provider_unchanged");check(vault().session()==session,"delete_same_session");publish(port);
+            check(vault().session()==session,"delete_same_session");verifyAutomaticPublication(port,before);
             // Fork complete encrypted Java-authored history to an independent Java session/store.
             Path branch=Files.createDirectory(base.resolve("branch"));Files.write(branch.resolve("vault"),vault().coordinator().snapshotVault());Files.createDirectory(branch.resolve("objects-v1"));
             for(var object:vault().coordinator().outboundSnapshot())Files.write(branch.resolve("objects-v1").resolve(object.id().hex()),object.representation());
@@ -124,7 +128,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
             open(edit,TokenChange.Kind.EDIT);runOnMainSync(()->edits(dialog().getWindow().getDecorView()).get(1).setText("local@example.test"));positive();
             await(()->row(edit).alternatives().get(0).account().equals("local@example.test"));await(this::idle);
             try(var files=Files.list(branch.resolve("objects-v1"))){for(Path path:files.toList()){Path target=port.root.resolve("objects-v1").resolve(path.getFileName());if(!Files.exists(target))Files.copy(path,target);}}
-            command(()->controller.importProviderChanges());await(()->row(edit).conflict());waitForIdleSync();
+            command(()->controller.sync());await(()->row(edit).conflict());waitForIdleSync();
             check(TokenListAdapter.rowText(row(edit)).contains("Token conflict"),"real_conflict_rendered");
             command(()->controller.showCode(edit));check(controller.snapshot().revealedCode()==null,"conflict_no_arbitrary_code");
             before=inventory(port.root);open(edit,TokenChange.Kind.RESOLVE);check(dialog()!=null,"resolve_chooser_visible");
@@ -133,7 +137,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
             final int choice=option;check(choice>=0,"complete_remote_alternative_present");
             runOnMainSync(()->{var list=dialog().getListView();list.performItemClick(list.getChildAt(choice),choice,list.getAdapter().getItemId(choice));});positive();
             await(()->!row(edit).conflict());waitForIdleSync();check(row(edit).alternatives().get(0).account().equals("remote@example.test"),"chosen_value_rendered");
-            check(before.equals(inventory(port.root)),"resolve_provider_unchanged");check(vault().session()==session,"resolve_same_session");publish(port);
+            check(vault().session()==session,"resolve_same_session");verifyAutomaticPublication(port,before);
             runOnMainSync(()->activity.finish());waitForIdleSync();command(()->controller.lock());controller.shutdown();
             appField.set(application,original);original=null;
             output.putString("stream","TOKEN LIFECYCLE PASS checks="+checks+"; physical UI/controller + released Java; isolated file transport\n");status=-1;
@@ -145,7 +149,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
             }catch(Throwable cleanup){status=0;output.putString("cleanup","FAIL");}
         }finish(status,output);
     }
-    /** File-backed isolated transport. Production writer, identity gate, Import and Publish
+    /** File-backed isolated transport. Production writer, identity gate and import-before-publish Sync
      * are exercised; Android SAF IPC and external Syncthing remain M3D's responsibility. */
     static final class FixturePort implements SyncFolderBinding.Port,ProviderObjectWriter.Port {
         final Path root;final Tree tree=new Tree("lifecycle-fixture","content://lifecycle-fixture/tree/root","root");

@@ -21,14 +21,22 @@ final class TokenListAdapter extends BaseAdapter {
     private final java.util.function.BiConsumer<TokenId, TokenChange.Kind> change;
     private List<ObservedToken> tokens = List.of();
     private boolean enabled;
+    private List<ObservedToken> source = List.of();
+    private String query = "";
+    void search(String text) { query = text.toLowerCase(java.util.Locale.ROOT).trim(); replace(source, enabled); }
     TokenListAdapter(Context context, Consumer<TokenId> reveal, java.util.function.BiConsumer<TokenId, TokenChange.Kind> change) {
         this.context = context; this.reveal = reveal; this.change = change;
     }
     void replace(List<ObservedToken> values, boolean enabled) {
-        if (tokens == values && this.enabled == enabled) return;
+        source = values;
         tokens = values.stream().filter(t -> t.conflict() || !t.unresolved().isEmpty()
-                || t.alternatives().stream().anyMatch(d -> d.status() == TokenStatus.ACTIVE)).collect(java.util.stream.Collectors.toList());
+                || t.alternatives().stream().anyMatch(d -> d.status() == TokenStatus.ACTIVE)).filter(t -> matchesSearch(t, query)).collect(java.util.stream.Collectors.toList());
         this.enabled = enabled; notifyDataSetChanged();
+    }
+    static boolean matchesSearch(ObservedToken token, String text) {
+        String query = text.toLowerCase(java.util.Locale.ROOT).trim();
+        return query.isEmpty() || token.alternatives().stream().anyMatch(d ->
+                (d.issuer() + " " + d.account()).toLowerCase(java.util.Locale.ROOT).contains(query));
     }
     public int getCount() { return tokens.size(); }
     public ObservedToken getItem(int position) { return tokens.get(position); }
@@ -45,8 +53,8 @@ final class TokenListAdapter extends BaseAdapter {
                 .map(TokenListAdapter::summary).distinct().collect(java.util.stream.Collectors.joining("\n"));
         if (token.alternatives().size() != 1) return "Token\nNeeds attention";
         var descriptor = token.alternatives().get(0);
-        return descriptor.issuer() + "\n" + descriptor.account() + "\n"
-                + (usable(token) ? "Active" : "Needs attention");
+        return descriptor.issuer() + "\n" + descriptor.account()
+                + (usable(token) ? "" : "\nNeeds attention");
     }
     static String summary(org.totipo.TokenDescriptor value) {
         if (value.status() == TokenStatus.TOMBSTONED) return "Deleted";

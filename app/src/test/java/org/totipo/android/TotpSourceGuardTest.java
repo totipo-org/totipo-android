@@ -13,7 +13,7 @@ public final class TotpSourceGuardTest {
     @Test public void rowsUseDetachedDescriptorsAndSummarizeAmbiguity() {
         var descriptor = new TokenDescriptor(TokenStatus.ACTIVE, "Issuer", "Account", TotpAlgorithm.SHA256, 7, Duration.ofSeconds(45));
         var token = new ObservedToken(new TokenId("a".repeat(64)), List.of(descriptor), List.of(), List.of(), false);
-        assertEquals("Issuer\nAccount\nActive", TokenListAdapter.rowText(token)); assertTrue(TokenListAdapter.usable(token));
+        assertEquals("Issuer\nAccount", TokenListAdapter.rowText(token)); assertTrue(TokenListAdapter.usable(token));
         var conflict = new ObservedToken(token.id(), List.of(descriptor, descriptor), List.of(), List.of(), true);
         assertTrue(TokenListAdapter.rowText(conflict).startsWith("Token conflict\nIssuer — Account")); assertFalse(TokenListAdapter.usable(conflict));
     }
@@ -22,7 +22,7 @@ public final class TotpSourceGuardTest {
         assertTrue(adapter.contains("return tokens.size()")); assertTrue(adapter.contains("if (convertView == null)"));
         assertTrue(adapter.contains("else row = (LinearLayout) convertView")); assertTrue(adapter.contains("return row;"));
         assertFalse(adapter.contains("for (")); assertFalse(adapter.contains(".limit("));
-        assertTrue(activity.contains("new ListView(this)")); assertTrue(activity.contains("No tokens yet"));
+        assertTrue(activity.contains("new ListView(this)")); assertTrue(activity.contains("No matching tokens"));
         assertTrue(activity.contains("list.setEmptyView(empty)"));
         assertEquals("123 456", MainActivity.grouped("123456"));
         assertEquals("1234 567", MainActivity.grouped("1234567"));
@@ -52,7 +52,9 @@ public final class TotpSourceGuardTest {
         assertTrue(activity.contains("FLAG_SECURE")); assertTrue(activity.contains("text.setSaveEnabled(false)"));
         assertTrue(activity.contains("text.setFreezesText(false)")); assertTrue(activity.contains("ACCESSIBILITY_LIVE_REGION_NONE"));
         assertFalse(activity.contains("putString(")); assertFalse(activity.contains("onSaveInstanceState"));
-        assertFalse(activity.contains("announceForAccessibility")); assertFalse(activity.contains("setContentDescription"));
+        assertFalse(activity.contains("announceForAccessibility")); assertFalse(activity.contains("code.setContentDescription"));
+        assertFalse(activity.contains("remaining.setContentDescription"));
+        assertFalse(activity.contains("selected.setContentDescription"));
         assertFalse(activity.contains("controller.hideCode(); super.onStop"));
         assertTrue(read("RevealedTotp").contains("RevealedTotp[redacted]"));
     }

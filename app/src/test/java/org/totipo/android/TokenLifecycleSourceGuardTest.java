@@ -28,7 +28,7 @@ public final class TokenLifecycleSourceGuardTest {
         assertTrue(activity.contains("setSingleChoiceItems(options, -1"));assertTrue(activity.contains("setLabelFor(field.getId())"));
         assertTrue(activity.contains("setTextColor(android.graphics.Color.rgb(176, 0, 32))"));
         assertTrue(activity.contains("onStop() { clearSecret(); dismissTokenChange()"));
-        assertTrue(adapter.contains("TokenStatus.ACTIVE)).collect"));
+        assertTrue(adapter.contains("TokenStatus.ACTIVE)).filter"));
         assertFalse(activity.contains("onSaveInstanceState"));
     }
     @Test public void secretOnlyConflictStillHasTwoChoicesAndNoCodeOrEdit() {

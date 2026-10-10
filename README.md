@@ -1,27 +1,49 @@
 # Totipo Android
 
-Unreleased (`0.0.0-dev`). The platform Android shell creates, unlocks and explicitly
-locks an app-private local Totipo vault in no-backup storage. One Application-owned
-`AndroidVaultController` keeps one live foreground coordinator/session across Activity
-recreation. Activities render immutable detached token descriptors, observation status,
-and unresolved/conflict/integrity diagnostics. Refresh requests local observation without
-closing or reauthenticating the session. Vault work uses one bounded application worker;
-UI callbacks return to the main thread. Credentials are not persisted and operation-owned
-mutable buffers are cleared on completion, as best effort rather than guaranteed JVM erasure.
-Empty-password create/unlock/Join requires explicit confirmation.
+Unreleased (`0.0.0-dev`). Totipo creates, unlocks and explicitly locks an
+app-private local vault in no-backup storage. After setup, the main screen contains
+**Sync**, search, tokens and **Add token**, with **Lock**, **Manage sync folder** and
+**Diagnostics** in overflow. Show code and Copy code retain their conceal/expiry
+behavior. Diagnostics shows public vault/provider/build information, never passwords,
+setup secrets, root keys or raw exception dumps.
 
-Token management supports **Add**, **Edit**, **Delete**, **Resolve**, and **Show code**.
-Live rows keep Show code as the default action and offer Edit/Delete in the overflow menu.
-Edit changes issuer/account while retaining the hidden authenticator setup; **Change setup**
-is deferred. Delete requires confirmation and authors a Totipo tombstone, retaining immutable
-encrypted history rather than securely erasing it. Conflict rows offer Resolve instead of
-Show code. Resolve requires choosing one complete Alternative, including Deleted where present;
-there is no automatic winner or field combination. Detailed **Combine** is deferred.
-Edit/Delete/Resolve author only the local canonical store through the existing session.
-Use **Publish local changes** separately. They perform no provider Import or Publish.
-Changed token/conflict bases require review and a fresh user choice; no silent retry/rebase.
-Lock, dismissal and Activity interruption retire pending forms; sensitive setup is never
-saved through Android widget state or Bundle.
+Once a shared folder is bound, Totipo automatically attempts **Sync** after successful
+unlock/open, after a meaningful return from the background, and after successful
+**Add**, **Edit**, **Delete** or **Resolve**. Rotation and repeated active callbacks do
+not trigger repeated attempts. Manual **Sync** retries at any time admission is free,
+including after a provider outage. There is no routine Import/Publish decision.
+
+Sync always **imports and observes before publishing**: it checks the bound folder's
+immutable VAULT identity, imports remote evidence through the existing Java session,
+waits for Java observation, and then uses fresh publication preflight/readback/postflight
+checks. Blocking identity, provider, import or observation failures stop publication.
+Java remains the merge/conflict authority. Real concurrent edits remain conflicts;
+Resolve requires an explicit complete Alternative, including Deleted where present.
+There is no automatic winner or field combination.
+
+Local authoring succeeds independently of the subsequent Sync attempt. An unavailable
+provider leaves the valid local change committed and shows **Changes not synced**.
+A persisted local retry hint survives restart; immutable local evidence is the source
+of publication decisions. A later foreground event, mutation or manual Sync retries.
+Requests coalesce to one active Sync plus one pending request; failures never start a
+retry loop. Successful Sync is quiet and confirms only the bound shared folder, never
+receipt by other devices. **Syncthing remains the external transport** between folders.
+
+Edit changes issuer/account while retaining the hidden authenticator setup; **Change
+setup** is deferred. Delete requires confirmation and authors a Totipo tombstone,
+retaining immutable encrypted history rather than securely erasing it. Live rows offer
+Show code and Edit/Delete; conflict rows offer Resolve. Detailed **Combine** is deferred.
+Changed token/conflict bases require review and a fresh user choice, with no silent
+retry/rebase. Lock, dismissal and Activity interruption retire pending forms; sensitive
+setup is never saved through Android widget state or Bundle.
+
+One Application-owned `AndroidVaultController` retains the live coordinator/session
+across Activity recreation. The existing bounded vault worker and provider I/O lane
+serialize operations, with session/binding retirement and cancellation guards. Explicit
+lock and process death remain the lock policy; backgrounding/rotation does not lock.
+Credentials are not persisted. Operation-owned mutable buffers are cleared on completion
+as best effort rather than guaranteed JVM erasure. Empty-password create/unlock/Join
+requires explicit confirmation.
 
 Production consumes released Java NIO/core 0.2.0 and Bouncy Castle 1.86 directly
 from Maven Central, targeting Totipo Vault Format v1/r19. One app-private local canonical
@@ -29,10 +51,10 @@ store has one persistent `NioStoreComposition.coordinatedDelegate(root, new NioD
 wrapped by `CoordinatedPrivateStore`, whose fair gate owns whole-root exclusivity for
 session calls and bridge batches. No second delegate or independent writer is allowed.
 
-Explicit **Import changes** and **Publish local changes** exchange immutable token objects
-through one bounded provider I/O lane. Every operation first reads the provider's root
+**Sync** exchanges immutable token objects through one bounded provider I/O lane.
+The lower-level Import and Publish operations remain internal for qualification. Every operation first reads the provider's root
 immutable VAULT and compares its structural `VaultId` with the currently open session.
-Import and Publish require the selected folder to contain the same immutable VAULT. Missing, malformed,
+Both phases require the selected folder to contain the same immutable VAULT. Missing, malformed,
 unavailable, different or duplicate VAULT candidates block object mutation; duplicate
 candidates are conservatively ambiguous even if identical. No password/KDF is used for
 provider recognition. Folder READY means transport accessibility, not matching identity.
@@ -43,7 +65,7 @@ password change and migration are absent. Cross-vault migration is separate futu
 Inbound import retains the same authenticated session, Java object validation and exact
 ciphertext, exclusive local publication, then refresh after releasing the store gate.
 Outbound publication retains bounded fresh preflight, create-only canonical names,
-immediate read-back, fresh authenticated postflight and explicit manual retry.
+immediate read-back and fresh authenticated postflight. Manual Sync remains the retry fallback.
 There is no automatic polling, background synchronization, cloud SDK or Internet permission.
 Java's existing-token-data creation veto is presented without bypass.
 
@@ -107,7 +129,7 @@ Use the wrapper for local Android iteration in the managed shell:
 The forced offline repeat remains a manual M0/toolchain qualification check:
 
 ```sh
-./gradlew --offline --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks clean check :app:assembleDebug :app:assembleRelease
+./gradlew --offline --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks --dependency-verification=strict clean check :app:assembleDebug :app:assembleRelease
 ```
 
 `check` includes the debug JVM smoke test, Android lint and debug/release
@@ -256,13 +278,16 @@ Provider token evidence without a VAULT vetoes initialization. A verified VAULT 
 if directory initialization fails; an explicit retry can create only the missing directory.
 Neither operation replaces VAULT, changes a password or root, performs migration or copies
 across vaults. Different local/provider VaultIds are never reconciled automatically.
-Join does not import tokens; Initialize does not publish tokens. Use **Import changes** and
-**Publish local changes** separately, each with its own fresh matching-VAULT preflight.
+Join and Initialize remain deliberate setup operations under **Manage sync folder**;
+Join is also reachable during initial setup. Join opens the vault and triggers ordinary
+Sync. Initialize creates the provider VAULT/directory only; ordinary **Sync** then handles
+token publication. No ordinary Sync auto-joins, bootstraps or replaces a vault.
+A different provider VaultId blocks publication with a fixed message; use **Manage sync
+folder** to choose the intended folder. No replacement or merge is offered.
 No bootstrap runs on startup, unlock, folder selection or access restoration.
-The next task is to **resume/rerun M3D real Syncthing qualification from Scenario E onward**,
-after committing this milestone with new Android HEAD and APK identities. Retain A–D as
-historical prior-run evidence only and collect fresh E–M evidence. The old incomplete
-M3D report remains incomplete. See the [token lifecycle report](review/ANDROID_TOKEN_LIFECYCLE_REPORT.md).
+Historical M3D reports and checkpoints record the earlier explicit Import/Publish UX
+and remain unchanged. The daily-driver milestone's current validation and outstanding
+human gates are recorded in [the daily-driver UX report](review/ANDROID_DAILY_DRIVER_UX_REPORT.md).
 There is no background sync, Syncthing integration, biometric unlock, inactivity lock timer,
 field-by-field conflict combination, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
 and universal Android filesystem/runtime or interoperability qualification are not claimed.

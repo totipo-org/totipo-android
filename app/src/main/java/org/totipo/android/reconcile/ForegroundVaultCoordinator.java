@@ -204,6 +204,42 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         try { operations.refresh(session, store); }
         finally { transition(State.OPEN); }
     }
+    /** Android Sync barrier only; Java owns observation and all conflict/merge semantics.
+     * Two fresh completed emissions ensure an observation already in flight at entry cannot
+     * authorize publication. The second pass necessarily starts after the first has finished.
+     * Bounded waits fail closed and poll the existing cancellation flag; no executor is added. */
+    @android.annotation.TargetApi(30)
+    public boolean observeForSync(Cancellation cancellation) {
+        requireOpen();
+        for (int pass = 0; pass < 2; pass++) {
+            var baseline = session.state();
+            var completed = new CountDownLatch(1);
+            var subscription = new AtomicReference<Flow.Subscription>();
+            var failure = new AtomicReference<Throwable>();
+            session.states().subscribe(new Flow.Subscriber<VaultState>() {
+                public void onSubscribe(Flow.Subscription next) { subscription.set(next); next.request(Long.MAX_VALUE); }
+                public void onNext(VaultState next) {
+                    if (next != baseline && next.observation() instanceof ObservationProgress.Finished) completed.countDown();
+                }
+                public void onError(Throwable cause) { failure.set(cause); completed.countDown(); }
+                public void onComplete() { completed.countDown(); }
+            });
+            try {
+                operations.refresh(session, store);
+                long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+                while (!completed.await(50, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    if (cancellation.requested() || System.nanoTime() >= deadline) return false;
+                }
+                if (cancellation.requested() || failure.get() != null || session.state() == baseline
+                        || !(session.state().observation() instanceof ObservationProgress.Finished)) return false;
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt(); return false;
+            } finally {
+                var active = subscription.get(); if (active != null) active.cancel();
+            }
+        }
+        return session.state().diagnostics().isEmpty() && integrityProblems.isEmpty();
+    }
     /** Signals only; callers schedule detached view reads outside the Java callback.
      * No Activity subscribes to Java or receives a state editor/session. */
     @android.annotation.TargetApi(30)

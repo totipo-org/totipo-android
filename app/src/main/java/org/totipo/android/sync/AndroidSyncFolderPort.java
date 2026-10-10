@@ -24,6 +24,8 @@ public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, Prov
     public org.totipo.android.provider.ProviderSnapshot.Document vaultMetadata(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultMetadata(created); }
     public java.io.OutputStream vaultOutput(org.totipo.android.provider.ProviderSnapshot.Document created) throws Exception { return bootstrap().vaultOutput(created); }
     public org.totipo.android.provider.ProviderSnapshot.Bytes vaultReadBack(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultReadBack(created); }
+    public boolean pendingPublication() { return preferences.getBoolean("pending_publication", false); }
+    public void pendingPublication(boolean pending) { preferences.edit().putBoolean("pending_publication", pending).commit(); }
     public Stored load() {
         try {
             if (!preferences.contains("tree_uri")) return null;
@@ -33,7 +35,7 @@ public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, Prov
         } catch (RuntimeException malformed) { return new Stored("", false, false); }
     }
     public boolean save(Stored value) {
-        var edit = preferences.edit().clear();
+        var edit = preferences.edit().remove("schema").remove("tree_uri").remove("read").remove("write");
         if (value != null) edit.putInt("schema", 1).putString("tree_uri", value.uri())
                 .putBoolean("read", value.readable()).putBoolean("write", value.writable());
         return edit.commit();

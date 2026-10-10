@@ -12,6 +12,8 @@ public final class SyncFolderBinding {
     public record View(Status status, boolean readable, boolean writable) {}
     public interface Port {
         Stored load();
+        default boolean pendingPublication() { return false; }
+        default void pendingPublication(boolean pending) {}
         boolean save(Stored value);
         boolean validTree(String uri);
         Grants grants(String uri);
@@ -28,6 +30,13 @@ public final class SyncFolderBinding {
     private Stored remembered;
     private View view = new View(Status.NOT_CONFIGURED, false, false);
     public SyncFolderBinding(Port port) { this.port = port; }
+    /** UI retry hint only, never an authority for deciding which immutable objects to publish. */
+    public synchronized boolean pendingPublication() {
+        try { return port.pendingPublication(); } catch (RuntimeException unavailable) { return true; }
+    }
+    public synchronized void pendingPublication(boolean pending) {
+        try { port.pendingPublication(pending); } catch (RuntimeException unavailable) { /* Local vault remains authoritative. */ }
+    }
     public synchronized View view() { return view; }
     public synchronized String initialUri() { return remembered == null ? null : remembered.uri(); }
     public synchronized View restore() {

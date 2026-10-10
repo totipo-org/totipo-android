@@ -32,6 +32,20 @@ public final class TotipoApplication extends Application {
                 public long elapsedMillis() { return SystemClock.elapsedRealtime(); }
             }, new PlatformCodeClipboard(getSystemService(ClipboardManager.class)),
                     new org.totipo.android.sync.SyncFolderBinding(new org.totipo.android.sync.AndroidSyncFolderPort(this)));
+            registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
+                private int started;
+                public void onActivityStarted(android.app.Activity activity) {
+                    if (++started == 1) vaultController.foregroundChanged(true);
+                }
+                public void onActivityStopped(android.app.Activity activity) {
+                    if (--started == 0 && !activity.isChangingConfigurations()) vaultController.foregroundChanged(false);
+                }
+                public void onActivityCreated(android.app.Activity activity, android.os.Bundle state) {}
+                public void onActivityResumed(android.app.Activity activity) {}
+                public void onActivityPaused(android.app.Activity activity) {}
+                public void onActivitySaveInstanceState(android.app.Activity activity, android.os.Bundle state) {}
+                public void onActivityDestroyed(android.app.Activity activity) {}
+            });
         }
     }
     public AndroidVaultController vaultController() { return vaultController; }

@@ -40,10 +40,12 @@ public final class SyncSourceGuardTest {
         assertTrue(binding.contains("new org.totipo.RevisionId(name)"));
         assertTrue(binding.contains("openOutputStream(Uri.parse(created.locator()), \"w\")"));
         assertFalse(binding.contains("openOutputStream(Uri.parse(parent.locator())"));
-        assertTrue(ui.contains("Publish local changes"));
+        assertFalse(ui.contains("Publish local changes"));
+        assertFalse(ui.contains("Import changes"));
+        assertTrue(ui.contains("\"Sync\""));
         for (String forbidden : List.of("fully synced", "two-way sync", "everything up to date", "everything synchronized", "two-way vault sync", "vault synchronized"))
             assertFalse(ui.toLowerCase().contains(forbidden));
-        assertTrue(ui.contains("lock.setEnabled(state.state() == State.OPEN)"));
+        assertTrue(ui.contains("syncAction.setEnabled(controller.canSync())"));
         assertFalse(ui.contains("Executor")); assertFalse(ui.contains("ContentResolver"));
         String lane = Files.readString(Path.of("src/main/java/org/totipo/android/sync/ProviderIoLane.java"));
         for (String forbidden : List.of("VaultSession", "LocalReplicaOwner", "CoordinatedPrivateStore", "NioTotipoStore",

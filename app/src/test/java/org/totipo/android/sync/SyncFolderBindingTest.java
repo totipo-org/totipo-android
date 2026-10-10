@@ -9,6 +9,9 @@ import static org.junit.Assert.*;
 public final class SyncFolderBindingTest {
     public static class MemoryPort implements Port {
         public Stored stored;
+        public boolean pending;
+        public boolean pendingPublication() { return pending; }
+        public void pendingPublication(boolean value) { pending = value; }
         public final Map<String, Grants> permissions = new HashMap<>();
         public boolean offline, failTake, failSave, failRelease, discardTake;
         public int takes, releases, probes, scans;
