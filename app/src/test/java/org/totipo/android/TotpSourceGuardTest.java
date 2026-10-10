@@ -20,7 +20,7 @@ public final class TotpSourceGuardTest {
     @Test public void completeListRecyclingAndEmptyStateAreWiredToPlatform() throws Exception {
         String adapter = read("TokenListAdapter"), activity = read("MainActivity");
         assertTrue(adapter.contains("return tokens.size()")); assertTrue(adapter.contains("if (convertView == null)"));
-        assertTrue(adapter.contains("else row = (LinearLayout) convertView")); assertTrue(adapter.contains("return row;"));
+        assertTrue(adapter.contains("else row = (Row) convertView")); assertTrue(adapter.contains("return row;"));
         assertFalse(adapter.contains("for (")); assertFalse(adapter.contains(".limit("));
         assertTrue(activity.contains("new ListView(this)")); assertTrue(activity.contains("No matching tokens"));
         assertTrue(activity.contains("list.setEmptyView(empty)"));
@@ -49,8 +49,8 @@ public final class TotpSourceGuardTest {
     }
     @Test public void secureWindowNoSavedCodeAndNoLiveSecretAnnouncements() throws Exception {
         String activity = read("MainActivity");
-        assertTrue(activity.contains("FLAG_SECURE")); assertTrue(activity.contains("text.setSaveEnabled(false)"));
-        assertTrue(activity.contains("text.setFreezesText(false)")); assertTrue(activity.contains("ACCESSIBILITY_LIVE_REGION_NONE"));
+        assertTrue(activity.contains("FLAG_SECURE")); assertTrue(read("TokenListAdapter").contains("text.setSaveEnabled(false)"));
+        assertTrue(read("TokenListAdapter").contains("text.setFreezesText(false)")); assertTrue(read("TokenListAdapter").contains("ACCESSIBILITY_LIVE_REGION_NONE"));
         assertFalse(activity.contains("putString(")); assertFalse(activity.contains("onSaveInstanceState"));
         assertFalse(activity.contains("announceForAccessibility")); assertFalse(activity.contains("code.setContentDescription"));
         assertFalse(activity.contains("remaining.setContentDescription"));

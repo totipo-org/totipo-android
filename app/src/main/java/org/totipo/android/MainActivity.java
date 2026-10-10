@@ -29,10 +29,8 @@ public final class MainActivity extends Activity {
     private AndroidVaultController controller;
     private final AndroidVaultController.Listener listener = this::render;
     private LinearLayout content;
-    private TextView status, code, remaining, selected;
-    private LinearLayout revealPanel;
+    private TextView status;
     private TokenListAdapter tokens;
-    private org.totipo.TokenId selectedId;
     private EditText password, confirmation;
     private Button action, syncAction;
     private boolean managing;
@@ -124,21 +122,8 @@ public final class MainActivity extends Activity {
         if (syncAction != null) syncAction.setEnabled(controller.canSync());
         if (tokens != null) {
             var view = state.view();
-            tokens.replace(view == null ? java.util.List.of() : view.tokens(), controller.canAddToken());
-            var shown = state.revealedCode();
-            revealPanel.setVisibility(shown == null ? View.GONE : View.VISIBLE);
-            String formatted = shown == null ? "" : grouped(shown.code());
-            if (!TextUtils.equals(code.getText(), formatted)) code.setText(formatted);
-            remaining.setText(shown == null ? "" : "Expires in " + state.remainingSeconds() + " s");
-            if (shown == null) { selected.setText(""); selectedId = null; }
-            if (shown != null && view != null && !shown.tokenId().equals(selectedId)) {
-                selectedId = shown.tokenId();
-                for (var token : view.tokens()) if (token.id().equals(shown.tokenId())
-                        && token.alternatives().size() == 1) {
-                    var descriptor = token.alternatives().get(0);
-                    selected.setText(descriptor.issuer() + " — " + descriptor.account()); break;
-                }
-            }
+            tokens.replace(view == null ? java.util.List.of() : view.tokens(), controller.canAddToken(),
+                    state.revealedCode(), state.remainingSeconds());
         }
     }
     static String grouped(String value) {
@@ -150,7 +135,7 @@ public final class MainActivity extends Activity {
         clearPasswords();
         clearSecret();
         clearCodeWidgets();
-        code = remaining = selected = null; tokens = null; revealPanel = null;
+        tokens = null;
         issuer = account = secret = period = null; algorithm = digits = null; add = cancel = scan = null;
         surface = next; password = confirmation = null; action = syncAction = null;
         chooseFolder = disconnectFolder = checkFolder = joinVault = initializeFolder = null; syncStatus = null;
@@ -207,7 +192,7 @@ public final class MainActivity extends Activity {
             EditText search = new EditText(this); search.setHint("Search tokens…");
             search.setContentDescription("Search tokens"); search.setSingleLine(true); search.setSaveEnabled(false);
             content.addView(search);
-            tokens = new TokenListAdapter(this, id -> controller.showCode(id), this::openTokenChange);
+            tokens = new TokenListAdapter(this, this::tapToken, this::openTokenChange, controller::hideCode);
             search.addTextChangedListener(new TextWatcher() {
                 public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
                 public void onTextChanged(CharSequence text, int start, int before, int count) { tokens.search(text.toString()); }
@@ -217,21 +202,6 @@ public final class MainActivity extends Activity {
             ListView list = new ListView(this); list.setSaveEnabled(false);
             list.setAdapter(tokens); list.setEmptyView(empty);
             content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
-            revealPanel = new LinearLayout(this); revealPanel.setOrientation(LinearLayout.VERTICAL);
-            revealPanel.setSaveEnabled(false); revealPanel.setSaveFromParentEnabled(false);
-            selected = new TextView(this); code = new TextView(this); remaining = new TextView(this);
-            for (TextView text : new TextView[] {selected, code, remaining}) {
-                text.setSaveEnabled(false); text.setFreezesText(false);
-                text.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
-                text.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
-                revealPanel.addView(text);
-            }
-            code.setTextSize(32);
-            LinearLayout revealActions = new LinearLayout(this); revealPanel.addView(revealActions);
-            buttonIn(revealActions, "Hide code", () -> controller.hideCode());
-            buttonIn(revealActions, "Copy code", () -> android.widget.Toast.makeText(this,
-                    controller.copyShownCode() ? "Code copied" : "Code could not be copied", android.widget.Toast.LENGTH_SHORT).show());
-            revealPanel.setVisibility(View.GONE); content.addView(revealPanel);
             add = button("Add token", () -> {
                 if (controller.snapshot().state() != State.OPEN) return;
                 controller.hideCode(); adding = true; render(controller.snapshot());
@@ -438,12 +408,15 @@ public final class MainActivity extends Activity {
         if (password != null) password.getText().clear();
         if (confirmation != null) confirmation.getText().clear();
     }
+    private void tapToken(org.totipo.TokenId id) {
+        var shown = controller.snapshot().revealedCode();
+        if (shown != null && shown.tokenId().equals(id)) {
+            android.widget.Toast.makeText(this,
+                    controller.copyShownCode() ? "Code copied" : "Code could not be copied", android.widget.Toast.LENGTH_SHORT).show();
+        } else controller.showCode(id);
+    }
     private void clearCodeWidgets() {
-        if (code != null) code.setText("");
-        if (remaining != null) remaining.setText("");
-        if (selected != null) selected.setText("");
-        if (tokens != null) tokens.replace(java.util.List.of(), false);
-        selectedId = null;
+        if (tokens != null) tokens.clearWidgets();
     }
     @Override protected void onDestroy() { clearPasswords(); clearCodeWidgets(); super.onDestroy(); }
 }

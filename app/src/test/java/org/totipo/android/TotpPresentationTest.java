@@ -94,6 +94,17 @@ public final class TotpPresentationTest {
         assertEquals("94287082", clipboard.text); String marker = clipboard.marker;
         assertNotNull(marker); assertTrue(presentation.copy()); assertNotEquals(marker, clipboard.marker);
     }
+    @Test public void copyKeepsSameRevealTimerAndAbsoluteExpiry() {
+        clock.wall = Instant.ofEpochSecond(31);
+        var value = code("a"); presentation.reveal(value);
+        Runnable scheduled = timer.task; int schedules = timer.schedules;
+        clock.advance(18000); assertTrue(presentation.copy());
+        assertSame(value, presentation.display().code());
+        assertEquals(11, presentation.display().seconds());
+        assertSame(scheduled, timer.task); assertEquals(schedules, timer.schedules);
+        clock.advance(11000); timer.fire();
+        assertNull(presentation.display().code()); assertEquals(1, clipboard.clears);
+    }
     @Test public void differentMarkerPreservesObservedExternalReplacement() {
         presentation.reveal(code("a")); presentation.copy(); clipboard.marker = "external";
         presentation.clear(); assertEquals(0, clipboard.clears); assertEquals("94287082", clipboard.text);

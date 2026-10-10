@@ -46,9 +46,9 @@ public final class DailyDriverUxTest {
         assertTrue(ui.contains("ACCESSIBILITY_LIVE_REGION_POLITE"));
         assertTrue(ui.contains("if (!TextUtils.equals(status.getText(), message))"));
         assertTrue(ui.contains("message.isEmpty() ? View.GONE : View.VISIBLE"));
-        assertTrue(ui.contains("Expires in ")); assertTrue(ui.contains("code.setTextSize(32)"));
+        assertTrue(read("TokenListAdapter").contains("row.countdown.setText"));
         assertFalse(ui.contains("code.setAccessibilityLiveRegion"));
-        assertTrue(ui.contains("text.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE)"));
+        assertTrue(read("TokenListAdapter").contains("text.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE)"));
     }
     @Test public void searchMatchesIssuerAccountAndConflictAlternativesWithLocaleIndependentCase() {
         var first = new TokenDescriptor(TokenStatus.ACTIVE, "GitHub", "alice@example.test", TotpAlgorithm.SHA1, 6, Duration.ofSeconds(30));

@@ -131,6 +131,17 @@ public final class TotpControllerTest {
         assertEquals(1, generations); assertEquals(1, real.creates); assertEquals(0, real.opens); assertEquals(0, real.closes);
         assertSame(session, real.session); assertSame(vault, real.coordinator);
     }
+    @Test public void copyingKeepsRevealedIdentityAndOriginalDeadline() throws Exception {
+        clock.wall = Instant.ofEpochSecond(31); show(a);
+        var before = controller.snapshot().revealedCode(); Runnable scheduled = timer.task;
+        clock.advance(18000); assertTrue(controller.copyShownCode()); pump();
+        assertSame(before, controller.snapshot().revealedCode());
+        assertEquals(a, controller.snapshot().revealedCode().tokenId());
+        assertEquals(11, controller.snapshot().remainingSeconds());
+        assertSame(scheduled, timer.task); assertEquals(1, generations);
+        clock.advance(11000); timer.fire(); pump();
+        assertNull(controller.snapshot().revealedCode()); assertEquals(1, clipboard.clears);
+    }
     @Test public void oneAtATimeAndImmediateHide() throws Exception {
         show(a); show(b); assertEquals(b, controller.snapshot().revealedCode().tokenId());
         controller.hideCode(); assertNull(controller.snapshot().revealedCode()); assertNull(timer.task);
