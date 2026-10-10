@@ -193,7 +193,8 @@ The cache also pins lint's Google Play SDK Index at
 URL, so a fresh runner can fail with a `snapshot.gz` fixed-output hash mismatch
 even when application dependencies have not changed. Verify the downloaded
 snapshot and update its `gz` hash under `https://dl.google.com` →
-`play-sdk/index/snapshot` in `package-deps.json`, then rerun the checks above.
+`play-sdk/index/snapshot` in `package-deps.json`. Update the reviewed whole-file
+SHA-256 in `OtpAuthSupplyChainGuardTest` as well, then rerun the checks above.
 This refresh can recur whenever Google replaces the snapshot.
 
 Human-operated flake check, package build and forced rebuild passed on

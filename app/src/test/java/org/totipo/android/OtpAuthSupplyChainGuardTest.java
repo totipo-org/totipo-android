@@ -30,7 +30,8 @@ public final class OtpAuthSupplyChainGuardTest {
                 java.util.Map.entry("flake.nix", "1ee5379470643f1699d65e7ba6ea834ffe4cc277d8df49cc59f68c1311b7a5a9"),
                 // Rebaselined for the intentional flake update in 5f2fdd8.
                 java.util.Map.entry("flake.lock", "44728fcfd8529462cb415b186ee4ce3400343dd911d325b6a965bd386b9f7749"),
-                java.util.Map.entry("package-deps.json", "74eb72a9ffb5f9f364f02f9f64014f260f4baf610c1cefdb9b09ed6846eb42b1"));
+                // Rebaselined for the verified Google Play SDK Index snapshot refresh.
+                java.util.Map.entry("package-deps.json", "8d4ac6dd7fc08cc3793ae46f21cb885cf1300ccef992fe9f399fe6982f89c133"));
         for (var entry : baseline.entrySet()) {
             Path input = Path.of("../" + entry.getKey());
             // package.nix deliberately excludes these three evaluator/cache inputs from Gradle's source tree.
