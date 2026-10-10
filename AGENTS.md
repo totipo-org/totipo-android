@@ -204,12 +204,19 @@ projection, TOTP reveal/generation, operation admission, global BUSY/enabled-sta
 policy, Sync, requestRefresh/observation, Add/Edit/Delete/Resolve, save/publication,
 retry/partial publication, Join/open/create, biometric/password open, Lock/inactivity
 timeout, process/activity lifecycle, session replacement, or provider/store scheduling,
-read the exact reviewed Java guidance at commit `b03f5b22f367723ce4a3bddf0a56b159a06f32cf`:
+read the exact reviewed Java guidance at commit `f0a028676c1801a10b2d8d2650bf9c24357d1fa1`:
 
-[API_DESIGN.md](https://github.com/totipo-dev/totipo-java/blob/b03f5b22f367723ce4a3bddf0a56b159a06f32cf/API_DESIGN.md),
+[API_DESIGN.md](https://github.com/totipo-org/totipo-java/blob/f0a028676c1801a10b2d8d2650bf9c24357d1fa1/API_DESIGN.md),
 especially **Operation classes and state-snapshot semantics**, **Replay-latest stream**,
 **Editing and deterministic causal bases**, **Merge freshness and partial resolution**,
 **Persistence knowledge and handles**, and **Blocking, threading and close**.
+Agents changing Sync/observation behavior must also read **Observation-pass ordering
+and composition** at that exact revision. Android's import-before-publish observation
+barrier is supported only under the assumptions documented in that pinned contract;
+`requestRefresh()` returning is not observation completion or an acknowledgement.
+It remains nonblocking, coalescible and without request/result correlation.
+See [the F08 follow-up](review/ANDROID_JAVA_GUIDANCE_PIN_REFRESH_REPORT.md) for
+Android's assumptions and the local-only guarantee.
 If Java is unavailable locally, fetch/read this exact revision read-only from GitHub.
 Do not substitute Java `main` or only the earlier operation-model commit.
 
