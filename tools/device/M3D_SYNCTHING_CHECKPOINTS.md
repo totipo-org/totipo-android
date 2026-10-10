@@ -8,6 +8,17 @@ Use `Totipo-M3D-Android-First` for the second vault. Never rename/move granted r
 
 ## Prepare and keep the observer alive
 
+For a fresh lifecycle-baseline resume run, pass
+`--evidence-dir .gradle/m3d-syncthing-resume` to **every** runner command below,
+including `serve`, `begin`, `finish`, and `capture`. Keep historical evidence and its
+failure latch in `.gradle/m3d-syncthing/` untouched. The committed lifecycle observer
+records Alternative status and separates current tombstones (`deleted_tokens`,
+`deleted_count`) from the live list. Use `--deleted` plus explicit history/delta
+inspection for deletion; absence from the live list alone is insufficient.
+The coverage-limit section below describes the historical run only; the lifecycle
+baseline now supplies Edit, Delete, and whole-Alternative Resolve. New results belong
+in a separate resume report with a new HEAD/APK/session identity.
+
 Run normal and strict builds first, then:
 
 ```sh

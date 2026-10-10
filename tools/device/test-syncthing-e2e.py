@@ -87,6 +87,11 @@ class EvidenceOracleTest(unittest.TestCase):
         self.after['local']['deleted_count'] = 1
         self.assertEqual([], self.failures())
 
+    def test_semantic_invariance_includes_deleted_state(self):
+        self.args.semantic_unchanged = True
+        self.after['local']['deleted_tokens'] = [{'alternatives': [{'status': 'TOMBSTONED'}]}]
+        self.assertIn('semantic projection unchanged', self.failures())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -164,7 +164,8 @@ def validate(before, after, args):
         require(all(a['account'] != account for t in local.get('tokens', []) for a in t['alternatives']), 'deleted/absent account ' + account)
     if args.semantic_unchanged:
         def projection(state):
-            return sorted(json.dumps(t, sort_keys=True) for t in state.get('tokens', []))
+            return {key: sorted(json.dumps(t, sort_keys=True) for t in state.get(key, []))
+                    for key in ('tokens', 'deleted_tokens')}
         require(projection(local) == projection(before['local']), 'semantic projection unchanged')
     if args.local_unchanged:
         require(local.get('objects') == before['local'].get('objects'), 'local canonical objects unchanged')
@@ -207,7 +208,10 @@ def validate(before, after, args):
 
 
 def main():
+    global OUT
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--evidence-dir', type=Path, default=OUT,
+                        help='Separate ignored evidence root for a new qualification run')
     parser.add_argument('command', choices=['build', 'sign', 'install', 'serve', 'capture', 'begin', 'finish', 'restart'])
     parser.add_argument('--observer-only', action='store_true', help='Sign only the standalone observer without reading production build outputs')
     parser.add_argument('--folder', choices=FOLDERS, default=FOLDERS[0])
@@ -228,6 +232,9 @@ def main():
     for flag in ['same-session', 'vault-unchanged', 'match', 'local-empty', 'writable', 'different-vault', 'semantic-unchanged', 'local-unchanged']:
         parser.add_argument('--' + flag, action='store_true')
     args = parser.parse_args()
+    OUT = args.evidence_dir.resolve()
+    if not OUT.is_relative_to((ROOT / '.gradle').resolve()):
+        parser.error('Evidence directory must be inside ignored .gradle')
     OUT.mkdir(parents=True, exist_ok=True)
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', args.label): parser.error('Invalid label')
     if args.command == 'build': return build()
@@ -253,11 +260,14 @@ def main():
     after = capture(args.label + '-after')
     failures = validate(before, after, args)
     # Evidence collection alone is never an assertion PASS.
-    asserted = any([args.tokens is not None, args.conflicts is not None, args.state, args.layout, args.provider,
+    asserted = any([args.tokens is not None, args.deleted is not None, args.conflicts is not None, args.state, args.layout, args.provider,
                     args.same_session, args.vault_unchanged, args.match, args.local_empty, args.different_vault,
                     args.semantic_unchanged, args.local_unchanged, args.unresolved is not None, args.absent_account])
     result = {'checkpoint': args.label, 'android_result': 'FAIL' if failures else ('PASS' if asserted else 'CAPTURED_ONLY'),
-              'failures': failures, 'expectations': vars(args), 'HUMAN-OBSERVED': args.human,
+              'AGENT-VERIFIED': {'failures': failures, 'before': args.label + '-before.json',
+                                 'after': args.label + '-after.json'},
+              'failures': failures, 'expectations': {k: str(v) if isinstance(v, Path) else v
+                                                    for k, v in vars(args).items()}, 'HUMAN-OBSERVED': args.human,
               'HUMAN-DESKTOP-OBSERVED': args.desktop,
               'HUMAN-REPORTED TRANSPORT': args.transport}
     save(OUT / ('scenario-' + args.label + '.json'), result)
