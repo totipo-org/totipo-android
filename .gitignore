@@ -16,3 +16,10 @@ result-*
 # AGP-generated local IDE/build state.
 .kotlin/
 totipo-test-sync/
+
+# Private Android release signing material; public .pem/.sha256 stay visible.
+/release/signing/*.p12
+/release/signing/*.jks
+/release/signing/*.keystore
+/release/signing/*.key
+**/__pycache__/

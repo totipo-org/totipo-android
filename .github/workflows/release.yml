@@ -1,0 +1,186 @@
+name: Android protected release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact release VERSION (existing annotated v<VERSION> tag required)
+        required: true
+        type: string
+      commit:
+        description: Full reviewed current main commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  REQUESTED_VERSION: ${{ inputs.version }}
+  REQUESTED_COMMIT: ${{ inputs.commit }}
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Validate deliberate dispatch
+        run: |
+          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]]
+          [[ "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_SHA" == "$REQUESTED_COMMIT" ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+      - name: Fail closed on source/tag/public identity before protected approval
+        run: nix develop path:.#ci --command python3 -B tools/release/release.py identity
+      - name: Focused guardrails
+        run: python3 -B -m unittest discover -s tools/release -p 'test_*.py'
+      - name: Authoritative qualification
+        run: nix flake check --print-build-logs path:.
+      - name: Materialize same derivation and prepare verified unsigned bundle
+        run: nix develop path:.#ci --command python3 -B tools/release/release.py prepare --bundle "$RUNNER_TEMP/bundle"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qualified-unsigned
+          path: ${{ runner.temp }}/bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    environment: android-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: qualified-unsigned
+          path: ${{ runner.temp }}/bundle
+      - name: Revalidate source and unsigned bundle after approval
+        run: nix develop path:.#ci --command python3 -B tools/release/release.py bundle --bundle "$RUNNER_TEMP/bundle"
+      - name: Resolve trusted pinned SDK and JDK before secrets
+        run: |
+          nix develop path:.#ci --command bash -c '
+            test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+            printf "APKSIGNER=%s\nANDROID_HOME=%s\nJAVA_HOME=%s\n" \
+              "$ANDROID_HOME/build-tools/36.0.0/apksigner" "$ANDROID_HOME" "$JAVA_HOME"
+          ' >> "$GITHUB_ENV"
+      - name: Sign qualified bytes and erase private keystore
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Only pinned SDK/JDK and ordinary shell/core utilities in this step.
+          export PATH="$JAVA_HOME/bin:/usr/bin:/bin"
+          unset JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS
+          test -n "$ANDROID_RELEASE_KEYSTORE_B64"
+          test -n "$ANDROID_RELEASE_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_RELEASE_KEY_ALIAS"
+          test -n "$ANDROID_RELEASE_KEY_PASSWORD"
+          umask 077
+          private_dir=$(mktemp -d "$RUNNER_TEMP/android-signing.XXXXXXXX")
+          trap 'rm -rf "$private_dir"' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_B64" | base64 --decode > "$private_dir/release.p12"
+          chmod 600 "$private_dir/release.p12"
+          "$APKSIGNER" sign --ks "$private_dir/release.p12" --ks-type PKCS12 \
+            --ks-key-alias "$ANDROID_RELEASE_KEY_ALIAS" \
+            --ks-pass env:ANDROID_RELEASE_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_RELEASE_KEY_PASSWORD \
+            --alignment-preserved true --v1-signing-enabled false --v2-signing-enabled true \
+            --v3-signing-enabled true --v4-signing-enabled false \
+            --out "$RUNNER_TEMP/bundle/totipo-android-$REQUESTED_VERSION.apk" \
+            "$RUNNER_TEMP/bundle/unsigned-release.apk"
+          rm -rf "$private_dir"
+      - name: Check original unsigned hash after secret step has ended
+        run: nix develop path:.#ci --command python3 -B tools/release/release.py bundle --bundle "$RUNNER_TEMP/bundle"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-candidate
+          path: ${{ runner.temp }}/bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    needs: sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signed-candidate
+          path: ${{ runner.temp }}/bundle
+      - name: Verify pinned signer, release boundaries, payload equivalence and input immutability
+        run: nix develop path:.#ci --command python3 -B tools/release/release.py finalize --bundle "$RUNNER_TEMP/bundle" --output "$RUNNER_TEMP/verified"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-release
+          path: ${{ runner.temp }}/verified
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: verified-release
+          path: ${{ runner.temp }}/bundle
+      - name: Draft, upload, redownload, verify hosted bytes and signer, then publish
+        env:
+          # GitHub runner CLI/API token; no Android private key in this job.
+          GH_TOKEN: ${{ github.token }}
+        run: nix develop path:.#ci --command python3 -B tools/release/release.py publish --bundle "$RUNNER_TEMP/bundle"

@@ -292,8 +292,9 @@ The debug APK is built and verified but not installed into the package output.
 Both APK checks validate ZIP integrity, manifest boundaries, canonical branding,
 product/controller and NIO/core/BC DEX presence, and test/standalone-class exclusion.
 Debug verification requires the existing diagnostic classes; release verification
-excludes them and requires absence of APK/JAR signing. No signing secret, AAB,
-Play or publication infrastructure exists. Debug signing keys are local generated
+excludes them and requires absence of APK/JAR signing. No signing secret, AAB or Play integration exists. Protected release machinery
+is documented in [Android releases](release/README.md); production signing identity
+and GitHub environment remain intentionally unprovisioned. Debug signing keys are local generated
 development state.
 
 Push/PR and manual-dispatch CI run one package-inclusive flake check on Linux,
