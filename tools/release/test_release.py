@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -18,6 +20,96 @@ class ReleaseTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+
+    def metadata(self, code=42, name='1.0.0', app='org.totipo.android'):
+        return dict(application_id=app, version_code=code, version_name=name)
+
+    def provenance(self, **changes):
+        self.unsigned = self.root / 'unsigned.apk'
+        self.unsigned.write_bytes(b'qualified fixture')
+        p = dict(version='1.0.0', source_commit='a' * 40, tag='v1.0.0',
+                 unsigned_sha256=release.sha(self.unsigned), **self.metadata(),
+                 nix_derivation='/nix/store/' + 'a' * 32 + '-fixture.drv',
+                 nix_output='/nix/store/' + 'b' * 32 + '-fixture',
+                 certificate_sha256='a' * 64, java_runtime='0.2.0', protocol='v1/r19')
+        p.update(changes)
+        path = self.root / 'release-provenance.json'
+        path.write_text(json.dumps(p))
+        return path
+
+    def signature(self):
+        return (''.join(f'Verified using v{i} scheme (test): {v}\n' for i, v in
+                       ((1, 'false'), (2, 'true'), (3, 'true'), (4, 'false'))) +
+                'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + 'a' * 64 + '\n')
+
+    def test_non_one_signed_metadata_and_mismatches(self):
+        provenance = self.provenance()
+        fp = self.root / 'fp'; fp.write_text('a' * 64)
+        # Exercise the verifier, with external SDK responses deterministically mocked.
+        for actual, error in ((self.metadata(), None), (self.metadata(code=43), 'versionCode mismatch'),
+                              (self.metadata(name='1.0.1'), 'versionName mismatch')):
+            with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), patch.object(signed.subprocess, 'run', return_value=SimpleNamespace(stdout=self.signature())), patch.object(release, 'apk_metadata', side_effect=[self.metadata(), actual]):
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        signed.verify('signed.apk', fp, provenance, self.unsigned)
+                else:
+                    signed.verify('signed.apk', fp, provenance, self.unsigned)
+
+    def test_unsigned_metadata_and_sha_binding(self):
+        for changes, actual, error in (
+            ({}, self.metadata(code=43), 'versionCode mismatch'),
+            ({}, self.metadata(name='other'), 'versionName mismatch'),
+            ({'unsigned_sha256': 'b' * 64}, self.metadata(), 'SHA-256 mismatch')):
+            p = release.load_provenance(self.provenance(**changes))
+            with patch.object(release, 'apk_metadata', return_value=actual):
+                with self.assertRaisesRegex(ValueError, error): release.bind_unsigned(self.unsigned, p)
+
+    def test_schema_fail_closed(self):
+        invalid = [('version_code', v) for v in (True, '42', 42.0, 0, -1, 2100000001)] + [
+            ('version_name', ''), ('version_name', 'bad\nname'), ('version_name', 42),
+            ('application_id', 'org.attacker'), ('source_commit', 'main'), ('tag', 'v2.0.0'),
+            ('version', 'bad'), ('unsigned_sha256', 'bad'), ('certificate_sha256', 'bad'),
+            ('nix_derivation', '/tmp/x'), ('nix_output', '/tmp/x'),
+            ('java_runtime', 'other'), ('protocol', 'other'), ('schema_version', 2)]
+        for field, value in invalid:
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(ValueError): release.load_provenance(self.provenance(**{field: value}))
+        path = self.provenance(); text = path.read_text()
+        path.write_text(text[:-1] + ', "version_code": 43}')
+        with self.assertRaisesRegex(ValueError, 'Duplicate'): release.load_provenance(path)
+        path = self.provenance(); p = json.loads(path.read_text()); del p['tag']; path.write_text(json.dumps(p))
+        with self.assertRaisesRegex(ValueError, 'fields'): release.load_provenance(path)
+
+    def test_apk_metadata_pins_identity(self):
+        for app in ('org.totipo.android', 'org.attacker'):
+            badging = f"package: name='{app}' versionCode='42' versionName='1.0.0' platformBuildVersionName='test'\n"
+            with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), patch.object(release, 'run', return_value=badging):
+                if app == release.APPLICATION_ID: self.assertEqual(release.apk_metadata('fixture'), self.metadata())
+                else:
+                    with self.assertRaisesRegex(ValueError, 'applicationId'): release.apk_metadata('fixture')
+
+    def test_qualification_observes_metadata_and_checks_version(self):
+        with patch.object(release, 'unsigned_check'), patch.object(release, 'apk_metadata', return_value=self.metadata()):
+            self.provenance()
+            p = release.qualified_provenance(self.unsigned, '1.0.0', 'a' * 40, 'a' * 64,
+                '/nix/store/' + 'a' * 32 + '-fixture.drv', '/nix/store/' + 'b' * 32 + '-fixture')
+            self.assertEqual(p['version_code'], 42)
+            self.assertEqual(p['unsigned_sha256'], release.sha(self.unsigned))
+            with self.assertRaisesRegex(ValueError, 'VERSION'):
+                release.qualified_provenance(self.unsigned, '1.0.1', 'a' * 40, 'a' * 64, p['nix_derivation'], p['nix_output'])
+
+    def test_finalize_preserves_qualification_provenance(self):
+        import argparse
+        provenance = self.provenance()
+        original = provenance.read_bytes()
+        (self.root / 'unsigned-release.apk').write_bytes(self.unsigned.read_bytes())
+        (self.root / 'unsigned-release.apk.sha256').write_text('fixture checksum')
+        (self.root / 'totipo-android-1.0.0.apk').write_bytes(b'signed')
+        args = argparse.Namespace(version='1.0.0', bundle=self.root, output=self.root / 'verified')
+        with patch.object(release, 'bundle_check', return_value=release.load_provenance(provenance)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'):
+            release.finalize(args)
+        self.assertEqual((args.output / provenance.name).read_bytes(), original)
+        self.assertEqual((args.output / 'unsigned-release.apk').read_bytes(), self.unsigned.read_bytes())
 
     def apk(self, name, entries):
         path = self.root / name
@@ -121,12 +213,14 @@ class ReleaseTests(unittest.TestCase):
         args = argparse.Namespace(version='1.0.0', commit='a' * 40, bundle=self.root)
         apk = self.root / 'unsigned-release.apk'; apk.write_bytes(b'unsigned')
         p = dict(version='1.0.0', source_commit='a' * 40, tag='v1.0.0', certificate_sha256='b' * 64,
-                 application_id='org.totipo.android', version_code=1, version_name='1.0.0',
+                 application_id='org.totipo.android', version_code=42, version_name='1.0.0',
+                 nix_derivation='/nix/store/' + 'a' * 32 + '-fixture.drv',
+                 nix_output='/nix/store/' + 'b' * 32 + '-fixture',
                  java_runtime='0.2.0', protocol='v1/r19', unsigned_sha256=release.sha(apk))
         provenance = self.root / 'release-provenance.json'
         provenance.write_text(json.dumps(p))
         (self.root / 'unsigned-release.apk.sha256').write_text(p['unsigned_sha256'] + '  unsigned-release.apk\n')
-        with patch.object(release, 'identity', return_value='b' * 64), patch.object(release, 'unsigned_check'):
+        with patch.object(release, 'identity', return_value='b' * 64), patch.object(release, 'unsigned_check'), patch.object(release, 'apk_metadata', return_value=dict(application_id=p['application_id'], version_code=p['version_code'], version_name=p['version_name'])):
             release.bundle_check(args)
             apk.write_bytes(b'changed')
             with self.assertRaisesRegex(ValueError, 'changed'): release.bundle_check(args)
@@ -143,10 +237,11 @@ class ReleaseTests(unittest.TestCase):
                  'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + 'a' * 64 + '\n')
         cases = [valid.replace('signers: 1', 'signers: 2'), valid.replace('a' * 64, 'b' * 64),
                  valid.replace('v1 scheme (JAR signing): false', 'v1 scheme (JAR signing): true'),
-                 valid.replace('v2): true', 'v2): false'), valid.replace('v3): true', 'v3): false')]
+                 valid.replace('v2): true', 'v2): false'), valid.replace('v3): true', 'v3): false'),
+                 valid.replace('v4): false', 'v4): true')]
         for output in cases:
-            with patch.dict('os.environ', {'ANDROID_HOME': '/pinned/sdk'}), patch.object(signed.subprocess, 'run', return_value=SimpleNamespace(stdout=output)):
-                with self.assertRaises(ValueError): signed.verify('test.apk', p, '1.0.0')
+            with patch.dict('os.environ', {'ANDROID_HOME': '/pinned/sdk'}), patch.object(signed.subprocess, 'run', return_value=SimpleNamespace(stdout=output)), patch.object(release, 'apk_metadata', return_value=self.metadata()):
+                with self.assertRaises(ValueError): signed.verify('test.apk', p, self.provenance(), self.unsigned)
 
     def test_remote_mismatch_leaves_draft(self):
         import argparse, json
@@ -165,7 +260,7 @@ class ReleaseTests(unittest.TestCase):
                 target = self.root / 'remote-release'
                 (target / apk.name).write_bytes(b'tampered')
             return ''
-        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(signed_sha256=release.sha(apk), tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'run', side_effect=fake_run):
+        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'run', side_effect=fake_run):
             with self.assertRaisesRegex(ValueError, 'Remote release bytes'): release.publish(args)
         self.assertTrue(any(c[:3] == ('gh', 'release', 'create') and '--draft' in c for c in commands))
         self.assertFalse(any('PATCH' in c for c in commands))

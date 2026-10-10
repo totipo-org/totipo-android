@@ -4,11 +4,19 @@ The machinery is implemented but production signing is intentionally unprovision
 See [public identity and future provisioning](signing/README.md). No Android
 production key is shared with Totipo Java.
 
-A human prepares and reviews VERSION, versionCode (currently 1), the release source
-on main, and an annotated `v<VERSION>` tag pointing to that exact source. Subsequent
-Android upgrades require a deliberately reviewed increasing versionCode; the
-current verifier pins code 1 for the initial release. Version must be a release
-version, not the current `0.0.0-dev`. The workflow never creates or pushes tags.
+Before cutting an Android release, intentionally update VERSION (which supplies
+Android versionName) and increment versionCode in app/build.gradle.kts according
+to Android update requirements. Review the source on main and prepare an annotated
+`v<VERSION>` tag pointing to that exact source. Qualify the resulting unsigned APK.
+Its observed versionName/versionCode then flow through provenance and signing;
+changing either value requires no second verifier edit. VERSION must be a release
+version, not a development version. The workflow never creates or pushes tags.
+
+Application ID `org.totipo.android` is independently pinned application identity.
+Mutable versionName/versionCode are extracted with pinned aapt2 from the qualified
+unsigned APK. Qualification checks versionName against VERSION once. Downstream
+verification compares both APKs against validated provenance and rehashes the
+unsigned input. The signed APK never supplies its own expected version.
 
 Dispatch `.github/workflows/release.yml` on main with VERSION and the full reviewed
 current main commit SHA. Every job revalidates source, VERSION, annotated local and
@@ -21,7 +29,7 @@ The four jobs are:
 | --- | --- |
 | qualify | contents read, no environment or signing secrets; `nix flake check --print-build-logs path:.`; compare checks.android/default drvPath, materialize default, verify unsigned APK, upload unsigned bundle |
 | sign | contents read, protected android-release; verify bundle and resolve pinned SDK/JDK before one secret-bearing shell step; output separate signed candidate |
-| verify | contents read, no signing secrets; verify single pinned certificate and v2/v3 signatures, ordinary release boundaries, payload equivalence and original unsigned hash; output only final public assets |
+| verify | contents read, no signing secrets; verify single pinned certificate and v2/v3 signatures, ordinary release boundaries, payload equivalence and original unsigned hash; output verified assets plus internal unsigned evidence |
 | publish | contents write, no Android key; verify inputs, create draft for existing tag, upload, download all assets, compare bytes and reverify downloaded certificate/boundaries before final publication |
 
 `checks.android` and `packages.default` must resolve to the same derivation.
@@ -32,8 +40,14 @@ installed into it. The original unsigned file is never signed in place.
 
 The prepared bundle consists of `unsigned-release.apk`, its SHA-256 file, and
 deterministic `release-provenance.json`. Provenance records source/tag/version,
-application ID/versionCode, unsigned hash, Nix derivation/output, expected public
-certificate digest, Java 0.2.0 and protocol v1/r19. Verification adds signed SHA-256.
+application ID/versionName/versionCode, unsigned hash, Nix derivation/output, expected public
+certificate digest, Java 0.2.0 and protocol v1/r19. Provenance remains byte-identical
+from qualification through publication; the signed hash lives in the APK checksum file.
+The internal verified bundle retains unsigned APK/checksum for publish revalidation;
+only the three assets below are uploaded to the release.
+The JSON schema requires exactly the existing fields, rejecting unknown/duplicate
+keys, missing fields, invalid types/ranges, hashes, source/tag/version and Nix paths.
+There is no schema-version field. Android versionCode is an integer in 1..2100000000.
 The public certificate remains pinned in the exact checked-out source.
 
 The stable published assets are `totipo-android-<VERSION>.apk`,

@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 from payload import require
+from release import load_provenance, bind_unsigned, require_metadata, unsigned_check
 
 
 def fingerprint(path):
@@ -15,7 +16,11 @@ def fingerprint(path):
     return value
 
 
-def verify(apk, expected, version):
+def verify(apk, expected, provenance, unsigned):
+    p = load_provenance(provenance)
+    require(p['certificate_sha256'] == fingerprint(expected), 'Provenance certificate mismatch')
+    bind_unsigned(unsigned, p)
+    unsigned_check(unsigned)
     sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
     result = subprocess.run([str(sdk / 'apksigner'), 'verify', '--verbose', '--print-certs',
                              str(apk)], text=True, capture_output=True, check=True)
@@ -26,9 +31,7 @@ def verify(apk, expected, version):
     require(re.search(r'^Number of signers: 1$', output, re.M), 'Expected exactly one signer')
     signers = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]+)$', output, re.M)
     require(signers == [fingerprint(expected)], 'Signing certificate mismatch')
-    badging = subprocess.check_output([str(sdk / 'aapt2'), 'dump', 'badging', str(apk)], text=True)
-    require(re.search(r"^package: name='org.totipo.android' versionCode='1' versionName='" +
-                      re.escape(version) + "'", badging, re.M), 'Application/version mismatch')
+    require_metadata(apk, p)
     subprocess.run([str(sdk / 'zipalign'), '-c', '-P', '16', '4', str(apk)], check=True,
                    stdout=subprocess.DEVNULL)
     subprocess.run(['python3', '-B', str(Path(__file__).resolve().parents[1] / 'verify-apk.py'),
@@ -40,8 +43,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('apk', type=Path)
     parser.add_argument('--fingerprint', required=True, type=Path)
-    parser.add_argument('--version', required=True)
+    parser.add_argument('--provenance', required=True, type=Path)
+    parser.add_argument('--unsigned', required=True, type=Path)
     args = parser.parse_args()
     # Validate public input before invoking tools.
     fingerprint(args.fingerprint)
-    verify(args.apk, args.fingerprint, args.version)
+    verify(args.apk, args.fingerprint, args.provenance, args.unsigned)

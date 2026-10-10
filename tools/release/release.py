@@ -75,6 +75,85 @@ def unsigned_check(apk):
                     '--unsigned', '--no-debug-probe'], check=True)
 
 
+# One schema, shared by qualification, bundle validation and signed verification.
+# No schema-version field existed in the machinery format; retain its field names.
+APPLICATION_ID = 'org.totipo.android'
+PROVENANCE_FIELDS = {
+    'version', 'source_commit', 'tag', 'unsigned_sha256', 'application_id',
+    'version_code', 'version_name', 'nix_derivation', 'nix_output',
+    'certificate_sha256', 'java_runtime', 'protocol',
+}
+
+
+def validate_provenance(p):
+    require(type(p) is dict and set(p) == PROVENANCE_FIELDS, 'Provenance fields differ')
+    require(all(type(p[k]) is str for k in PROVENANCE_FIELDS - {'version_code'}),
+            'Provenance string field type differs')
+    require(re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?', p['version']),
+            'Invalid provenance version')
+    require(re.fullmatch('[0-9a-f]{40}', p['source_commit']), 'Invalid provenance source commit')
+    require(p['tag'] == 'v' + p['version'], 'Invalid provenance tag')
+    require(p['application_id'] == APPLICATION_ID, 'Provenance applicationId differs')
+    require(type(p['version_code']) is int and 1 <= p['version_code'] <= 2100000000,
+            'Invalid provenance versionCode')
+    require(bool(p['version_name']) and not any(ord(c) < 32 for c in p['version_name']),
+            'Invalid provenance versionName')
+    for field in ('unsigned_sha256', 'certificate_sha256'):
+        require(re.fullmatch('[0-9a-f]{64}', p[field]), 'Invalid provenance ' + field)
+    for field in ('nix_derivation', 'nix_output'):
+        require(re.fullmatch(r'/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+', p[field]),
+                'Invalid provenance ' + field)
+    require(p['nix_derivation'].endswith('.drv') and not p['nix_output'].endswith('.drv'),
+            'Invalid provenance Nix paths')
+    require(p['java_runtime'] == '0.2.0' and p['protocol'] == 'v1/r19',
+            'Provenance runtime/protocol differs')
+    return p
+
+
+def load_provenance(path):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, 'Duplicate provenance field: ' + key)
+            result[key] = value
+        return result
+    return validate_provenance(json.loads(Path(path).read_text(), object_pairs_hook=unique))
+
+
+def apk_metadata(apk):
+    sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+    badging = run(str(sdk / 'aapt2'), 'dump', 'badging', str(apk))
+    matches = re.findall(r"^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']+)'(?: |$)",
+                         badging, re.M)
+    require(len(matches) == 1, 'Expected exactly one APK package metadata record')
+    app, code, name = matches[0]
+    require(app == APPLICATION_ID, 'APK applicationId differs')
+    require(1 <= int(code) <= 2100000000, 'Invalid APK versionCode')
+    return dict(application_id=app, version_code=int(code), version_name=name)
+
+
+def require_metadata(apk, p):
+    actual = apk_metadata(apk)
+    for field, label in (('application_id', 'applicationId'), ('version_code', 'versionCode'),
+                         ('version_name', 'versionName')):
+        require(actual[field] == p[field], label + ' mismatch: APK differs from provenance')
+
+
+def bind_unsigned(apk, p):
+    require(sha(apk) == p['unsigned_sha256'], 'Qualified unsigned APK changed (SHA-256 mismatch)')
+    require_metadata(apk, p)
+
+
+def qualified_provenance(apk, version, commit, cert, drv, output):
+    unsigned_check(apk)
+    metadata = apk_metadata(apk)
+    # VERSION intentionally supplies Android versionName in the Gradle build.
+    require(metadata['version_name'] == version, 'Unsigned versionName differs from VERSION')
+    return validate_provenance(dict(version=version, source_commit=commit, tag='v' + version,
+        unsigned_sha256=sha(apk), **metadata, nix_derivation=drv, nix_output=output,
+        certificate_sha256=cert, java_runtime='0.2.0', protocol='v1/r19'))
+
+
 def prepare(args):
     cert = identity(args.version, args.commit)
     check_drv = run('nix', 'eval', '--raw', 'path:.#checks.x86_64-linux.android.drvPath')
@@ -83,64 +162,52 @@ def prepare(args):
     output = run('nix', 'build', '--no-link', '--print-out-paths', 'path:.#packages.x86_64-linux.default')
     require(output.startswith('/nix/store/') and '\n' not in output, 'Unexpected package output')
     apk = Path(output) / f'share/totipo-android/totipo-android-{args.version}-unsigned.apk'
-    unsigned_check(apk)
-    sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
-    badging = run(str(sdk / 'aapt2'), 'dump', 'badging', str(apk))
-    require(re.search(r"^package: name='org.totipo.android' versionCode='1' versionName='" +
-                      re.escape(args.version) + "'", badging, re.M), 'Unsigned package/version differs')
+    provenance = qualified_provenance(apk, args.version, args.commit, cert, check_drv, output)
     args.bundle.mkdir()
     shutil.copyfile(apk, args.bundle / 'unsigned-release.apk')
-    provenance = dict(version=args.version, source_commit=args.commit, tag='v' + args.version,
-                      unsigned_sha256=sha(apk), application_id='org.totipo.android', version_code=1,
-                      version_name=args.version, nix_derivation=check_drv, nix_output=output,
-                      certificate_sha256=cert, java_runtime='0.2.0', protocol='v1/r19')
     (args.bundle / 'release-provenance.json').write_text(json.dumps(provenance, sort_keys=True, indent=2) + '\n')
     (args.bundle / 'unsigned-release.apk.sha256').write_text(sha(apk) + '  unsigned-release.apk\n')
     identity(args.version, args.commit)
 
 
-def bundle_check(args, signed=False):
+def bundle_check(args):
     cert = identity(args.version, args.commit)
-    p = json.loads((args.bundle / 'release-provenance.json').read_text())
+    p = load_provenance(args.bundle / 'release-provenance.json')
     require(p['version'] == args.version and p['source_commit'] == args.commit and
-            p['tag'] == 'v' + args.version and p['certificate_sha256'] == cert and
-            p['application_id'] == 'org.totipo.android' and p['version_code'] == 1 and
-            p['version_name'] == args.version and p['java_runtime'] == '0.2.0' and
-            p['protocol'] == 'v1/r19', 'Provenance identity differs')
+            p['certificate_sha256'] == cert, 'Provenance identity differs')
     unsigned = args.bundle / 'unsigned-release.apk'
-    if not signed:
-        require(sha(unsigned) == p['unsigned_sha256'], 'Qualified unsigned APK changed')
-        require((args.bundle / 'unsigned-release.apk.sha256').read_text() ==
-                p['unsigned_sha256'] + '  unsigned-release.apk\n', 'Unsigned checksum record differs')
-        unsigned_check(unsigned)
+    bind_unsigned(unsigned, p)
+    require((args.bundle / 'unsigned-release.apk.sha256').read_text() ==
+            p['unsigned_sha256'] + '  unsigned-release.apk\n', 'Unsigned checksum record differs')
+    unsigned_check(unsigned)
     return p
 
 
-def verify_signed(apk, version):
+def verify_signed(apk, bundle):
     subprocess.run(['python3', '-B', str(ROOT / 'tools/release/verify-signed-apk.py'), str(apk),
-                    '--fingerprint', str(FP), '--version', version], check=True)
+                    '--fingerprint', str(FP), '--provenance', str(bundle / 'release-provenance.json'),
+                    '--unsigned', str(bundle / 'unsigned-release.apk')], check=True)
 
 
 def finalize(args):
     p = bundle_check(args)
     apk = args.bundle / f'totipo-android-{args.version}.apk'
-    verify_signed(apk, args.version)
+    verify_signed(apk, args.bundle)
     compare(args.bundle / 'unsigned-release.apk', apk)
     require(sha(args.bundle / 'unsigned-release.apk') == p['unsigned_sha256'], 'Unsigned input mutated')
-    p['signed_sha256'] = sha(apk)
     args.output.mkdir()
     shutil.copyfile(apk, args.output / apk.name)
     (args.output / (apk.name + '.sha256')).write_text(sha(apk) + '  ' + apk.name + '\n')
-    (args.output / 'release-provenance.json').write_text(json.dumps(p, sort_keys=True, indent=2) + '\n')
+    for name in ('release-provenance.json', 'unsigned-release.apk', 'unsigned-release.apk.sha256'):
+        shutil.copyfile(args.bundle / name, args.output / name)
 
 
 def publish(args):
-    p = bundle_check(args, signed=True)
+    p = bundle_check(args)
     apk = args.bundle / f'totipo-android-{args.version}.apk'
-    require(sha(apk) == p['signed_sha256'], 'Signed asset hash differs')
     checksum = args.bundle / (apk.name + '.sha256')
     require(checksum.read_text() == sha(apk) + '  ' + apk.name + '\n', 'Signed checksum differs')
-    verify_signed(apk, args.version)
+    verify_signed(apk, args.bundle)
     repo = os.environ['GITHUB_REPOSITORY']
     tag = p['tag']
     # Fail on existing release, including drafts. No overwrite/resume ambiguity.
@@ -161,7 +228,7 @@ def publish(args):
     run('gh', 'release', 'download', tag, '--repo', repo, '--dir', str(downloaded))
     for local in (apk, checksum, args.bundle / 'release-provenance.json'):
         require(sha(downloaded / local.name) == sha(local), 'Remote release bytes differ')
-    verify_signed(downloaded / apk.name, args.version)
+    verify_signed(downloaded / apk.name, args.bundle)
     # Exact bytes imply the payload equivalence already proved in verify job.
     identity(args.version, args.commit)
     run('gh', 'api', '--method', 'PATCH', f"repos/{repo}/releases/{record['id']}",
