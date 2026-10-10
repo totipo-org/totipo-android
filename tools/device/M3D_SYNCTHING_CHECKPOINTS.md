@@ -161,6 +161,7 @@ At suite end retain disposable folders and evidence unless human requests fixtur
 Do not reset app data, delete conflict siblings or rename roots for cleanup. Record exact
 restoration/retention decision. Remove only the standalone observer APK when no longer needed:
 `adb uninstall org.totipo.syncthingqualification`. Keep the signed production release installed.
-Human runs `nix flake check path:.` and `nix build path:.`; agent never runs Nix. Final report
+Human runs only `nix flake check path:.` as the normal Nix gate; agent never runs Nix.
+Do not request an additional ordinary `nix build`. Final report
 must distinguish AGENT-VERIFIED, HUMAN-OBSERVED and HUMAN-REPORTED TRANSPORT, and remain
 INCOMPLETE until every required live scenario and human Nix check has evidence.

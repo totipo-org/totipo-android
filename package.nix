@@ -62,10 +62,10 @@ stdenv.mkDerivation (finalAttrs: {
     "--warning-mode=all"
     "-Pandroid.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/36.0.0/aapt2"
   ];
-  gradleBuildTask = ":app:assembleRelease";
+  gradleBuildTask = ":app:assembleDebug :app:assembleRelease";
   doCheck = true;
   gradleCheckTask = "check";
-  gradleUpdateTask = ":app:assembleRelease check";
+  gradleUpdateTask = ":app:assembleDebug :app:assembleRelease check";
   preBuild = ''
     if [ -z "''${IN_GRADLE_UPDATE_DEPS:-}" ] && [ "${if cacheReady then "yes" else "no"}" != yes ]; then
       echo 'package-deps.json is ungenerated/stale; run nix run path:.#update-package-deps' >&2
@@ -81,6 +81,7 @@ stdenv.mkDerivation (finalAttrs: {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
+    python3 tools/verify-apk.py app/build/outputs/apk/debug/app-debug.apk --debug-probe
     python3 tools/verify-apk.py "$out/share/totipo-android/totipo-android-${version}-unsigned.apk" --unsigned --no-debug-probe
     runHook postInstallCheck
   '';
