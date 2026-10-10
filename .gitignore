@@ -15,3 +15,4 @@ result-*
 
 # AGP-generated local IDE/build state.
 .kotlin/
+totipo-test-sync/
