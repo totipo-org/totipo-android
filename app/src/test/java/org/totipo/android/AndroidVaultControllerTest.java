@@ -90,7 +90,17 @@ public final class AndroidVaultControllerTest {
             } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
         }
     }
-    private void accept(BooleanSupplier operation) throws Exception { await(this::idle); assertTrue(operation.getAsBoolean()); }
+    private void accept(BooleanSupplier operation) throws Exception {
+        await(() -> {
+            synchronized (controller) {
+                // Observation callbacks can queue work as soon as the monitor is released.
+                // Keep the idle check and command admission in the same critical section.
+                if (!idle()) return false;
+                assertTrue(operation.getAsBoolean());
+                return true;
+            }
+        });
+    }
     private void state(State next) throws Exception { await(() -> controller.snapshot().state() == next); }
     private char[] password() { return "M1J disposable".toCharArray(); }
     private void create() throws Exception {
