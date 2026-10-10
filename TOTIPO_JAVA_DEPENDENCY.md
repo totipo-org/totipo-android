@@ -14,6 +14,40 @@ Protocol: Totipo Vault Format v1/r19 at spec commit
 All 82 core and 12 NIO published source files match that release commit byte for byte.
 Sources/Javadocs are inspection evidence only, never Android build inputs.
 
+## Runtime and reviewed guidance identities
+
+| Identity | Exact pin / meaning |
+| --- | --- |
+| Runtime artifact | Totipo Java **0.2.0**: `org.totipo:totipo-storage-nio:0.2.0` → `org.totipo:totipo-core:0.2.0`; runtime BC remains 1.86. |
+| Released source implementation | `d6310c177ae930df188fd4f5798622c935698b2e`, the source Android actually executes. |
+| Reviewed application-operation guidance | `b03f5b22f367723ce4a3bddf0a56b159a06f32cf`, a later reviewed clarification of how clients use that implementation. |
+| Applies to | Java **0.2.0** semantics, Totipo Vault Format **v1/r19**. |
+
+API_DESIGN:
+[exact reviewed revision](https://github.com/totipo-dev/totipo-java/blob/b03f5b22f367723ce4a3bddf0a56b159a06f32cf/API_DESIGN.md).
+Exact UTF-8 blob SHA-256:
+`054c2f432420e9b7a39f5f661bde2b9ae773d2d2ccb29f3adfa949078ee44c0d`.
+
+The guidance includes both **Operation classes and state-snapshot semantics**
+(introduced by `3b24b54becde0c93479c1fbd80ea0fbd2026e2a8`) and the later
+subscriber-threading clarification (`ce00f0c6db8fb1c81322a7b9e02132d276f63a33`):
+onSubscribe is synchronous on the subscribing thread; subsequent onNext/onError/
+onComplete use the asynchronous serialized common-pool drain. The selected later
+qualification-ladder revision retains that exact API_DESIGN blob and has its own
+documentation qualification report. GitHub redirects the historical `totipo-dev`
+repository URL to canonical `totipo-org/totipo-java`.
+
+Artifact/source pin = implementation Android actually executes. Guidance pin =
+later reviewed clarification of how clients should use that implementation.
+These identities intentionally differ. VERSION remains 0.2.0, SPEC_PIN remains
+v1/r19, and production Java differs only in comments in this lineage; no runtime
+or public API implementation upgrade is required to consume the guidance. Published
+0.2.0 Javadoc bytes remain unchanged. Existing Maven/JAR provenance below is retained.
+See [the architecture audit](review/ANDROID_JAVA_OPERATION_MODEL_AUDIT.md) for
+commit, qualification, implementation/test and applicability evidence.
+
+## Android composition and Maven provenance
+
 `CoordinatedPrivateStore` uses the exact public construction in Java 0.2.0's
 `publishing/consumer-smoke/src/main/java/ConsumerSmoke.java`:
 

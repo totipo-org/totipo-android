@@ -196,3 +196,70 @@ sections 23–25: five ordinary full Gradle runs, one strict-clean run, twelve f
 test runs plus one compile, ten physical phase runs, and four human Nix results.
 Its final Nix PASS followed harness fixes because `tools/` is included. Preserve its
 final evidence strength while moving diagnosis and tooling fixes before frozen gates.
+
+## Totipo Java application-operation model
+
+Before changing scheduling/concurrency or code involving VaultState, state subscriptions, asynchronous
+projection, TOTP reveal/generation, operation admission, global BUSY/enabled-state
+policy, Sync, requestRefresh/observation, Add/Edit/Delete/Resolve, save/publication,
+retry/partial publication, Join/open/create, biometric/password open, Lock/inactivity
+timeout, process/activity lifecycle, session replacement, or provider/store scheduling,
+read the exact reviewed Java guidance at commit `b03f5b22f367723ce4a3bddf0a56b159a06f32cf`:
+
+[API_DESIGN.md](https://github.com/totipo-dev/totipo-java/blob/b03f5b22f367723ce4a3bddf0a56b159a06f32cf/API_DESIGN.md),
+especially **Operation classes and state-snapshot semantics**, **Replay-latest stream**,
+**Editing and deterministic causal bases**, **Merge freshness and partial resolution**,
+**Persistence knowledge and handles**, and **Blocking, threading and close**.
+If Java is unavailable locally, fetch/read this exact revision read-only from GitHub.
+Do not substitute Java `main` or only the earlier operation-model commit.
+
+The runtime artifact/source pin and guidance pin serve different purposes:
+Android executes Totipo Java 0.2.0 released source
+`d6310c177ae930df188fd4f5798622c935698b2e`; the guidance is a later reviewed
+clarification of those same semantics. A docs-only clarification requires no Java
+dependency upgrade. See [Java dependency provenance](TOTIPO_JAVA_DEPENDENCY.md)
+and [the Android operation audit](review/ANDROID_JAVA_OPERATION_MODEL_AUDIT.md).
+
+**A newer VaultState is not, by itself, a generic cancellation signal.**
+State emission alone does not require cancelling local projection, rejecting
+historical same-session references, serializing every operation, disabling the
+whole UI, or rebasing builders. Use session/lifecycle ownership, explicit
+request/presentation generations, token identity, operation-specific freshness
+rules, and Java result types as appropriate. Distinguish local projection validity
+from presentation relevance; descriptive reads survive close, secret-backed work
+requires its owning session to remain open.
+
+**Do not map every Totipo Java operation onto one Android global BUSY state.**
+First classify the Java operation, including each phase of a composite action:
+
+| Class | Java operation |
+| --- | --- |
+| A | Immutable/descriptive projection |
+| B | Local secret-backed projection |
+| C | Local state construction |
+| D | Observation request |
+| E | Freshness-gated publication |
+| F | Frozen publication/continuation |
+| G | Session/storage lifecycle |
+| H | Independent candidate validation, where used |
+
+Then apply Android controller/lifecycle/UI policy. A stricter Android policy is
+allowed, but document it as an application choice, not as Java correctness.
+Provider transport and coordinated local-store ownership have their own safety
+requirements; neither turns every Java call into a freshness-gated operation.
+
+Subscriber threading has two distinct phases:
+
+```text
+states().subscribe(...)
+  -> onSubscribe synchronously on the subscribing thread
+later onNext/onError/onComplete
+  -> asynchronous serialized publisher/common-pool drain per subscription
+```
+
+Different subscribers can execute concurrently. Asynchronous delivery can begin
+before subscribe returns; it promises no fixed worker or latency. Android must
+not assume every callback arrives from the same thread category. Establish demand
+and subscription ownership safely in onSubscribe; marshal presentation callbacks
+to Android main. Review controller/coordinator ownership and Activity delivery
+separately from Java callback delivery.
