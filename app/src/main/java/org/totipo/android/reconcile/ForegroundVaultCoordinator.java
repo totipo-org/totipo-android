@@ -13,6 +13,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
 import org.totipo.*;
 import org.totipo.android.AddTokenOutcome;
+import org.totipo.android.TokenChange;
 import org.totipo.android.LocalReplicaOwner;
 import org.totipo.android.RevealedTotp;
 import java.time.Instant;
@@ -29,7 +30,7 @@ import static org.totipo.android.reconcile.ImmutableCandidateImporter.*;
  * Cancel cooperatively, never interrupt filesystem publication. */
 public final class ForegroundVaultCoordinator implements AutoCloseable {
     public enum State { OPENING, OPEN, RECONCILING_READ_ONLY,
-        IMPORTING, REQUESTING_REFRESH, GENERATING_TOTP, ADDING_TOKEN, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
+        IMPORTING, REQUESTING_REFRESH, GENERATING_TOTP, ADDING_TOKEN, CHANGING_TOKEN, STORAGE_UNSAFE, CLOSING, FAILED_CLOSED, CLOSED }
     public enum Completion { RETAINED_SESSION, REFRESH_REQUESTED, CANCELLED,
         SESSION_FAILURE, BATCH_STOPPED }
     public enum Refresh { NOT_REQUESTED, REQUESTED, SKIPPED_UNSAFE }
@@ -44,8 +45,14 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         public View { tokens = frozen(tokens); diagnostics = frozen(diagnostics); integrityProblems = frozen(integrityProblems); }
     }
     public record ObservedToken(TokenId id, List<TokenDescriptor> alternatives,
-                                List<RevisionId> heads, List<UnresolvedReference> unresolved, boolean conflict) {
-        public ObservedToken { alternatives = frozen(alternatives); heads = frozen(heads); unresolved = frozen(unresolved); }
+                                List<RevisionId> heads, List<UnresolvedReference> unresolved, boolean conflict,
+                                List<List<RevisionId>> alternativeHeads) {
+        public ObservedToken { alternatives = frozen(alternatives); heads = frozen(heads); unresolved = frozen(unresolved);
+            alternativeHeads = frozen(alternativeHeads.stream().map(ForegroundVaultCoordinator::frozen).collect(Collectors.toList())); }
+        public ObservedToken(TokenId id, List<TokenDescriptor> alternatives, List<RevisionId> heads,
+                             List<UnresolvedReference> unresolved, boolean conflict) {
+            this(id, alternatives, heads, unresolved, conflict, List.of());
+        }
     }
     public record Item(RevisionId id, Status status, ObjectWrite publication) {}
     /** Actual outcomes only; unattempted IDs are separate. Evidence retains epoch/coverage and
@@ -219,11 +226,54 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     public synchronized View view() {
         requireOpen();
         var observed = session.state();
-        var tokens = observed.tokens().stream().map(token -> new ObservedToken(token.id(),
-                token.alternatives().stream().map(TokenAlternative::descriptor).collect(Collectors.toList()),
-                token.heads().stream().map(TokenHead::revision).collect(Collectors.toList()),
-                token.unresolvedReferences(), token.hasConflict())).collect(Collectors.toList());
+        var tokens = observed.tokens().stream().map(ForegroundVaultCoordinator::project).collect(Collectors.toList());
         return new View(observed.observation(), tokens, observed.diagnostics(), integrityProblems);
+    }
+    /** Local canonical authoring only. Merge supplies the library's prepublication freshness
+     * check even for single-value edits/deletions; UpdateToken deliberately lacks that check.
+     * No Alternative or secret crosses this ownership boundary. */
+    public TokenChange.Result changeToken(TokenChange change, String issuer, String account, int option) {
+        begin(State.CHANGING_TOKEN);
+        boolean saving = false;
+        try {
+            var captured = session.state();
+            var token = captured.token(change.basis().id()).orElse(null);
+            if (!(captured.observation() instanceof ObservationProgress.Finished)
+                    || !captured.diagnostics().isEmpty() || !integrityProblems.isEmpty())
+                return TokenChange.Result.FAILED;
+            if (token == null || !project(token).equals(change.basis())) return TokenChange.Result.STALE;
+            boolean resolving = change.kind() == TokenChange.Kind.RESOLVE;
+            if (resolving ? !TokenChange.resolvable(change.basis()) : !TokenChange.live(change.basis()))
+                return TokenChange.Result.STALE;
+            if (option < 0 || option >= token.alternatives().size()) return TokenChange.Result.INVALID;
+            // Keep the complete semantic value internally, including its hidden credential.
+            try (var editor = captured.merge(token.id())) {
+                editor.keep(token.alternatives().get(option));
+                if (change.kind() == TokenChange.Kind.EDIT) editor.issuer(issuer).account(account);
+                if (change.kind() == TokenChange.Kind.DELETE) editor.status(TokenStatus.TOMBSTONED);
+                saving = true;
+                var result = editor.save();
+                if (result instanceof SaveResult.Saved) return TokenChange.Result.SAVED;
+                if (result instanceof SaveResult.AdditionalConflict conflict) {
+                    conflict.resolution().close(); // Never bypass freshness via PartialResolution.save.
+                    return TokenChange.Result.STALE;
+                }
+                if (result instanceof SaveResult.PublicationUncertain uncertain) {
+                    uncertain.retry().close(); // Existing Add policy: explicit local Refresh, no semantic retry.
+                    return TokenChange.Result.PUBLICATION_UNCERTAIN;
+                }
+                return TokenChange.Result.FAILED;
+            }
+        } catch (IllegalArgumentException | NullPointerException invalid) {
+            return saving ? TokenChange.Result.PUBLICATION_UNCERTAIN : TokenChange.Result.INVALID;
+        } catch (RuntimeException failure) {
+            return saving ? TokenChange.Result.PUBLICATION_UNCERTAIN : TokenChange.Result.FAILED;
+        } finally { transition(State.OPEN); }
+    }
+    private static ObservedToken project(TokenState token) {
+        return new ObservedToken(token.id(), token.alternatives().stream().map(TokenAlternative::descriptor).collect(Collectors.toList()),
+                token.heads().stream().map(TokenHead::revision).collect(Collectors.toList()), token.unresolvedReferences(), token.hasConflict(),
+                token.alternatives().stream().map(a -> a.heads().stream().map(TokenHead::revision).collect(Collectors.toList())).collect(Collectors.toList()));
     }
     public enum TotpStatus { AVAILABLE, UNAVAILABLE_NEEDS_ATTENTION, STALE, FAILED }
     public record TotpResult(TotpStatus status, RevealedTotp revealed) {

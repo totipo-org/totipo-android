@@ -15,7 +15,7 @@ public final class TotpSourceGuardTest {
         var token = new ObservedToken(new TokenId("a".repeat(64)), List.of(descriptor), List.of(), List.of(), false);
         assertEquals("Issuer\nAccount\nActive", TokenListAdapter.rowText(token)); assertTrue(TokenListAdapter.usable(token));
         var conflict = new ObservedToken(token.id(), List.of(descriptor, descriptor), List.of(), List.of(), true);
-        assertEquals("Token\nNeeds attention", TokenListAdapter.rowText(conflict)); assertFalse(TokenListAdapter.usable(conflict));
+        assertTrue(TokenListAdapter.rowText(conflict).startsWith("Token conflict\nIssuer — Account")); assertFalse(TokenListAdapter.usable(conflict));
     }
     @Test public void completeListRecyclingAndEmptyStateAreWiredToPlatform() throws Exception {
         String adapter = read("TokenListAdapter"), activity = read("MainActivity");

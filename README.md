@@ -10,6 +10,19 @@ UI callbacks return to the main thread. Credentials are not persisted and operat
 mutable buffers are cleared on completion, as best effort rather than guaranteed JVM erasure.
 Empty-password create/unlock/Join requires explicit confirmation.
 
+Token management supports **Add**, **Edit**, **Delete**, **Resolve**, and **Show code**.
+Live rows keep Show code as the default action and offer Edit/Delete in the overflow menu.
+Edit changes issuer/account while retaining the hidden authenticator setup; **Change setup**
+is deferred. Delete requires confirmation and authors a Totipo tombstone, retaining immutable
+encrypted history rather than securely erasing it. Conflict rows offer Resolve instead of
+Show code. Resolve requires choosing one complete Alternative, including Deleted where present;
+there is no automatic winner or field combination. Detailed **Combine** is deferred.
+Edit/Delete/Resolve author only the local canonical store through the existing session.
+Use **Publish local changes** separately. They perform no provider Import or Publish.
+Changed token/conflict bases require review and a fresh user choice; no silent retry/rebase.
+Lock, dismissal and Activity interruption retire pending forms; sensitive setup is never
+saved through Android widget state or Bundle.
+
 Production consumes released Java NIO/core 0.2.0 and Bouncy Castle 1.86 directly
 from Maven Central, targeting Totipo Vault Format v1/r19. One app-private local canonical
 store has one persistent `NioStoreComposition.coordinatedDelegate(root, new NioDurability())`
@@ -206,9 +219,11 @@ across vaults. Different local/provider VaultIds are never reconciled automatica
 Join does not import tokens; Initialize does not publish tokens. Use **Import changes** and
 **Publish local changes** separately, each with its own fresh matching-VAULT preflight.
 No bootstrap runs on startup, unlock, folder selection or access restoration.
-The next milestone is **M3D — real Syncthing desktop ↔ Android end-to-end qualification**;
-that qualification remains deferred.
+The next task is to **resume/rerun M3D real Syncthing qualification from Scenario E onward**,
+after committing this milestone with new Android HEAD and APK identities. Retain A–D as
+historical prior-run evidence only and collect fresh E–M evidence. The old incomplete
+M3D report remains incomplete. See the [token lifecycle report](review/ANDROID_TOKEN_LIFECYCLE_REPORT.md).
 There is no background sync, Syncthing integration, biometric unlock, inactivity lock timer,
-conflict repair, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
+field-by-field conflict combination, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
 and universal Android filesystem/runtime or interoperability qualification are not claimed.
 JVM/build evidence complements the isolated physical-device qualification recorded in the report.

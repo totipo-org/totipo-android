@@ -81,6 +81,12 @@ class EvidenceOracleTest(unittest.TestCase):
         self.args.absent_account = ['public@example.test']
         self.assertIn('deleted/absent account public@example.test', self.failures())
 
+    def test_absent_live_row_alone_does_not_prove_tombstone(self):
+        self.args.deleted = 1
+        self.assertIn('tombstone count', self.failures())
+        self.after['local']['deleted_count'] = 1
+        self.assertEqual([], self.failures())
+
 
 if __name__ == '__main__':
     unittest.main()

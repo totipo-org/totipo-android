@@ -42,6 +42,8 @@ public final class MainActivity extends Activity {
     private EditText issuer, account, secret, period;
     private Spinner algorithm, digits;
     private Button add, cancel, scan;
+    private AlertDialog tokenDialog;
+    private TokenChange tokenChange;
 
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -62,9 +64,10 @@ public final class MainActivity extends Activity {
         super.onStart();
         if (controller != null) { render(controller.snapshot()); controller.attach(listener); }
     }
-    @Override protected void onStop() { clearSecret(); if (controller != null) controller.detach(listener); super.onStop(); }
+    @Override protected void onStop() { clearSecret(); dismissTokenChange(); if (controller != null) controller.detach(listener); super.onStop(); }
     // No session closure on Activity stop/destruction. No credential Bundle or saved widget state.
     private void render(Snapshot state) {
+        if (tokenChange != null && controller.pendingTokenChange() != tokenChange) dismissTokenChange();
         if (submitted && state.state() == State.OPEN && state.addOutcome() != null) {
             submitted = false;
             if (state.addOutcome().status() == AddTokenOutcome.Status.ADDED
@@ -198,7 +201,7 @@ public final class MainActivity extends Activity {
             add = button("Add", this::submitToken);
             cancel = button("Cancel", this::cancelAdd);
         } else if (next.equals("open")) {
-            tokens = new TokenListAdapter(this, id -> controller.showCode(id));
+            tokens = new TokenListAdapter(this, id -> controller.showCode(id), this::openTokenChange);
             TextView empty = label("No tokens yet");
             ListView list = new ListView(this); list.setSaveEnabled(false);
             list.setAdapter(tokens); list.setEmptyView(empty);
@@ -230,6 +233,52 @@ public final class MainActivity extends Activity {
                 if (controller.snapshot().state() == State.ERROR_LOCKED) controller.retryDiscovery(); else controller.lock();
             });
         }
+    }
+    private void dismissTokenChange() {
+        TokenChange previous = tokenChange; tokenChange = null;
+        if (previous != null) controller.cancelTokenChange(previous);
+        if (tokenDialog != null) { tokenDialog.dismiss(); tokenDialog = null; }
+    }
+    private void openTokenChange(org.totipo.TokenId id, TokenChange.Kind kind) {
+        var change = controller.beginTokenChange(id, kind);
+        if (change == null) return;
+        tokenChange = change;
+        AlertDialog.Builder builder = new AlertDialog.Builder(this).setNegativeButton("Cancel", (dialog, which) -> dismissTokenChange());
+        if (kind == TokenChange.Kind.DELETE) {
+            builder.setTitle("Delete this token?").setMessage("This removes the token from the current vault state. Historical encrypted revisions may remain in synchronized storage.")
+                    .setPositiveButton("Delete", (dialog, which) -> { controller.confirmTokenChange(change, null, null, 0); dismissTokenChange(); });
+        } else if (kind == TokenChange.Kind.EDIT) {
+            var descriptor = change.basis().alternatives().get(0);
+            LinearLayout fields = new LinearLayout(this); fields.setOrientation(LinearLayout.VERTICAL); fields.setPadding(24, 8, 24, 8);
+            fields.setSaveEnabled(false); fields.setSaveFromParentEnabled(false);
+            EditText editIssuer = metadataField(fields, "Issuer", descriptor.issuer());
+            EditText editAccount = metadataField(fields, "Account / label", descriptor.account());
+            TextView setup = new TextView(this); setup.setText(descriptor.algorithm() + " · " + descriptor.digits()
+                    + " digits · " + descriptor.period().getSeconds() + " s\nCurrent setup retained. Changing setup is not available yet."); fields.addView(setup);
+            builder.setTitle("Edit token").setView(fields).setPositiveButton("Save", (dialog, which) -> {
+                controller.confirmTokenChange(change, editIssuer.getText().toString(), editAccount.getText().toString(), 0); dismissTokenChange();
+            });
+        } else {
+            String[] options = java.util.stream.IntStream.range(0, change.basis().alternatives().size())
+                    .mapToObj(i -> "Option " + (i + 1) + "\n" + TokenListAdapter.summary(change.basis().alternatives().get(i))).toArray(String[]::new);
+            int[] selectedOption = {-1};
+            builder.setTitle("Resolve conflict").setSingleChoiceItems(options, -1, (dialog, which) -> {
+                selectedOption[0] = which; ((AlertDialog) dialog).getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+            }).setPositiveButton("Resolve", (dialog, which) -> {
+                controller.confirmTokenChange(change, null, null, selectedOption[0]); dismissTokenChange();
+            });
+        }
+        tokenDialog = builder.create();
+        tokenDialog.setOnCancelListener(dialog -> dismissTokenChange());
+        tokenDialog.show();
+        if (kind == TokenChange.Kind.RESOLVE) tokenDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        if (kind == TokenChange.Kind.DELETE) tokenDialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(android.graphics.Color.rgb(176, 0, 32));
+    }
+    private EditText metadataField(LinearLayout parent, String title, String value) {
+        TextView label = new TextView(this); label.setText(title); parent.addView(label);
+        EditText field = new EditText(this); field.setId(View.generateViewId()); label.setLabelFor(field.getId());
+        field.setSaveEnabled(false); field.setSaveFromParentEnabled(false); field.setFreezesText(false);
+        field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); field.setText(value); parent.addView(field); return field;
     }
     private void chooseSyncFolder() {
         if (!controller.canManageSyncFolder()) return;
@@ -277,11 +326,7 @@ public final class MainActivity extends Activity {
         submitted = controller.addToken(request);
     }
     private EditText textField(String title) {
-        TextView titleView = label(title);
-        EditText field = new EditText(this); field.setId(View.generateViewId()); titleView.setLabelFor(field.getId());
-        field.setSaveEnabled(false); field.setSaveFromParentEnabled(false);
-        field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
-        content.addView(field); return field;
+        return metadataField(content, title, "");
     }
     private Spinner selector(String title, String[] options) {
         TextView titleView = label(title);

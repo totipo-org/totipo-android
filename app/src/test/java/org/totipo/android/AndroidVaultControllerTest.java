@@ -906,4 +906,187 @@ public final class AndroidVaultControllerTest {
         assertTrue(activity.contains("setSaveEnabled(false)"));
         assertFalse(activity.contains("putString")); assertFalse(activity.contains("putCharArray"));
     }
+
+    private ForegroundVaultCoordinator.ObservedToken lifecycleRow() {
+        return controller.snapshot().view().tokens().get(0);
+    }
+    private void finishChange(TokenChange change, String issuer, String account, int option) throws Exception {
+        assertTrue(controller.confirmTokenChange(change, issuer, account, option));
+        await(() -> idle() && controller.tokenChangeResult() != null);
+    }
+    private void publishLifecycle(org.totipo.android.sync.PublicationPort port) throws Exception {
+        int before = port.objects.size();
+        accept(() -> controller.publishLocalChanges()); await(this::providerDone);
+        assertTrue(controller.syncView().message(), controller.syncView().message().contains("Local changes published"));
+        assertTrue(port.objects.size() > before);
+    }
+    @Test public void lifecycleEditRetainsCredentialHistorySessionAndExplicitPublish() throws Exception {
+        var port = outboundFixture(1); var session = real.session;
+        await(this::providerDone);
+        var row = lifecycleRow(); assertTrue(TokenChange.live(row));
+        var old = session.state(); var alternative = old.token(row.id()).orElseThrow().alternatives().get(0);
+        var code = old.generateTotp(alternative, java.time.Instant.ofEpochSecond(59)).code();
+        var objects = real.coordinator.outboundSnapshot(); int scans = port.scans;
+        var edit = controller.beginTokenChange(row.id(), TokenChange.Kind.EDIT);
+        assertNotNull(edit); assertEquals("public", edit.basis().alternatives().get(0).issuer());
+        assertEquals("test 0", edit.basis().alternatives().get(0).account());
+        assertFalse(controller.canAddToken()); assertFalse(controller.canPublishLocalChanges());
+        assertFalse(controller.refresh()); assertFalse(controller.canManageSyncFolder());
+        finishChange(edit, " Public <&> ", "new account", 0);
+        assertEquals(TokenChange.Result.SAVED, controller.tokenChangeResult());
+        await(() -> lifecycleRow().alternatives().get(0).account().equals("new account"));
+        assertEquals(" Public <&> ", lifecycleRow().alternatives().get(0).issuer());
+        assertEquals("test 0", alternative.descriptor().account());
+        assertEquals(code, session.state().generateTotp(session.state().token(row.id()).orElseThrow().alternatives().get(0), java.time.Instant.ofEpochSecond(59)).code());
+        assertSame(session, real.session); assertNull(controller.snapshot().revealedCode());
+        assertEquals(scans, port.scans); assertTrue(port.objects.isEmpty());
+        var after = real.coordinator.outboundSnapshot(); assertEquals(objects.size() + 1, after.size());
+        for (var object : objects) assertArrayEquals(object.representation(), after.stream().filter(o -> o.id().equals(object.id())).findFirst().orElseThrow().representation());
+        publishLifecycle(port);
+    }
+    @Test public void lifecycleDeleteIsTombstoneConcealsRetainsHistoryAndExplicitPublish() throws Exception {
+        var port = outboundFixture(1); await(this::providerDone); var session = real.session;
+        var row = lifecycleRow(); var objects = real.coordinator.outboundSnapshot();
+        accept(() -> controller.showCode(row.id())); await(this::idle); assertNotNull(controller.snapshot().revealedCode());
+        var cancel = controller.beginTokenChange(row.id(), TokenChange.Kind.DELETE); assertNotNull(cancel);
+        assertNull(controller.snapshot().revealedCode()); controller.cancelTokenChange(cancel);
+        assertEquals(objects.size(), real.coordinator.outboundSnapshot().size());
+        var change = controller.beginTokenChange(row.id(), TokenChange.Kind.DELETE);
+        finishChange(change, null, null, 0); assertEquals(TokenChange.Result.SAVED, controller.tokenChangeResult());
+        await(() -> lifecycleRow().alternatives().get(0).status() == org.totipo.TokenStatus.TOMBSTONED);
+        assertFalse(TokenChange.live(lifecycleRow())); assertFalse(TokenListAdapter.usable(lifecycleRow()));
+        assertNull(controller.beginTokenChange(row.id(), TokenChange.Kind.DELETE));
+        assertNull(controller.beginTokenChange(row.id(), TokenChange.Kind.EDIT));
+        assertNull(controller.snapshot().revealedCode()); assertSame(session, real.session); assertTrue(port.objects.isEmpty());
+        assertEquals(objects.size() + 1, real.coordinator.outboundSnapshot().size());
+        for (var object : objects) assertTrue(Files.exists(localRoot().resolve("objects-v1").resolve(object.id().hex())));
+        publishLifecycle(port);
+    }
+    @Test public void lifecycleCancelInvalidAndLockNeverAuthor() throws Exception {
+        var port = outboundFixture(1); await(this::providerDone); var row = lifecycleRow();
+        int before = real.coordinator.outboundSnapshot().size();
+        var edit = controller.beginTokenChange(row.id(), TokenChange.Kind.EDIT); controller.cancelTokenChange(edit);
+        assertFalse(controller.confirmTokenChange(edit, "x", "x", 0));
+        var invalid = controller.beginTokenChange(row.id(), TokenChange.Kind.EDIT);
+        finishChange(invalid, "x".repeat(257), "account", 0); assertEquals(TokenChange.Result.INVALID, controller.tokenChangeResult());
+        assertEquals(before, real.coordinator.outboundSnapshot().size());
+        for (var kind : List.of(TokenChange.Kind.EDIT, TokenChange.Kind.DELETE)) {
+            await(this::idle); var pending = controller.beginTokenChange(row.id(), kind); assertNotNull(pending);
+            lock(); assertNull(controller.pendingTokenChange()); assertFalse(controller.confirmTokenChange(pending, "x", "x", 0));
+            accept(() -> controller.unlock(password())); state(State.OPEN); await(this::idle);
+        }
+        assertEquals(before, real.coordinator.outboundSnapshot().size()); assertTrue(port.objects.isEmpty());
+    }
+    @Test public void lifecycleStaleEditAndDeleteDoNotRetry() throws Exception {
+        var port = outboundFixture(1); await(this::providerDone);
+        for (var kind : List.of(TokenChange.Kind.EDIT, TokenChange.Kind.DELETE)) {
+            await(this::idle); var row = lifecycleRow(); var pending = controller.beginTokenChange(row.id(), kind);
+            try (var update = real.session.state().update(real.session.state().token(row.id()).orElseThrow().alternatives().get(0))) {
+                assertTrue(update.account(kind.name()).save() instanceof org.totipo.SaveResult.Saved);
+            }
+            await(() -> lifecycleRow().alternatives().get(0).account().equals(kind.name())); await(this::idle);
+            int count = real.coordinator.outboundSnapshot().size();
+            finishChange(pending, "stale", "stale", 0); assertEquals(TokenChange.Result.STALE, controller.tokenChangeResult());
+            assertEquals(count, real.coordinator.outboundSnapshot().size()); assertTrue(controller.snapshot().message().contains("This token changed."));
+        }
+        assertTrue(port.objects.isEmpty());
+    }
+    /** Independent Java session/store authors a legitimate sibling of the captured local head. */
+    private void conflictBranch(org.totipo.android.sync.PublicationPort port, boolean deleted) throws Exception {
+        var row = lifecycleRow(); Path root = temporary.newFolder().toPath();
+        Files.write(root.resolve("vault"), port.vaultBytes); Files.createDirectory(root.resolve("objects-v1"));
+        for (var object : real.coordinator.outboundSnapshot()) Files.write(root.resolve("objects-v1").resolve(object.id().hex()), object.representation());
+        try (var remote = ((org.totipo.OpenResult.Opened)org.totipo.Totipo.open(
+                org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()), password())).session()) {
+            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            while (!(remote.state().observation() instanceof org.totipo.ObservationProgress.Finished) && System.nanoTime() < end) Thread.sleep(5);
+            try (var update = remote.state().update(remote.state().token(row.id()).orElseThrow().alternatives().get(0))) {
+                update.account("remote"); if (deleted) update.status(org.totipo.TokenStatus.TOMBSTONED);
+                assertTrue(update.save() instanceof org.totipo.SaveResult.Saved);
+            }
+        }
+        var edit = controller.beginTokenChange(row.id(), TokenChange.Kind.EDIT); finishChange(edit, "public", "local", 0);
+        await(() -> lifecycleRow().alternatives().get(0).account().equals("local")); await(this::idle);
+        try (var files = Files.list(root.resolve("objects-v1"))) { for (Path path : files.toList()) port.objects.put(path.getFileName().toString(), Files.readAllBytes(path)); }
+        accept(() -> controller.importProviderChanges()); await(this::providerDone);
+        await(() -> lifecycleRow().conflict()); await(this::idle);
+    }
+    private void resolveLifecycle(boolean deleted, String account) throws Exception {
+        var port = outboundFixture(1); await(this::providerDone); var session = real.session;
+        conflictBranch(port, deleted); var row = lifecycleRow(); assertTrue(TokenChange.resolvable(row));
+        assertFalse(TokenListAdapter.usable(row)); assertTrue(TokenListAdapter.rowText(row).startsWith("Token conflict"));
+        assertNull(controller.beginTokenChange(row.id(), TokenChange.Kind.EDIT));
+        accept(() -> controller.showCode(row.id())); await(this::idle); assertNull(controller.snapshot().revealedCode());
+        var change = controller.beginTokenChange(row.id(), TokenChange.Kind.RESOLVE); assertNotNull(change);
+        assertEquals(2, change.basis().alternatives().size());
+        controller.cancelTokenChange(change); int before = real.coordinator.outboundSnapshot().size();
+        change = controller.beginTokenChange(row.id(), TokenChange.Kind.RESOLVE);
+        int option = -1; for (int i=0; i<row.alternatives().size(); i++) if (row.alternatives().get(i).account().equals(account)) option=i;
+        assertTrue(option >= 0); var chosen = row.alternatives().get(option); var inventory = new HashMap<>(port.objects); int scans = port.scans;
+        finishChange(change, null, null, option); assertEquals(TokenChange.Result.SAVED, controller.tokenChangeResult());
+        await(() -> !lifecycleRow().conflict()); assertEquals(chosen, lifecycleRow().alternatives().get(0));
+        assertSame(session, real.session); assertNull(controller.snapshot().revealedCode());
+        assertEquals(before+1, real.coordinator.outboundSnapshot().size()); assertEquals(scans, port.scans);
+        assertEquals(inventory.keySet(), port.objects.keySet());
+        for (String key : inventory.keySet()) assertArrayEquals(inventory.get(key), port.objects.get(key));
+        publishLifecycle(port);
+    }
+    @Test public void lifecycleResolveCompleteLocalAlternative() throws Exception { resolveLifecycle(false, "local"); }
+    @Test public void lifecycleResolveCompleteRemoteAlternative() throws Exception { resolveLifecycle(false, "remote"); }
+    @Test public void lifecycleResolveDeletedAlternative() throws Exception { resolveLifecycle(true, "remote"); }
+    @Test public void lifecycleStaleConflictAndLockRejectChoice() throws Exception {
+        var port = outboundFixture(1); await(this::providerDone); conflictBranch(port, false);
+        var row = lifecycleRow(); var pending = controller.beginTokenChange(row.id(), TokenChange.Kind.RESOLVE);
+        try (var update = real.session.state().update(real.session.state().token(row.id()).orElseThrow().alternatives().get(0))) {
+            assertTrue(update.account("advanced").save() instanceof org.totipo.SaveResult.Saved);
+        }
+        await(() -> lifecycleRow().alternatives().stream().anyMatch(d -> d.account().equals("advanced"))); await(this::idle);
+        int before = real.coordinator.outboundSnapshot().size(); finishChange(pending, null, null, 0);
+        assertEquals(TokenChange.Result.STALE, controller.tokenChangeResult()); assertEquals(before, real.coordinator.outboundSnapshot().size());
+        assertTrue(controller.snapshot().message().contains("This conflict changed."));
+        var locked = controller.beginTokenChange(row.id(), TokenChange.Kind.RESOLVE); assertNotNull(locked); lock();
+        assertFalse(controller.confirmTokenChange(locked, null, null, 0));
+    }
+
+    @Test public void lifecycleJavaFreshnessGateSeesUnobservedLegitimateRevision() throws Exception {
+        var port=outboundFixture(1); await(this::providerDone); var row=lifecycleRow();
+        Path root=temporary.newFolder().toPath();Files.write(root.resolve("vault"),port.vaultBytes);Files.createDirectory(root.resolve("objects-v1"));
+        var old=real.coordinator.outboundSnapshot();
+        for(var object:old)Files.write(root.resolve("objects-v1").resolve(object.id().hex()),object.representation());
+        try(var branch=((org.totipo.OpenResult.Opened)org.totipo.Totipo.open(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root,new org.totipo.storage.nio.NioDurability()),password())).session()) {
+            await(()->branch.state().observation() instanceof org.totipo.ObservationProgress.Finished);
+            try(var update=branch.state().update(branch.state().token(row.id()).orElseThrow().alternatives().get(0))){assertTrue(update.account("new unseen head").save() instanceof org.totipo.SaveResult.Saved);}
+        }
+        var inject=new AtomicBoolean(true); List<Path> paths;try(var files=Files.list(root.resolve("objects-v1"))){paths=files.toList();}
+        var pending=controller.beginTokenChange(row.id(),TokenChange.Kind.EDIT);
+        real.beforeScan=delegate->{if(inject.getAndSet(false))for(Path path:paths)try {
+            var result=delegate.publishObject(new org.totipo.spi.ObjectName(path.getFileName().toString()),Files.readAllBytes(path));
+            assertTrue(result instanceof org.totipo.spi.ObjectWrite.Written || result instanceof org.totipo.spi.ObjectWrite.AlreadyPresentExact);
+        }catch(Exception failure){throw new AssertionError(failure);}};
+        finishChange(pending,"stale","must not save",0);real.beforeScan=store->{};
+        assertEquals(TokenChange.Result.STALE,controller.tokenChangeResult());
+        assertEquals(old.size()+1,real.coordinator.outboundSnapshot().size());
+        assertTrue(port.objects.isEmpty());
+        await(()->lifecycleRow().alternatives().get(0).account().equals("new unseen head"));
+    }
+    @Test public void lifecycleActualFailedAndUncertainLocalWritesDoNotRetryOrPublish() throws Exception {
+        var port=outboundFixture(1);await(this::providerDone);var row=lifecycleRow();int count=real.coordinator.outboundSnapshot().size();
+        real.tokenWriteFault=new org.totipo.spi.ObjectWrite.Failed(org.totipo.spi.StoreFailure.UNAVAILABLE);
+        var failed=controller.beginTokenChange(row.id(),TokenChange.Kind.EDIT);finishChange(failed,"x","x",0);
+        assertEquals(TokenChange.Result.PUBLICATION_UNCERTAIN,controller.tokenChangeResult());assertEquals(count,real.coordinator.outboundSnapshot().size());
+        real.tokenWriteFault=new org.totipo.spi.ObjectWrite.Uncertain(org.totipo.spi.StoreFailure.UNAVAILABLE);real.persistBeforeTokenFault=true;
+        var uncertain=controller.beginTokenChange(row.id(),TokenChange.Kind.DELETE);finishChange(uncertain,null,null,0);
+        assertEquals(TokenChange.Result.PUBLICATION_UNCERTAIN,controller.tokenChangeResult());real.tokenWriteFault=null;
+        assertEquals(count+1,real.coordinator.outboundSnapshot().size());assertTrue(port.objects.isEmpty());
+        accept(()->controller.refresh());await(()->lifecycleRow().alternatives().get(0).status()==org.totipo.TokenStatus.TOMBSTONED);
+    }
+
+    @Test public void lifecycleIncompleteLocalObservationFailsWithoutAuthoring() throws Exception {
+        var port=outboundFixture(1);await(this::providerDone);var row=lifecycleRow();int count=real.coordinator.outboundSnapshot().size();
+        var change=controller.beginTokenChange(row.id(),TokenChange.Kind.EDIT);real.incompleteChangeScan=true;
+        try{finishChange(change,"must not save","must not save",0);assertEquals(TokenChange.Result.FAILED,controller.tokenChangeResult());}
+        finally{real.incompleteChangeScan=false;}
+        assertTrue(controller.snapshot().message().contains("Totipo could not save this change."));
+        assertEquals(count,real.coordinator.outboundSnapshot().size());assertTrue(port.objects.isEmpty());
+    }
 }

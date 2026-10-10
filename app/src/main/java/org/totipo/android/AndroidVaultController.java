@@ -94,6 +94,51 @@ public final class AndroidVaultController {
     private Snapshot snapshot = new Snapshot(State.STARTING, Error.NONE, "Checking local vault…", null);
     // Only worker accesses owned resources. Admission and snapshot fields use this monitor.
     private AddTokenOutcome addOutcome;
+    private TokenChange pendingChange;
+    private TokenChange.Result changeResult;
+    public synchronized TokenChange pendingTokenChange() { return pendingChange; }
+    public synchronized TokenChange.Result tokenChangeResult() { return changeResult; }
+    /** Reserve the existing foreground admission slot; retain only detached public metadata. */
+    public synchronized TokenChange beginTokenChange(TokenId id, TokenChange.Kind kind) {
+        dispatcher.assertDispatchThread();
+        if (operating || providerActive || pendingChange != null || snapshot.state() != State.OPEN
+                || snapshot.view() == null
+                || !(snapshot.view().observation() instanceof org.totipo.ObservationProgress.Finished)
+                || !snapshot.view().diagnostics().isEmpty() || !snapshot.view().integrityProblems().isEmpty()) return null;
+        var token = snapshot.view().tokens().stream().filter(t -> t.id().equals(id)).findFirst().orElse(null);
+        if (token == null || (kind == TokenChange.Kind.RESOLVE ? !TokenChange.resolvable(token) : !TokenChange.live(token))) return null;
+        pendingChange = new TokenChange(kind, token); changeResult = null;
+        hideCode();
+        return pendingChange;
+    }
+    public synchronized void cancelTokenChange(TokenChange change) {
+        dispatcher.assertDispatchThread();
+        if (pendingChange == change) { pendingChange = null; notifySync(); }
+    }
+    public synchronized boolean confirmTokenChange(TokenChange change, String issuer, String account, int option) {
+        dispatcher.assertDispatchThread();
+        if (change == null || pendingChange != change || operating || providerActive || snapshot.state() != State.OPEN) return false;
+        pendingChange = null;
+        long generation = sessionGeneration;
+        return submit(State.BUSY, "Saving local change…", () -> {
+            var result = vault.changeToken(change, issuer, account, option);
+            String message = switch (result) {
+                case SAVED -> "Change saved locally. Publish local changes separately.";
+                case STALE -> change.kind() == TokenChange.Kind.RESOLVE
+                        ? "This conflict changed. Review it and try again." : "This token changed. Review it and try again.";
+                case INVALID -> "Check issuer/account (up to 256 UTF-8 bytes).";
+                case FAILED -> "Totipo could not save this change.";
+                case PUBLICATION_UNCERTAIN -> "Local save uncertain. Refresh before deciding whether to try again.";
+            };
+            synchronized (this) {
+                if (sessionGeneration != generation) return;
+                changeResult = result;
+                try { render(message); }
+                catch (RuntimeException failure) { publish(State.ERROR_OPEN, Error.OBSERVATION_DIAGNOSTICS,
+                        "Observation unavailable; lock before retrying.", null); }
+            }
+        });
+    }
     private ForegroundVaultCoordinator vault;
     private AutoCloseable observation;
     private boolean operating, dirty, viewQueued, observationFailed;
@@ -175,7 +220,7 @@ public final class AndroidVaultController {
     }
     public synchronized boolean copyShownCode() {
         dispatcher.assertDispatchThread();
-        if (operating || snapshot.state() != State.OPEN) return false;
+        if (operating || pendingChange != null || snapshot.state() != State.OPEN) return false;
         boolean copied = presentation.copy();
         if (copied || presentation.display().code() != null) {
             snapshot = new Snapshot(snapshot.state(), snapshot.error(),
@@ -187,7 +232,7 @@ public final class AndroidVaultController {
     }
     public synchronized boolean showCode(TokenId id) {
         dispatcher.assertDispatchThread();
-        if (operating || snapshot.state() != State.OPEN) return false;
+        if (operating || pendingChange != null || snapshot.state() != State.OPEN) return false;
         var expected = snapshot.view().tokens().stream().filter(token -> token.id().equals(id)).findFirst().orElse(null);
         if (expected == null) return false;
         long epoch = presentationEpoch + 1; // submit's publication revokes the previous reveal.
@@ -211,7 +256,7 @@ public final class AndroidVaultController {
         });
     }
     private synchronized boolean submit(State state, String message, Runnable operation) {
-        if (operating) return false;
+        if (operating || pendingChange != null) return false;
         operating = true;
         Snapshot before = snapshot;
         publish(state, Error.NONE, message, state == State.BUSY ? before.view() : null);
@@ -350,7 +395,7 @@ public final class AndroidVaultController {
                 diagnostics && !message.contains(attention) ? message + " " + attention : message, view);
     }
     /** Admission observation only; addToken still rechecks atomically and owns every rejection. */
-    public synchronized boolean canAddToken() { return snapshot.state() == State.OPEN && !operating; }
+    public synchronized boolean canAddToken() { return snapshot.state() == State.OPEN && !operating && pendingChange == null; }
     /** Takes ownership on every path. Uses existing bounded admission and the live session. */
     public synchronized boolean addToken(AddTokenRequest request) {
         dispatcher.assertDispatchThread();
@@ -389,7 +434,7 @@ public final class AndroidVaultController {
         });
     }
     public synchronized boolean canJoinExistingVault() {
-        return !operating && !providerActive && syncBinding != null && snapshot.state() == State.NO_LOCAL_VAULT
+        return !operating && pendingChange == null && !providerActive && syncBinding != null && snapshot.state() == State.NO_LOCAL_VAULT
                 && syncView.binding().status() == SyncFolderBinding.Status.READY && syncView.binding().readable();
     }
     private byte[] preparedJoinCandidate; // Detached non-secret bytes; never a cached mutation authorization.
@@ -629,7 +674,7 @@ public final class AndroidVaultController {
     public synchronized SyncView syncView() { return syncView; }
     /** Private picker hint only; never rendered in product status. */
     public synchronized String initialTreeUri() { return initialTreeUri; }
-    public synchronized boolean canManageSyncFolder() { return syncBinding != null && !operating; }
+    public synchronized boolean canManageSyncFolder() { return syncBinding != null && !operating && pendingChange == null; }
     public synchronized boolean canImportProviderChanges() {
         return canManageSyncFolder() && !providerActive && snapshot.state() == State.OPEN
                 && syncView.binding().status() == SyncFolderBinding.Status.READY;
@@ -859,6 +904,7 @@ public final class AndroidVaultController {
     }
     /** Process/controller teardown: best effort, no wait for provider IPC termination. */
     public synchronized void shutdown() {
+        pendingChange = null;
         cancelOutbound();
         sessionGeneration++; // Invalidate even results already queued before executor shutdown.
         try { worker.execute(() -> {
@@ -886,6 +932,7 @@ public final class AndroidVaultController {
     }
     public synchronized boolean lock() {
         State state = snapshot.state();
+        if (!operating) pendingChange = null;
         if (!operating && (state == State.OPEN || state == State.ERROR_OPEN || state == State.FAILED_CLOSE)) cancelOutbound();
         return (state == State.OPEN || state == State.ERROR_OPEN || state == State.FAILED_CLOSE)
                 && submit(State.LOCKING, "Locking vault…", () -> {

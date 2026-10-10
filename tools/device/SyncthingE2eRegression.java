@@ -132,7 +132,7 @@ public final class SyncthingE2eRegression extends Instrumentation {
             Object coordinator = field(controller, "vault");
             Object view = call(snapshot, "view");
             if (view != null) {
-                JSONArray tokens = new JSONArray();
+                JSONArray tokens = new JSONArray(), deletedTokens = new JSONArray();
                 for (Object token : (List<?>)call(view, "tokens")) {
                     JSONObject item = new JSONObject().put("conflict", call(token, "conflict"))
                             .put("unresolved", ((List<?>)call(token, "unresolved")).size())
@@ -145,11 +145,17 @@ public final class SyncthingE2eRegression extends Instrumentation {
                         if (!issuer.startsWith("Totipo M3D") || !(account.matches("[a-zA-Z0-9._+-]+@example\\.test")
                                 || account.equals("android@example.tes")))
                             throw new IllegalStateException("non_fixture_token");
-                        alternatives.put(new JSONObject().put("issuer", issuer).put("account", account));
+                        alternatives.put(new JSONObject().put("issuer", issuer).put("account", account)
+                                .put("status", call(descriptor, "status").toString()));
                     }
-                    item.put("alternatives", sorted(alternatives)); tokens.put(item);
+                    item.put("alternatives", sorted(alternatives));
+                    boolean deleted = !(Boolean)call(token, "conflict") && ((List<?>)call(token, "unresolved")).isEmpty()
+                            && ((List<?>)call(token, "alternatives")).size() == 1
+                            && "TOMBSTONED".equals(call(((List<?>)call(token, "alternatives")).get(0), "status").toString());
+                    if (deleted) deletedTokens.put(item); else tokens.put(item);
                 }
                 result.put("tokens", sorted(tokens)).put("token_count", tokens.length())
+                        .put("deleted_tokens", sorted(deletedTokens)).put("deleted_count", deletedTokens.length())
                         .put("diagnostic_count", ((List<?>)call(view, "diagnostics")).size())
                         .put("observation", call(view, "observation").getClass().getSimpleName());
             }

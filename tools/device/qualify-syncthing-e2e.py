@@ -156,6 +156,8 @@ def validate(before, after, args):
         if args.layout == 'initialized': require(not objects, 'Initialize did not publish objects')
         if args.layout == 'objects': require(bool(objects), 'nonempty canonical objects')
     if args.tokens is not None: require(local.get('token_count') == args.tokens, 'token count')
+    if getattr(args, 'deleted', None) is not None:
+        require(local.get('deleted_count') == args.deleted, 'tombstone count')
     for account in args.account:
         require(any(a['account'] == account for t in local.get('tokens', []) for a in t['alternatives']), 'public account ' + account)
     for account in args.absent_account:
@@ -215,6 +217,7 @@ def main():
     parser.add_argument('--transport', choices=['up-to-date-both', 'paused-both', 'resumed-both', 'not-required'])
     parser.add_argument('--desktop', help='Public desktop UI observation; no internals inferred')
     parser.add_argument('--tokens', type=int)
+    parser.add_argument('--deleted', type=int, help='Expected current unambiguous tombstones, outside the live list')
     parser.add_argument('--account', action='append', default=[])
     parser.add_argument('--conflicts', type=int)
     parser.add_argument('--unresolved', type=int)

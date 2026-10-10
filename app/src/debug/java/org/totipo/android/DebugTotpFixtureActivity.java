@@ -41,7 +41,7 @@ public final class DebugTotpFixtureActivity extends Activity {
         if (!clip.getDescription().getExtras().getBoolean("android.content.extra.IS_SENSITIVE")
                 || !"test-marker".equals(clip.getDescription().getExtras().getString(PlatformCodeClipboard.OWNER)))
             throw new AssertionError();
-        var adapter = new TokenListAdapter(this, ignored -> {});
+        var adapter = new TokenListAdapter(this, ignored -> {}, (id, kind) -> {});
         if (adapter.getCount() != 0) throw new AssertionError();
         List<ObservedToken> entries = new ArrayList<>();
         for (int i = 0; i < 512; i++) entries.add(new ObservedToken(new TokenId(String.format("%064x", i)),
