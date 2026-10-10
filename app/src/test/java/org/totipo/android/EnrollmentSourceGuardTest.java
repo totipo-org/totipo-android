@@ -21,7 +21,9 @@ public final class EnrollmentSourceGuardTest {
         assertTrue(source.contains("button(\"Add token\""));
         assertTrue(source.contains("controller.hideCode(); adding = true"));
         assertTrue(source.contains("private void cancelAdd() { clearSecret();"));
-        assertTrue(source.contains("onStop() { clearSecret();"));
+        String stop = source.substring(source.indexOf("@Override protected void onStop()"), source.indexOf("// No session closure"));
+        assertTrue(stop.contains("clearSecret();")); assertTrue(stop.contains("clearPasswords();"));
+        assertTrue(stop.contains("biometric.close()")); assertTrue(stop.contains("cancelBiometricEnrollment()"));
         assertTrue(source.contains("setSaveFromParentEnabled(false)"));
         assertTrue(source.contains("IMPORTANT_FOR_AUTOFILL_NO"));
         assertFalse(source.contains("onSaveInstanceState"));

@@ -35,8 +35,11 @@ public final class TotpSourceGuardTest {
         try (var paths = Files.walk(Path.of("src/main/java"))) {
             for (Path path : paths.filter(p -> p.toString().endsWith(".java")).toList()) {
                 String code = Files.readString(path);
+                // JCE is permitted only at the device credential boundary, never for TOTP.
+                if (!List.of("AndroidBiometricCredentials.java", "BiometricCredentials.java").contains(path.getFileName().toString()))
+                    assertFalse(path.toString(), code.contains("javax.crypto"));
                 for (String forbidden : List.of("android.util.Log", "System.out", "System.err", "printStackTrace", "java.util.logging",
-                        "javax.crypto", "Mac.getInstance", "94287082", "12345678901234567890"))
+                        "Mac.getInstance", "94287082", "12345678901234567890"))
                     assertFalse(path + ": " + forbidden, code.contains(forbidden));
             }
         }

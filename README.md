@@ -40,8 +40,35 @@ setup is never saved through Android widget state or Bundle.
 One Application-owned `AndroidVaultController` retains the live coordinator/session
 across Activity recreation. The existing bounded vault worker and provider I/O lane
 serialize operations, with session/binding retirement and cancellation guards. Explicit
-lock and process death remain the lock policy; backgrounding/rotation does not lock.
-Credentials are not persisted. Operation-owned mutable buffers are cleared on completion
+Lock and a fixed **15-minute user inactivity timeout** close the real Java VaultSession
+and retire its in-memory vault/session keys. Touch/key interaction resets a monotonic
+`elapsedRealtime` deadline; Sync, TOTP ticks and provider callbacks do not. Backgrounding
+alone does not immediately lock, but background time counts. Foreground re-entry checks
+expiration before presenting vault content. Rotation does not reset the deadline.
+
+Optional **biometric unlock on this device** is available with API 30+ framework strong
+biometrics. The vault password remains canonical and always works. Select **Enable
+biometric unlock on this device** during password unlock; after the password succeeds,
+a strong biometric crypto prompt protects a device-local encrypted reusable password
+copy with a non-exportable AndroidKeyStore AES-GCM key. Every decryption requires a fresh
+strong biometric operation; device PIN, pattern, device password and weak biometrics are
+not accepted. The password fallback remains visible. Cancelled/failed enrollment leaves
+the normally opened vault available and stores no credential. Enrollment and prompts
+expire after 60 seconds or Activity interruption. **Disable biometric unlock** in overflow
+removes both credential and Keystore key without locking or changing the vault/password.
+
+The credential is in app-private no-backup storage, authenticated and bound to the exact
+VaultId. Enrollment changes, key invalidation, or corruption may require password unlock
+and re-enrollment. After process death the app starts locked; biometric reopening uses
+the ordinary password-open path and normal automatic Sync.
+
+Biometric convenience deliberately adds device-local attack surface: it stores a
+device-encrypted reusable representation of the vault password. The authentication-gated
+Keystore key cannot be exported, but successful biometric authorization lets Totipo
+transiently recover the password required by the existing Java API. This is a usability
+tradeoff, not a claim of security equivalence to the vault password. Plaintext is never
+persisted, passwords are never converted to Java Strings, and transient mutable buffers
+are wiped in finally blocks. Operation-owned mutable buffers are cleared on completion
 as best effort rather than guaranteed JVM erasure. Empty-password create/unlock/Join
 requires explicit confirmation.
 
@@ -70,8 +97,8 @@ There is no automatic polling, background synchronization, cloud SDK or Internet
 Java's existing-token-data creation veto is presented without bypass.
 
 Manual enrollment, otpauth enrollment, reveal/copy, vault shell, explicit lock and token
-list behavior remain. Credentials are not persisted. Empty-password create/unlock/Join requires
-confirmation. Backgrounding/rotation does not lock. Java Flow requires API 30 for vault
+list behavior remain. Empty-password create/unlock/Join requires
+confirmation. Backgrounding alone does not lock; elapsed inactivity does. Java Flow requires API 30 for vault
 operations; minSdk remains 26 and older devices receive the unsupported-runtime message.
 
 The launcher uses canonical adaptive/round/density resources copied unchanged from

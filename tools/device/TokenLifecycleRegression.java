@@ -88,7 +88,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
                 public void assertDispatchThread(){if(Looper.myLooper()!=Looper.getMainLooper())throw new AssertionError("UI thread");}
                 public void assertWorkerThread(){if(Looper.myLooper()==Looper.getMainLooper())throw new AssertionError("worker thread");}
             },new AndroidVaultController.Backend(),new TotpPresentation.Time(){
-                public Instant wall(){return Instant.now();}public long elapsedMillis(){return SystemClock.elapsedRealtime();}
+                public Instant wall(){return Instant.ofEpochSecond(59);}public long elapsedMillis(){return SystemClock.elapsedRealtime();}
             },null,new SyncFolderBinding(port));
             await(this::idle);command(()->controller.create(new char[0]));
             Path root=base.resolve("local/totipo-vault");Files.write(port.root.resolve("vault"),vault().coordinator().snapshotVault());
@@ -99,7 +99,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
             TokenId delete=tokens.stream().filter(t->!t.id().equals(edit)).findFirst().orElseThrow().id();
             Object application=getTargetContext().getApplicationContext();var appField=TotipoApplication.class.getDeclaredField("vaultController");appField.setAccessible(true);
             original=appField.get(application);runOnMainSync(()->{try{appField.set(application,controller);}catch(Exception e){throw new AssertionError(e);}});
-            activity=(MainActivity)startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            activity=(MainActivity)startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
             runOnMainSync(()->activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));waitForIdleSync();
             await(()->activity.hasWindowFocus());check(activity.hasWindowFocus(),"unlocked_foreground_activity");
             var session=vault().session();Map<String,String> before=inventory(port.root);
@@ -109,7 +109,12 @@ public final class TokenLifecycleRegression extends Instrumentation {
             positive();await(()->row(edit).alternatives().get(0).account().equals("edited@example.test"));waitForIdleSync();
             check(controller.tokenChangeResult()==TokenChange.Result.SAVED,"edit_saved");
             check(vault().session()==session,"edit_same_session");check(controller.snapshot().revealedCode()==null,"edit_no_reveal");verifyAutomaticPublication(port,before);
-            before=inventory(port.root);command(()->controller.showCode(delete));check(controller.snapshot().revealedCode()!=null,"delete_revealed_fixture");
+            before=inventory(port.root);
+            await(()->{
+                if(controller.snapshot().revealedCode()!=null)return true;
+                if(idle())runOnMainSync(()->controller.showCode(delete));
+                return false;
+            });check(controller.snapshot().revealedCode()!=null,"delete_revealed_fixture");
             open(delete,TokenChange.Kind.DELETE);check(dialog()!=null,"delete_confirmation_visible");
             check(row(delete).alternatives().get(0).status()==TokenStatus.ACTIVE,"confirmation_has_not_authored");
             runOnMainSync(()->dialog().getButton(AlertDialog.BUTTON_NEGATIVE).performClick());check(row(delete).alternatives().get(0).status()==TokenStatus.ACTIVE,"delete_cancel_no_change");
@@ -130,7 +135,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
             try(var files=Files.list(branch.resolve("objects-v1"))){for(Path path:files.toList()){Path target=port.root.resolve("objects-v1").resolve(path.getFileName());if(!Files.exists(target))Files.copy(path,target);}}
             command(()->controller.sync());await(()->row(edit).conflict());waitForIdleSync();
             check(TokenListAdapter.rowText(row(edit)).contains("Token conflict"),"real_conflict_rendered");
-            command(()->controller.showCode(edit));check(controller.snapshot().revealedCode()==null,"conflict_no_arbitrary_code");
+            runOnMainSync(()->check(!controller.showCode(edit),"conflict_reveal_rejected"));check(controller.snapshot().revealedCode()==null,"conflict_no_arbitrary_code");
             before=inventory(port.root);open(edit,TokenChange.Kind.RESOLVE);check(dialog()!=null,"resolve_chooser_visible");
             check(!dialog().getButton(AlertDialog.BUTTON_POSITIVE).isEnabled(),"resolve_no_preselection");
             int option=-1;for(int i=0;i<row(edit).alternatives().size();i++)if(row(edit).alternatives().get(i).account().equals("remote@example.test"))option=i;
@@ -152,14 +157,15 @@ public final class TokenLifecycleRegression extends Instrumentation {
     /** File-backed isolated transport. Production writer, identity gate and import-before-publish Sync
      * are exercised; Android SAF IPC and external Syncthing remain M3D's responsibility. */
     static final class FixturePort implements SyncFolderBinding.Port,ProviderObjectWriter.Port {
+        volatile int scans;
         final Path root;final Tree tree=new Tree("lifecycle-fixture","content://lifecycle-fixture/tree/root","root");
-        FixturePort(Path root)throws Exception{this.root=root;Files.createDirectory(root.resolve("objects-v1"));}
+        FixturePort(Path root)throws Exception{this.root=root;Files.createDirectories(root.resolve("objects-v1"));}
         Document doc(String id,String parent,boolean directory){return new Document(tree,"content://lifecycle-fixture/"+id,id,parent,id,directory?"vnd.android.document/directory":"application/octet-stream",null,8L);}
         public SyncFolderBinding.Stored load(){return new SyncFolderBinding.Stored(tree.locator(),true,true);}
         public boolean save(SyncFolderBinding.Stored v){return true;}public boolean validTree(String uri){return uri.equals(tree.locator());}
         public SyncFolderBinding.Grants grants(String uri){return new SyncFolderBinding.Grants(true,true);}
         public void take(String u,boolean r,boolean w){}public void release(String u,boolean r,boolean w){}public void probe(String u){}
-        public Scan scan(String uri){try{
+        public Scan scan(String uri){scans++;try{
             String epoch=UUID.randomUUID().toString();var directory=doc("objects-v1","root",true);var vault=doc("vault","root",false);
             List<Bytes> objects=new ArrayList<>();try(var files=Files.list(root.resolve("objects-v1"))){for(Path path:files.toList())objects.add(new Bytes(epoch,doc(path.getFileName().toString(),"objects-v1",false),1024,ByteState.PRESENT,Files.readAllBytes(path),Issue.NONE));}
             var vaults=Files.exists(root.resolve("vault"))?List.of(new Bytes(epoch,vault,87,ByteState.PRESENT,Files.readAllBytes(root.resolve("vault")),Issue.NONE)):List.<Bytes>of();

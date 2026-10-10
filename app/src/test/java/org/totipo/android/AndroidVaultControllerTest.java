@@ -58,6 +58,8 @@ public final class AndroidVaultControllerTest {
     // Older Import/Publish safety tests isolate those internal operations. Daily-driver tests
     // opt into automatic dispatch below; production has no switch to disable automatic Sync.
     private boolean automaticSync;
+    private long securityElapsed;
+    private boolean timeoutLock;
     private void pump() {
         if (!automaticSync && controller != null) synchronized (controller) {
             try { var pending = AndroidVaultController.class.getDeclaredField("syncPending"); pending.setAccessible(true); pending.setBoolean(controller, false); }
@@ -604,8 +606,9 @@ public final class AndroidVaultControllerTest {
         owner = TestReplicaOwners.create(temporary.newFolder().toPath());
         var port = new org.totipo.android.sync.PublicationPort();
         controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
-            public java.time.Instant wall() { return java.time.Instant.now(); }
-            public long elapsedMillis() { return 0; }
+            // Lifecycle assertions must not race a real 30-second TOTP rollover.
+            public java.time.Instant wall() { return java.time.Instant.ofEpochSecond(59); }
+            public long elapsedMillis() { return securityElapsed; }
         }, null, new org.totipo.android.sync.SyncFolderBinding(port));
         state(State.NO_LOCAL_VAULT); await(this::providerDone);
         accept(() -> controller.create(password())); state(State.OPEN);
@@ -890,7 +893,7 @@ public final class AndroidVaultControllerTest {
         }
         real.saveFailure = null;
     }
-    @Test public void busyAddRejectsDuplicateLockRefreshSyncAndLockFirstRejectsAdd() throws Exception {
+    @Test public void busyAddRejectsDuplicateAndLockRetiresAfterInFlightSave() throws Exception {
         create(); var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
         real.operationHook = name -> {
             if (name.equals("publishObject")) { entered.countDown();
@@ -903,12 +906,13 @@ public final class AndroidVaultControllerTest {
             char[] duplicate = rfcSecret();
             assertFalse(controller.addToken(enrollment("", "", org.totipo.TotpAlgorithm.SHA1, 6, 30, duplicate)));
             assertArrayEquals(new char[duplicate.length], duplicate);
-            assertFalse(controller.lock()); assertFalse(controller.refresh()); assertFalse(controller.sync(null));
+            assertTrue(controller.lock()); assertEquals(State.LOCKING, controller.snapshot().state());
+            assertFalse(controller.refresh()); assertFalse(controller.sync(null));
             assertEquals(1, real.saves);
         } finally { release.countDown(); real.operationHook = name -> {}; }
-        await(() -> idle() && controller.snapshot().state() == State.OPEN);
-        await(() -> controller.snapshot().view().tokens().size() == 1);
-        lock(); char[] rejected = rfcSecret();
+        await(() -> idle() && controller.snapshot().state() == State.LOCKED);
+        assertNull(controller.snapshot().view());
+        char[] rejected = rfcSecret();
         assertFalse(controller.addToken(enrollment("", "", org.totipo.TotpAlgorithm.SHA1, 6, 30, rejected)));
         assertArrayEquals(new char[rejected.length], rejected); assertEquals(1, real.saves);
     }
@@ -1108,6 +1112,36 @@ public final class AndroidVaultControllerTest {
         assertTrue(controller.snapshot().message().contains("Totipo could not save this change."));
         assertEquals(count,real.coordinator.outboundSnapshot().size());assertTrue(port.objects.isEmpty());
     }
+    private boolean securityLock() {
+        if (!timeoutLock) return controller.lock();
+        securityElapsed = InactivityLock.TIMEOUT_MILLIS;
+        controller.checkInactivity();
+        return controller.snapshot().state() == State.LOCKING || controller.snapshot().state() == State.LOCKED;
+    }
+    @Test public void timeoutDuringProviderObservationClosesWithoutWaitingForProvider() throws Exception {
+        timeoutLock = true; dailyLockDuringObservationRetiresSyncWithoutPublication();
+    }
+    @Test public void timeoutDuringLocalImportCancelsOutboundAndCloses() throws Exception {
+        timeoutLock = true; dailyLockDuringLocalImportCancelsBeforeOutboundPhase();
+    }
+    @Test public void timeoutDuringJavaObservationCancelsOutboundAndCloses() throws Exception {
+        timeoutLock = true; dailyLockDuringJavaObservationWaitCancelsBeforeOutboundPhase();
+    }
+    private void timeoutPendingChange(TokenChange.Kind kind) throws Exception {
+        var port = outboundFixture(1); await(this::providerDone);
+        if (kind == TokenChange.Kind.RESOLVE) conflictBranch(port, false);
+        await(this::providerDone);
+        var change = controller.beginTokenChange(lifecycleRow().id(), kind); assertNotNull(change);
+        int saves = real.saves;
+        securityElapsed = InactivityLock.TIMEOUT_MILLIS; controller.checkInactivity();
+        assertNull(controller.pendingTokenChange());
+        assertFalse(controller.confirmTokenChange(change, "late", "late", 0)); state(State.LOCKED);
+        assertEquals(saves, real.saves); assertNull(controller.snapshot().view());
+    }
+    @Test public void timeoutRetiresEditAndRejectsLateConfirmation() throws Exception { timeoutPendingChange(TokenChange.Kind.EDIT); }
+    @Test public void timeoutRetiresDeleteAndRejectsLateConfirmation() throws Exception { timeoutPendingChange(TokenChange.Kind.DELETE); }
+    @Test public void timeoutRetiresResolveAndRejectsLateConfirmation() throws Exception { timeoutPendingChange(TokenChange.Kind.RESOLVE); }
+
     private org.totipo.android.sync.PublicationPort dailyFixture() throws Exception {
         var port = outboundFixture(1); await(this::providerDone);
         assertTrue(controller.sync()); await(this::providerDone);
@@ -1251,7 +1285,7 @@ public final class AndroidVaultControllerTest {
         port.onScan = () -> { entered.countDown(); try { assertTrue(release.await(30, TimeUnit.SECONDS)); }
             catch (InterruptedException e) { throw new AssertionError(e); } };
         assertTrue(controller.sync()); assertTrue(entered.await(10, TimeUnit.SECONDS));
-        assertTrue(controller.lock()); state(State.LOCKED);
+        assertTrue(securityLock()); state(State.LOCKED);
         release.countDown(); await(this::providerDone);
         assertEquals(0, port.creates); assertNull(controller.snapshot().view());
         assertEquals(State.LOCKED, controller.snapshot().state()); assertFalse(controller.canSync());
@@ -1311,7 +1345,7 @@ public final class AndroidVaultControllerTest {
         real.operationHook = name -> { if (name.equals("publishObject")) { entered.countDown();
             try { assertTrue(release.await(30, TimeUnit.SECONDS)); } catch (InterruptedException e) { throw new AssertionError(e); } } };
         assertTrue(controller.sync()); assertTrue(entered.await(10, TimeUnit.SECONDS));
-        try { assertTrue(controller.lock()); assertEquals(State.LOCKING, controller.snapshot().state()); }
+        try { assertTrue(securityLock()); assertEquals(State.LOCKING, controller.snapshot().state()); }
         finally { release.countDown(); }
         state(State.LOCKED); await(this::providerDone);
         assertEquals(0, port.creates); assertNull(controller.snapshot().view());
@@ -1322,7 +1356,7 @@ public final class AndroidVaultControllerTest {
         real.beforeScan = store -> { entered.countDown();
             try { assertTrue(release.await(30, TimeUnit.SECONDS)); } catch (InterruptedException e) { throw new AssertionError(e); } };
         assertTrue(controller.sync()); assertTrue(entered.await(10, TimeUnit.SECONDS));
-        try { assertTrue(controller.lock()); assertEquals(State.LOCKING, controller.snapshot().state()); }
+        try { assertTrue(securityLock()); assertEquals(State.LOCKING, controller.snapshot().state()); }
         finally { release.countDown(); real.beforeScan = store -> {}; }
         state(State.LOCKED); await(this::providerDone);
         assertEquals(0, port.creates); assertNull(controller.snapshot().view());

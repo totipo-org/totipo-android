@@ -28,6 +28,9 @@ manifest = manifest.replace('http://schemas.android.com/apk/res/android:', 'andr
 for permission in ('android.permission.CAMERA', 'android.permission.INTERNET', 'android.permission.READ_EXTERNAL_STORAGE',
                    'android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.MANAGE_EXTERNAL_STORAGE'):
     assert permission not in manifest, f'Forbidden APK permission: {permission}'
+permissions = re.findall(r'android:name\([^)]*\)="(android.permission.[^"]+)"', manifest)
+assert set(permissions) == {'android.permission.USE_BIOMETRIC'}, 'Unexpected APK permissions'
+assert 'E: service ' not in manifest, 'Unexpected background service'
 resources = subprocess.check_output([
     str(Path(sdk) / 'build-tools/36.0.0/aapt2'), 'dump', 'resources', str(args.apk)], text=True)
 for attribute, resource in [('icon', 'ic_launcher'), ('roundIcon', 'ic_launcher_round')]:
@@ -113,12 +116,12 @@ with zipfile.ZipFile(args.apk) as apk:
     assert dex.startswith(b'dex\n'), 'Missing DEX'
     for descriptor in [b'Lorg/totipo/android/reconcile/DetachedVaultAuthentication;', b'Lorg/totipo/android/sync/VaultBootstrapEvidence;', b'Lorg/totipo/android/sync/ProviderVaultWriter;', b'Lorg/totipo/android/sync/AndroidProviderVaultPort;', b'Lorg/totipo/android/sync/OutboundImmutablePlanner;', b'Lorg/totipo/android/sync/ProviderObjectWriter;', b'Lorg/totipo/android/sync/DetachedImmutableObject;', b'Lorg/totipo/android/sync/ProviderIoLane;', b'Lorg/totipo/android/sync/SyncFolderBinding;', b'Lorg/totipo/android/sync/AndroidSyncFolderPort;', b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/AddTokenRequest;', b'Lorg/totipo/android/AddTokenOutcome;', b'Lorg/totipo/android/Base32;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/totipo/storage/nio/NioStoreComposition;', b'Lorg/totipo/VaultId;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
         assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
-    for descriptor in (b'Lorg/totipo/android/OtpAuthEnrollmentActivity;', b'Lorg/totipo/android/OtpAuthUriParser;', b'Lorg/totipo/android/OtpAuthTransport;'):
+    for descriptor in (b'Lorg/totipo/android/AndroidBiometricCredentials;', b'Lorg/totipo/android/FrameworkBiometricPrompt;', b'Lorg/totipo/android/InactivityLock;', b'Lorg/totipo/android/BiometricRecord;', b'Lorg/totipo/android/OtpAuthEnrollmentActivity;', b'Lorg/totipo/android/OtpAuthUriParser;', b'Lorg/totipo/android/OtpAuthTransport;'):
         assert descriptor in dex, f'Missing production enrollment class: {descriptor!r}'
     for retired in (b'Lorg/totipo/PasswordChangeResult;', b'Lorg/totipo/VaultFingerprint;', b'Lorg/totipo/spi/PreparedVault;', b'Lorg/totipo/spi/VaultPrepare;', b'openPrivate'):
         assert retired not in dex, f'Retired Java API packaged: {retired!r}'
     assert b'OtpAuthIntentProbeActivity' not in dex, 'Obsolete probe in APK'
-    for forbidden in (b'Lcom/google/api/services/drive/', b'Lcom/google/android/apps/docs/', b'Lcom/nutomic/syncthingandroid/', b'Landroidx/work/', b'Landroidx/documentfile/', b'Lorg/totipo/safqualification/', b'Lcom/google/zxing/', b'Landroidx/camera/', b'Lcom/google/mlkit/', b'Lcom/google/android/gms/'):
+    for forbidden in (b'Lcom/google/api/services/drive/', b'Lcom/google/android/apps/docs/', b'Lcom/nutomic/syncthingandroid/', b'Landroidx/work/', b'Landroidx/biometric/', b'Landroidx/documentfile/', b'Lorg/totipo/safqualification/', b'Lcom/google/zxing/', b'Landroidx/camera/', b'Lcom/google/mlkit/', b'Lcom/google/android/gms/'):
         assert forbidden not in dex, f'Forbidden QR/camera/service dependency: {forbidden!r}'
     if args.debug_probe:
         for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;', b'Lorg/totipo/android/DebugTotpFixtureActivity;', b'Lorg/totipo/android/reconcile/DebugTotpFixture;']:
@@ -127,6 +130,7 @@ with zipfile.ZipFile(args.apk) as apk:
         assert b'OtpAuthIntentProbe' not in dex and b'otpauth TOTP link received' not in dex and b'otpauth TOTP share received' not in dex, 'Otpauth probe in release DEX'
         for forbidden in [b'SafBootstrapRegression', b'VaultBootstrapTest', b'VaultEnrollmentTest', b'DetachedVaultAuthenticationTest', b'BootstrapSourceGuardTest', b'DebugTotpFixture', b'12345678901234567890', b'Public test fixture',
                           b'TotpPresentationTest', b'TotpControllerTest', b'TotpCoordinatorTest',
+                          b'SecurityControllerTest', b'BiometricRecordTest', b'InactivityLockTest', b'SecurityRegression',
                           b'FakeClock', b'FakeClipboard', b'Base32Test', b'EnrollmentSourceGuardTest', b'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ']:
             assert forbidden not in dex, f'M2A fixture/test seam in release DEX: {forbidden!r}'
         assert b'EXPECTED_SYNTHETIC_SHA256' not in dex and b'matchesSyntheticOutput' not in dex and b'output_match=1' not in dex and b'30eb8bf0a90f2cd624a1d00aa7093e2c8f11968586718195043150ca6ce50bb1' not in dex, 'M1L equivalence diagnostics in release DEX'

@@ -22,7 +22,7 @@ import org.totipo.android.reconcile.ForegroundVaultCoordinator.View;
 /** Application-owned product lifecycle. Credentials are exclusively transferred to commands.
  * One worker, one pending slot; product commands reject busy admission, observations coalesce.
  * Activity listeners receive detached snapshots on the dispatcher, never Java ownership.
- * Explicit lock and process death are the only M1J lock policies. */
+ * Manual and inactivity Lock retire the same owned session. */
 public final class AndroidVaultController {
     public enum State { STARTING, NO_LOCAL_VAULT, LOCKED, UNLOCKING, CREATING, OPEN,
         BUSY, ERROR_LOCKED, LOCKING, FAILED_CLOSE, ERROR_OPEN }
@@ -88,6 +88,12 @@ public final class AndroidVaultController {
     private final Backend backend;
     private final TotpPresentation presentation;
     private final TotpPresentation.Time time;
+    private final InactivityLock inactivity;
+    private volatile boolean lockRequested;
+    private boolean shuttingDown;
+    private PasswordBuffer enrollmentPassword;
+    private Runnable enrollmentExpiry;
+    public record Enrollment(String vaultId, PasswordBuffer password) {}
     private long presentationEpoch;
     private boolean revealing;
     private Runnable revealTask;
@@ -95,7 +101,12 @@ public final class AndroidVaultController {
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(1), action -> {
                 Thread thread = new Thread(action, "Totipo-vault"); thread.setDaemon(true); return thread;
-            }, new ThreadPoolExecutor.AbortPolicy());
+            }, new ThreadPoolExecutor.AbortPolicy()) {
+                @Override protected void afterExecute(Runnable task, Throwable failure) {
+                    super.afterExecute(task, failure);
+                    retireRequestedLock();
+                }
+            };
     private final Set<Listener> listeners = new LinkedHashSet<>();
     private Snapshot snapshot = new Snapshot(State.STARTING, Error.NONE, "Checking local vault…", null);
     // Only worker accesses owned resources. Admission and snapshot fields use this monitor.
@@ -167,6 +178,8 @@ public final class AndroidVaultController {
         this.syncBinding = binding;
         this.owner = owner; this.dispatcher = dispatcher; this.backend = backend;
         this.time = time;
+        inactivity = new InactivityLock(time::elapsedMillis,
+                (delay, action) -> dispatcher.after(delay, () -> { synchronized (this) { action.run(); } }), this::lock);
         TotpPresentation.Clipboard marshalled = clipboard == null ? null : new TotpPresentation.Clipboard() {
             public boolean copy(String marker, String text) {
                 dispatcher.assertDispatchThread(); return clipboard.copy(marker, text);
@@ -204,6 +217,7 @@ public final class AndroidVaultController {
     private void publish(State state, Error error, String message, View view) {
         ArrayList<Listener> targets;
         synchronized (this) {
+            if (lockRequested && state != State.LOCKING && state != State.FAILED_CLOSE) return;
             clearPresentation();
             snapshot = new Snapshot(state, error, message, view, null, 0, addOutcome);
             targets = new ArrayList<>(listeners);
@@ -279,7 +293,10 @@ public final class AndroidVaultController {
         }
     }
     private synchronized boolean submit(State state, String message, Runnable operation) {
-        if (operating || pendingChange != null) return false;
+        return submit(state, message, operation, () -> {});
+    }
+    private synchronized boolean submit(State state, String message, Runnable operation, Runnable cancelled) {
+        if (shuttingDown || lockRequested || operating || pendingChange != null) return false;
         retireQueuedReveal();
         operating = true;
         Snapshot before = snapshot;
@@ -287,7 +304,7 @@ public final class AndroidVaultController {
         try {
             worker.execute(() -> {
                 dispatcher.assertWorkerThread();
-                try { discardCancelledJoin(); operation.run(); }
+                try { discardCancelledJoin(); if (lockRequested) cancelled.run(); else operation.run(); }
                 finally { synchronized (this) {
                     discardCancelledJoin(); operating = false; scheduleView(); queueSyncDrain();
                     // Admission-dependent controls must also observe worker completion.
@@ -325,7 +342,23 @@ public final class AndroidVaultController {
     /** Takes exclusive buffer ownership even on rejected admission; always wipes it. */
     public synchronized boolean unlock(char[] credential) { return authenticate(credential, false); }
     public synchronized boolean create(char[] credential) { return authenticate(credential, true); }
+    public synchronized boolean unlockAndEnroll(char[] credential, java.util.function.Consumer<Enrollment> ready) {
+        return authenticate(credential, false, null, ready, () -> {});
+    }
+    public synchronized boolean unlockBiometric(char[] credential, String expectedVaultId, Runnable invalid) {
+        return authenticate(credential, false, expectedVaultId, null, invalid);
+    }
+    public synchronized void cancelBiometricEnrollment() {
+        if (enrollmentPassword != null) enrollmentPassword.close();
+        enrollmentPassword = null;
+        if (enrollmentExpiry != null) enrollmentExpiry.run();
+        enrollmentExpiry = null;
+    }
     private boolean authenticate(char[] credential, boolean create) {
+        return authenticate(credential, create, null, null, () -> {});
+    }
+    private boolean authenticate(char[] credential, boolean create, String expectedVaultId,
+                                 java.util.function.Consumer<Enrollment> ready, Runnable invalid) {
         boolean admitted = false;
         try {
             State expected = create ? State.NO_LOCAL_VAULT : State.LOCKED;
@@ -333,6 +366,9 @@ public final class AndroidVaultController {
             cancelOutbound();
             admitted = submit(create ? State.CREATING : State.UNLOCKING,
                     create ? "Creating vault…" : "Unlocking vault…", () -> {
+                // The existing coordinator consumes/wipes the open input. Only explicit
+                // enrollment owns this additional mutable copy for the immediate transaction.
+                PasswordBuffer candidate = ready == null ? null : new PasswordBuffer(credential.clone());
                 try {
                     Error error;
                     boolean objectDataObserved = false;
@@ -345,7 +381,31 @@ public final class AndroidVaultController {
                                 ? Error.LOCAL_STORAGE_UNSAFE : Error.CREATE_FAILED;
                     } else {
                         var result = backend.open(owner, credential); vault = result.vault();
-                        if (result.failure() == null && result.cause() == null) { opened(); return; }
+                        if (result.failure() == null && result.cause() == null) {
+                            String id = vault.sessionVaultId().hex();
+                            if (expectedVaultId != null && !expectedVaultId.equals(id)) {
+                                invalid.run();
+                                if (closeOwned()) discover();
+                                return;
+                            }
+                            opened();
+                            if (ready != null) synchronized (this) {
+                                if (lockRequested) return;
+                                cancelBiometricEnrollment();
+                                var password = candidate;
+                                enrollmentPassword = password;
+                                long generation = sessionGeneration;
+                                enrollmentExpiry = dispatcher.after(60_000, this::cancelBiometricEnrollment);
+                                dispatcher.post(() -> {
+                                    synchronized (this) {
+                                        if (enrollmentPassword != password || generation != sessionGeneration
+                                                || snapshot.state() != State.OPEN) { password.close(); return; }
+                                    }
+                                    ready.accept(new Enrollment(id, password));
+                                });
+                            }
+                            return;
+                        }
                         error = result.failure() instanceof OpenResult.AuthenticationFailed ? Error.AUTHENTICATION_FAILED
                                 : result.failure() instanceof OpenResult.Absent ? Error.LOCAL_VAULT_ABSENT
                                 : result.failure() instanceof OpenResult.Unavailable ? Error.LOCAL_STORAGE_UNAVAILABLE
@@ -365,8 +425,11 @@ public final class AndroidVaultController {
                     if (current.state() != State.FAILED_CLOSE) publish(current.state(),
                             create ? Error.CREATE_FAILED : Error.OPEN_FAILED,
                             create ? "Vault creation failed. Check local storage and retry." : "Vault open failed. Check local storage and retry.", null);
-                } finally { Arrays.fill(credential, '\0'); }
-            });
+                } finally {
+                    Arrays.fill(credential, '\0');
+                    synchronized (this) { if (candidate != null && enrollmentPassword != candidate) candidate.close(); }
+                }
+            }, () -> Arrays.fill(credential, '\0'));
             return admitted;
         } finally { if (!admitted) Arrays.fill(credential, '\0'); }
     }
@@ -381,10 +444,12 @@ public final class AndroidVaultController {
         };
     }
     private void opened() {
+        synchronized (this) { if (lockRequested) return; }
         ForegroundVaultCoordinator current = vault;
         synchronized (this) { addOutcome = null; changeResult = null; }
         synchronized (this) { vaultId = org.totipo.Totipo.vaultId(current.snapshotVault()).hex(); }
         observation = current.observe(() -> signal(false), () -> signal(true));
+        synchronized (this) { if (lockRequested) return; inactivity.opened(); }
         render("Vault open");
         synchronized (this) { requestAutomaticSync(); }
     }
@@ -450,7 +515,7 @@ public final class AndroidVaultController {
                                 message + " Observation unavailable; lock before retrying.", null);
                     }
                 } finally { request.close(); }
-            });
+            }, request::close);
             return admitted;
         } finally { if (!admitted) request.close(); }
     }
@@ -705,6 +770,7 @@ public final class AndroidVaultController {
     /** Application-level foreground transitions, including enrollment Activities; rotation is coalesced. */
     public synchronized void foregroundChanged(boolean active) {
         dispatcher.assertDispatchThread();
+        if (active) inactivity.check(); else cancelBiometricEnrollment();
         boolean returned = active && !foreground;
         foreground = active;
         if (returned) requestAutomaticSync();
@@ -1086,7 +1152,15 @@ public final class AndroidVaultController {
         }
     }
     /** Process/controller teardown: best effort, no wait for provider IPC termination. */
+    public synchronized void userInteraction() {
+        dispatcher.assertDispatchThread(); inactivity.interaction();
+    }
+    /** Must run synchronously before a resumed Activity reads or exposes a snapshot. */
+    public synchronized void checkInactivity() { inactivity.check(); }
     public synchronized void shutdown() {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        requestLock();
         pendingChange = null; syncPending = false;
         cancelOutbound();
         sessionGeneration++; // Invalidate even results already queued before executor shutdown.
@@ -1115,14 +1189,33 @@ public final class AndroidVaultController {
     }
     public synchronized boolean lock() {
         State state = snapshot.state();
-        syncPending = false;
-        if (!operating) pendingChange = null;
-        if (!operating && (state == State.OPEN || state == State.ERROR_OPEN || state == State.FAILED_CLOSE)) cancelOutbound();
-        return (state == State.OPEN || state == State.ERROR_OPEN || state == State.FAILED_CLOSE)
-                && submit(State.LOCKING, "Locking vault…", () -> {
-                    synchronized (this) { cancelOutbound(); sessionGeneration++; }
-                    if (closeOwned()) discover();
-                });
+        if (lockRequested) return true;
+        if (state != State.OPEN && state != State.BUSY && state != State.ERROR_OPEN && state != State.FAILED_CLOSE) return false;
+        requestLock();
+        return true;
+    }
+    private void requestLock() {
+        if (lockRequested) return;
+        inactivity.stop(); cancelBiometricEnrollment();
+        lockRequested = true;
+        syncPending = false; pendingChange = null;
+        cancelOutbound(); sessionGeneration++;
+        publish(State.LOCKING, Error.NONE, "Locking vault…", null);
+        // A running local command retains its ownership until completion. Provider IPC never
+        // holds this slot. afterExecute retires the session before any later worker task.
+        if (!operating) {
+            retireQueuedReveal();
+            try { worker.execute(() -> {}); }
+            catch (RejectedExecutionException occupied) { /* queued observation drains retirement */ }
+        }
+    }
+    private void retireRequestedLock() {
+        synchronized (this) { if (!lockRequested || operating) return; operating = true; }
+        try {
+            boolean closed = closeOwned();
+            synchronized (this) { lockRequested = false; }
+            if (closed) discover();
+        } finally { synchronized (this) { operating = false; } }
     }
     private boolean closeOwned() {
         try {

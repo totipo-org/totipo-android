@@ -191,6 +191,8 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         requireOpen(); return Totipo.vaultId(exact).equals(session.vaultId());
     }
     /** Gate releases before structural identity/session access. */
+    public org.totipo.VaultId sessionVaultId() { requireOpen(); return session.vaultId(); }
+
     public byte[] snapshotVault() {
         requireOpen();
         byte[] exact;

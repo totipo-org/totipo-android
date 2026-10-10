@@ -36,7 +36,7 @@ public final class TotpControllerTest {
             // until the controller has read its initial subscription replay.
             if (real.session != null) initialObservationRead.countDown();
         }
-        public Runnable after(long delay, Runnable action) { return timer.after(delay, action); }
+        public Runnable after(long delay, Runnable action) { return delay == InactivityLock.TIMEOUT_MILLIS ? () -> {} : timer.after(delay, action); }
     };
     @Before public void setup() throws Exception {
         var owner = TestReplicaOwners.create(temporary.newFolder().toPath());
@@ -217,6 +217,19 @@ public final class TotpControllerTest {
         clock.wall = Instant.ofEpochSecond(31);
         entered = new CountDownLatch(1); release = new CountDownLatch(1);
         assertTrue(controller.showCode(a)); assertTrue(entered.await(10, TimeUnit.SECONDS));
+    }
+    @Test public void inactivityRetiresVisibleRevealAndOwnedClipboard() throws Exception {
+        clock.wall = Instant.ofEpochSecond(31); show(a); assertTrue(controller.copyShownCode());
+        clock.elapsed += InactivityLock.TIMEOUT_MILLIS;
+        controller.checkInactivity(); assertNull(controller.snapshot().revealedCode());
+        await(() -> idle() && controller.snapshot().state() == State.LOCKED);
+        pump(); assertNull(clipboard.text); assertNull(controller.snapshot().view());
+    }
+    @Test public void inactivityRetiresPendingRevealAndRejectsLateResult() throws Exception {
+        delayedReveal(); clock.elapsed += InactivityLock.TIMEOUT_MILLIS;
+        controller.checkInactivity(); assertEquals(State.LOCKING, controller.snapshot().state());
+        release.countDown(); await(() -> idle() && controller.snapshot().state() == State.LOCKED);
+        assertNull(controller.snapshot().revealedCode()); assertNull(controller.snapshot().view()); assertEquals(0, clipboard.copies);
     }
     @Test public void lockAdmittedDuringGenerationRejectsAlreadyGeneratedResult() throws Exception {
         List<Snapshot> events = new ArrayList<>(); controller.attach(events::add); pump();

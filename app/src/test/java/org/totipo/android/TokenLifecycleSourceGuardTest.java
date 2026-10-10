@@ -27,7 +27,8 @@ public final class TokenLifecycleSourceGuardTest {
         for(String label:List.of("Delete this token?", "Historical encrypted revisions may remain", "Save", "Cancel", "Option ", "Changing setup is not available yet"))assertTrue(label,activity.contains(label));
         assertTrue(activity.contains("setSingleChoiceItems(options, -1"));assertTrue(activity.contains("setLabelFor(field.getId())"));
         assertTrue(activity.contains("setTextColor(android.graphics.Color.rgb(176, 0, 32))"));
-        assertTrue(activity.contains("onStop() { clearSecret(); dismissTokenChange()"));
+        String stop=activity.substring(activity.indexOf("@Override protected void onStop()"),activity.indexOf("// No session closure"));
+        assertTrue(stop.contains("clearSecret();"));assertTrue(stop.contains("dismissTokenChange()"));
         assertTrue(adapter.contains("TokenStatus.ACTIVE)).filter"));
         assertFalse(activity.contains("onSaveInstanceState"));
     }

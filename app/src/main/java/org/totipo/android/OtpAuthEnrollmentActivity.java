@@ -18,6 +18,13 @@ import java.io.PrintWriter;
 public final class OtpAuthEnrollmentActivity extends Activity {
     private OtpAuthUriParser.Draft draft;
     private AndroidVaultController controller;
+    @Override public void onUserInteraction() {
+        super.onUserInteraction(); if (controller != null) controller.userInteraction();
+    }
+    @Override protected void onResume() {
+        super.onResume();
+        if (controller != null) { controller.checkInactivity(); changed(controller.snapshot()); }
+    }
     private boolean submitted;
     private final AndroidVaultController.Listener listener = this::changed;
     private LinearLayout content;
@@ -29,6 +36,7 @@ public final class OtpAuthEnrollmentActivity extends Activity {
         super.onCreate(null);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         controller = ((TotipoApplication) getApplication()).vaultController();
+        if (controller != null) controller.checkInactivity();
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::cancel);
         if (savedState != null) message(R.string.enrollment_expired);

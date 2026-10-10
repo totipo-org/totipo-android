@@ -27,6 +27,25 @@ import org.totipo.android.AndroidVaultController.State;
 /** Presentation only: application controller commands and detached snapshots. */
 public final class MainActivity extends Activity {
     private AndroidVaultController controller;
+    private BiometricUnlock biometric;
+    private android.widget.CheckBox enableBiometric;
+    private boolean resumed, biometricOffered;
+    private String biometricUi;
+    private void offerBiometric() {
+        if (resumed && !biometricOffered && controller.snapshot().state() == State.LOCKED
+                && biometric.available() && biometric.configured()) {
+            biometricOffered = true; biometric.unlock();
+        }
+    }
+    @Override public void onUserInteraction() {
+        super.onUserInteraction(); if (controller != null) controller.userInteraction();
+    }
+    @Override protected void onResume() {
+        super.onResume(); resumed = true;
+        if (controller != null) { controller.checkInactivity(); render(controller.snapshot()); offerBiometric(); }
+    }
+    @Override protected void onPause() { resumed = false; super.onPause(); }
+
     private final AndroidVaultController.Listener listener = new AndroidVaultController.Listener() {
         public void changed(Snapshot state) { render(state); }
         public void revealChanged(Snapshot state) {
@@ -62,6 +81,13 @@ public final class MainActivity extends Activity {
             unsupported.setText(R.string.unsupported_runtime);
             unsupported.setPadding(24, 80, 24, 24); setContentView(unsupported);
         } else {
+            android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+            biometric = new BiometricUnlock(controller, new AndroidBiometricCredentials(this),
+                    new FrameworkBiometricPrompt(this), (delay, action) -> {
+                        handler.postDelayed(action, delay); return () -> handler.removeCallbacks(action);
+                    });
+            biometric.changed = () -> handler.post(() -> { if (resumed) render(controller.snapshot()); });
+            controller.checkInactivity();
             if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
             render(controller.snapshot());
@@ -69,11 +95,18 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onStart() {
         super.onStart();
-        if (controller != null) { render(controller.snapshot()); controller.attach(listener); }
+        if (controller != null) { controller.checkInactivity(); render(controller.snapshot()); controller.attach(listener); }
     }
-    @Override protected void onStop() { clearSecret(); dismissTokenChange(); if (controller != null) controller.detach(listener); super.onStop(); }
+    @Override protected void onStop() { biometricOffered = false; if (biometric != null) biometric.close(); if (controller != null) controller.cancelBiometricEnrollment(); clearPasswords(); clearSecret(); dismissTokenChange(); if (controller != null) controller.detach(listener); super.onStop(); }
     // No session closure on Activity stop/destruction. No credential Bundle or saved widget state.
     private void render(Snapshot state) {
+        if (state.state() == State.OPEN) biometricOffered = false;
+        if (state.state() == State.LOCKING || state.state() == State.FAILED_CLOSE) {
+            if (biometric != null) biometric.close(); dismissTokenChange(); managing = false;
+        }
+        String bio = biometric.available() + ":" + biometric.configured();
+        if ("unlock".equals(surface) && !bio.equals(biometricUi)) surface = null;
+        biometricUi = bio;
         if (tokenChange != null && controller.pendingTokenChange() != tokenChange) dismissTokenChange();
         if (submitted && state.state() == State.OPEN && state.addOutcome() != null) {
             submitted = false;
@@ -128,6 +161,7 @@ public final class MainActivity extends Activity {
             renderSyncControl(syncAction, controller.dailySyncStatus());
             syncAction.setEnabled(controller.canSync());
         }
+        offerBiometric();
         if (tokens != null) {
             var view = state.view();
             tokens.replace(view == null ? java.util.List.of() : view.tokens(), controller.canAddToken(),
@@ -145,6 +179,7 @@ public final class MainActivity extends Activity {
         clearCodeWidgets();
         tokens = null;
         issuer = account = secret = period = null; algorithm = digits = null; add = cancel = scan = null;
+        enableBiometric = null;
         surface = next; password = confirmation = null; action = syncAction = null;
         chooseFolder = disconnectFolder = checkFolder = joinVault = initializeFolder = null; syncStatus = null;
         ScrollView scroll = new ScrollView(this);
@@ -178,6 +213,14 @@ public final class MainActivity extends Activity {
             if (next.equals("create")) confirmation = passwordField("Confirm password");
             action = button(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock", () -> authenticate(false));
             if (next.equals("join")) button("Cancel Join", () -> { controller.cancelJoin(); clearPasswords(); joining = false; build("create"); render(controller.snapshot()); });
+            if (next.equals("unlock") && biometric.available()) {
+                if (biometric.configured()) button("Use biometrics", () -> { biometricOffered = true; biometric.unlock(); });
+                else {
+                    enableBiometric = new android.widget.CheckBox(this);
+                    enableBiometric.setText("Enable biometric unlock on this device");
+                    enableBiometric.setSaveEnabled(false); content.addView(enableBiometric);
+                }
+            }
             password.requestFocus();
         } else if (next.equals("add")) {
             label("Add token").setTextSize(22);
@@ -282,6 +325,10 @@ public final class MainActivity extends Activity {
             new AlertDialog.Builder(this).setTitle("Diagnostics").setMessage(controller.diagnostics())
                     .setPositiveButton("Close", null).show(); return true;
         });
+        if (controller.snapshot().state() == State.OPEN && biometric.configured())
+            menu.getMenu().add("Disable biometric unlock").setOnMenuItemClickListener(item -> {
+                if (!biometric.disable()) status.setText("Biometric unlock could not be disabled. Try again."); return true;
+            });
         menu.getMenu().add("Lock").setEnabled(controller.snapshot().state() == State.OPEN)
                 .setOnMenuItemClickListener(item -> { managing = false; clearPasswords(); controller.lock(); return true; });
         menu.show();
@@ -332,6 +379,8 @@ public final class MainActivity extends Activity {
         }
         tokenDialog = builder.create();
         tokenDialog.setOnCancelListener(dialog -> dismissTokenChange());
+        tokenDialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        tokenDialog.getWindow().setCallback(new InteractionWindow(tokenDialog.getWindow().getCallback(), controller::userInteraction));
         tokenDialog.show();
         if (kind == TokenChange.Kind.RESOLVE) tokenDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
         if (kind == TokenChange.Kind.DELETE) tokenDialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(android.graphics.Color.rgb(176, 0, 32));
@@ -432,7 +481,10 @@ public final class MainActivity extends Activity {
         // Copy only at submission; controller takes exclusive ownership and clears even rejection.
         char[] credential = new char[password.length()];
         password.getText().getChars(0, credential.length, credential, 0);
-        boolean accepted = surface.equals("join") ? controller.joinExistingVault(credential) : create ? controller.create(credential) : controller.unlock(credential);
+        boolean accepted = surface.equals("join") ? controller.joinExistingVault(credential) : create ? controller.create(credential) : enableBiometric != null && enableBiometric.isChecked()
+                ? controller.unlockAndEnroll(credential, enrollment -> {
+                    if (resumed) biometric.enroll(enrollment); else enrollment.password().close();
+                }) : controller.unlock(credential);
         if (accepted) clearPasswords();
         if (accepted) {
             ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(password.getWindowToken(), 0);
