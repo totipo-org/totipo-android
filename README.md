@@ -146,14 +146,20 @@ experimental; its warning remains visible. Build Tools version stays 36.0.0.
 
 ## Build and install
 
-Use the wrapper for local Android iteration in the managed shell:
+Follow the [Qualification ladder](AGENTS.md#qualification-ladder) for interactive
+agent work: full qualification at stable boundaries, focused checks during iteration.
+Docs outside package/check inputs need only documentation validation.
+
+Use the wrapper in the managed shell. Bootstrap is for environment setup; the full
+command is the ordinary baseline/final checkpoint for product milestones:
 
 ```sh
 ./bootstrap-m0.sh
-./gradlew --no-daemon check :app:assembleDebug :app:assembleRelease
+./gradlew check :app:assembleDebug :app:assembleRelease
 ```
 
-The forced offline repeat remains a manual M0/toolchain qualification check:
+After final normal PASS, run the strict offline clean gate once at the stable
+boundary, followed by the ladder's final artifact and affected device checks:
 
 ```sh
 ./gradlew --offline --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks --dependency-verification=strict clean check :app:assembleDebug :app:assembleRelease
@@ -220,11 +226,15 @@ derivation. Flake check includes the actual Android package build/test/check wor
 debug/release assembly, JVM tests, lint, strict dependency verification,
 Maven-boundary checks, debug APK verification with `--debug-probe` and unsigned
 release APK verification with `--unsigned --no-debug-probe`. A second ordinary
-`nix build` is not required for qualification. The forced offline Gradle repeat
-above remains local Android validation.
+`nix build` is not required for qualification. The strict offline Gradle gate
+above remains final local Android validation, outside the iteration loop.
 
-Agent does not run Nix. Human normal Nix gate is `nix flake check path:.`.
-Do not request an additional ordinary `nix build`.
+Agent does not run Nix. After all package/check inputs (including `tools/` and
+physical harness fixes) are frozen, request one final human `nix flake check path:.`.
+Included-input edits invalidate that result. Under the current source filter,
+`AGENTS.md`, `README.md` and `review/` are excluded from Android qualification inputs;
+documentation-only edits there do not require a new Nix gate. Inspect actual inputs
+for every milestone. Do not request an additional ordinary `nix build`.
 
 To materialize the package and create a `result` link for output inspection:
 
