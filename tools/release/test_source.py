@@ -86,8 +86,12 @@ class SourceTests(unittest.TestCase):
             self.commit(); self.sync()
 
     def test_prepare_idempotent_exact_diff_no_git_side_effects(self):
+        import io
         before = (self.call('rev-parse', 'HEAD'), self.call('show-ref'), self.call('ls-remote', 'origin'))
-        self.prepared()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output): self.prepared()
+        self.assertIn('VERSION=0.1.2; VERSION_CODE=3', output.getvalue())
+        self.assertNotIn('check-release', output.getvalue())
         self.assertEqual((self.root / 'VERSION').read_bytes(), b'0.1.2\n')
         self.assertEqual((self.root / 'VERSION_CODE').read_bytes(), b'3\n')
         self.assertEqual(set(self.call('diff', '--name-only').splitlines()), source.METADATA)
@@ -210,51 +214,160 @@ class SourceTests(unittest.TestCase):
         self.call('tag', '-d', 'v0.1.1'); self.tag('0.1.1')
         with self.assertRaisesRegex(ValueError, 'tags differ'): self.execute('prepare-release')
 
-    def test_tag_local_annotated_message_peel_no_push(self):
+    def coordinates(self, json_output=False):
+        import io
+        output = io.StringIO()
+        with self.context(), contextlib.redirect_stdout(output):
+            source.execute('release-tag', '0.1.2', json_output)
+        return output.getvalue()
+
+    def assert_reject_unchanged(self):
+        before = (self.call('show-ref'), self.call('ls-remote', 'origin'))
+        with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+            self.execute('release-tag')
+        self.assertEqual(before, (self.call('show-ref'), self.call('ls-remote', 'origin')))
+
+    def test_release_tag_create_push_coordinates_repeat_and_settings(self):
+        import json
         self.prepared(commit=True)
-        before = self.call('ls-remote', 'origin')
-        self.execute('tag-release')
-        self.assertEqual(self.call('cat-file', '-t', 'v0.1.2'), 'tag')
-        self.assertEqual(self.call('rev-parse', 'v0.1.2^{commit}'), self.call('rev-parse', 'HEAD'))
-        self.assertEqual(self.call('for-each-ref', '--format=%(contents)', 'refs/tags/v0.1.2'), 'Totipo Android 0.1.2')
-        self.assertEqual(self.call('ls-remote', 'origin'), before)
-        with self.assertRaisesRegex(ValueError, 'local tag'): self.execute('tag-release')
-        with self.assertRaises(ValueError): self.execute('check-release')
-
-    def test_tag_rejects_dirty_main_drift_and_wrong_metadata(self):
-        self.prepared()
-        with self.assertRaises(ValueError): self.execute('tag-release')
-        self.commit()  # Not pushed; origin/main differs.
-        with self.assertRaisesRegex(ValueError, 'origin/main'): self.execute('tag-release')
-        self.sync()
-        for name, value in [('VERSION', '0.1.3\n'), ('VERSION_CODE', '4\n')]:
-            old = (self.root / name).read_text(); (self.root / name).write_text(value); self.commit(); self.sync()
-            with self.assertRaises(ValueError): self.execute('tag-release')
-            (self.root / name).write_text(old); self.commit(); self.sync()
-        self.tag('0.1.2'); self.sync(); self.call('tag', '-d', 'v0.1.2')
-        with self.assertRaisesRegex(ValueError, 'remote tag'): self.execute('tag-release')
-
-    def test_push_only_tag_reject_existing_and_wrong_peel(self):
-        self.prepared(commit=True); self.execute('tag-release')
-        remote_main = self.call('ls-remote', 'origin', 'refs/heads/main')
+        head = self.call('rev-parse', 'HEAD')
+        before = set(self.call('ls-remote', 'origin').splitlines())
         self.call('tag', '--no-sign', '-a', 'unrelated-fixture-tag', '-m', 'Must stay local')
         self.call('config', 'push.followTags', 'true')
-        self.execute('push-release-tag')
-        self.assertNotIn('unrelated-fixture-tag', self.call('ls-remote', 'origin'))
-        self.assertEqual(self.call('ls-remote', 'origin', 'refs/heads/main'), remote_main)
-        self.assertIn('refs/tags/v0.1.2', self.call('ls-remote', 'origin'))
-        with self.assertRaisesRegex(ValueError, 'remote tag'): self.execute('push-release-tag')
+        self.call('config', 'remote.origin.mirror', 'true')
+        self.call('config', 'remote.origin.push', '+refs/*:refs/*')
+        output = self.coordinates()
+        self.assertIn('source_commit: ' + head, output)
+        self.assertIn('version: 0.1.2', output)
+        self.assertIn('versionCode: 3', output)
+        self.assertIn('tag: v0.1.2', output)
+        self.assertIn('GitHub Release workflow inputs:', output)
+        after = set(self.call('ls-remote', 'origin').splitlines())
+        self.assertEqual(after - before, {
+            self.call('rev-parse', 'v0.1.2') + '\trefs/tags/v0.1.2',
+            head + '\trefs/tags/v0.1.2^{}'})
+        self.assertFalse(before - after)
+        self.assertEqual(self.call('cat-file', '-t', 'v0.1.2'), 'tag')
+        self.assertEqual(self.call('for-each-ref', '--format=%(contents)', 'refs/tags/v0.1.2'),
+                         'Totipo Android 0.1.2')
+        refs = self.call('show-ref')
+        self.assertEqual(output, self.coordinates())
+        self.assertEqual(json.loads(self.coordinates(True)), dict(version='0.1.2', version_code=3,
+                         tag='v0.1.2', source_commit=head))
+        self.assertEqual(refs, self.call('show-ref'))
+        self.assertEqual(after, set(self.call('ls-remote', 'origin').splitlines()))
+
+    def test_release_tag_local_only_resumes(self):
+        self.prepared(commit=True); self.tag('0.1.2')
+        oid = self.call('rev-parse', 'v0.1.2')
+        self.coordinates()
+        self.assertIn(oid + '\trefs/tags/v0.1.2', self.call('ls-remote', 'origin'))
+
+    def test_release_tag_dirty_staged_and_wrong_metadata(self):
+        self.prepared(commit=True)
+        (self.root / 'build.gradle.kts').write_text('dirty')
+        self.assert_reject_unchanged()
+        self.call('add', 'build.gradle.kts')
+        self.assert_reject_unchanged()
+        self.call('reset', '--hard', 'HEAD')
+        for name, value in [('VERSION', '0.1.3\n'), ('VERSION_CODE', '4\n')]:
+            old = (self.root / name).read_text()
+            (self.root / name).write_text(value); self.commit(); self.sync_main_only()
+            self.assert_reject_unchanged()
+            (self.root / name).write_text(old); self.commit(); self.sync_main_only()
+
+    def test_release_tag_tracking_and_live_main_mismatch(self):
+        self.prepared(commit=True)
+        head = self.call('rev-parse', 'HEAD')
+        parent = self.call('rev-parse', 'HEAD^')
+        self.call('update-ref', 'refs/remotes/origin/main', parent)
+        self.assert_reject_unchanged()
+        self.call('update-ref', 'refs/remotes/origin/main', head)
+        subprocess.run(['git', '--git-dir=' + str(self.remote), 'update-ref', 'refs/heads/main', parent], check=True)
+        self.assert_reject_unchanged()
+
+    def test_release_tag_conflicting_tags_no_force(self):
+        self.prepared(commit=True)
+        head = self.call('rev-parse', 'HEAD')
+        for args in [('--no-sign', 'v0.1.2'),
+                     ('--no-sign', '-a', 'v0.1.2', '-m', 'Wrong message'),
+                     ('--no-sign', '-a', 'v0.1.2', 'HEAD^', '-m', 'Totipo Android 0.1.2')]:
+            self.call('tag', *args)
+            self.assert_reject_unchanged()
+            self.call('push', '--no-follow-tags', 'origin', 'refs/tags/v0.1.2:refs/tags/v0.1.2')
+            self.assert_reject_unchanged()
+            self.call('tag', '-d', 'v0.1.2')
+            self.tag('0.1.2')  # Correct local tag must not overwrite bad remote.
+            self.call('config', 'push.followTags', 'true')
+            self.call('config', 'remote.origin.push', '+refs/tags/*:refs/tags/*')
+            self.assert_reject_unchanged()
+            self.call('tag', '-d', 'v0.1.2')
+            self.assert_reject_unchanged()  # Remote-only is never silently adopted.
+            self.call('push', '--no-follow-tags', 'origin', ':refs/tags/v0.1.2')
+        self.assertEqual(self.call('rev-parse', 'HEAD'), head)
+
+    def test_release_tag_remote_message_and_post_push_drift(self):
+        self.prepared(commit=True)
+        self.tag('0.1.2')
+        with self.context():
+            source.worktree()
+            remote = source.remote_refs()
+            oid = self.call('rev-parse', 'v0.1.2')
+            head = self.call('rev-parse', 'HEAD')
+            self.call('push', 'origin', 'refs/tags/v0.1.2:refs/tags/v0.1.2')
+            remote = source.remote_refs()
+            source.validate_remote_tag(remote, 'refs/tags/v0.1.2', '0.1.2', head, 3, oid)
+            with self.assertRaisesRegex(ValueError, 'shape'):
+                source.validate_remote_tag(remote, 'refs/tags/v0.1.2', '0.1.3', head, 3, oid)
+            with self.assertRaisesRegex(ValueError, 'metadata'):
+                source.validate_remote_tag(remote, 'refs/tags/v0.1.2', '0.1.2', head, 4, oid)
         self.call('push', 'origin', ':refs/tags/v0.1.2')
-        self.call('commit', '--allow-empty', '-m', 'TEST changed HEAD'); self.sync_main_only()
-        with self.assertRaisesRegex(ValueError, 'peel'): self.execute('push-release-tag')
+        original = source.git
+        def drift(*args):
+            result = original(*args)
+            if 'push' in args:
+                subprocess.run(['git', '--git-dir=' + str(self.remote), 'update-ref',
+                                'refs/heads/main', head + '^'], check=True)
+            return result
+        with self.context(), patch.object(source, 'git', side_effect=drift):
+            with self.assertRaisesRegex(ValueError, 'origin/main'):
+                source.execute('release-tag', '0.1.2')
+
+    def test_release_tag_readiness_and_push_endpoint_fail_before_mutation(self):
+        self.prepared(commit=True)
+        with self.context(), patch.object(source, 'source_ready', side_effect=ValueError('readiness failed')):
+            self.assert_reject_unchanged()
+        self.call('config', 'remote.origin.pushurl', str(self.base / 'elsewhere.git'))
+        self.assert_reject_unchanged()
+
+    def test_release_tag_remote_race_cannot_force_move_tag(self):
+        self.prepared(commit=True)
+        self.call('tag', '--no-sign', '-a', 'conflicting-fixture', 'HEAD^', '-m', 'Wrong source')
+        wrong = self.call('rev-parse', 'conflicting-fixture')
+        # Transfer the object without making it a release tag until the push race.
+        self.call('push', 'origin', 'refs/tags/conflicting-fixture:refs/tags/conflicting-fixture')
+        self.call('config', 'push.followTags', 'true')
+        self.call('config', 'remote.origin.mirror', 'true')
+        self.call('config', 'remote.origin.push', '+refs/*:refs/*')
+        original = source.git
+        def race(*args):
+            if 'push' in args:
+                subprocess.run(['git', '--git-dir=' + str(self.remote), 'update-ref',
+                                'refs/tags/v0.1.2', wrong], check=True)
+            return original(*args)
+        with self.context(), patch.object(source, 'git', side_effect=race):
+            with self.assertRaises(subprocess.CalledProcessError):
+                source.execute('release-tag', '0.1.2')
+        self.assertIn(wrong + '\trefs/tags/v0.1.2', self.call('ls-remote', 'origin'))
+        self.assertNotEqual(wrong, self.call('rev-parse', 'v0.1.2'))
+
+    def test_release_tag_unreadable_remote_object_fails_without_mutation(self):
+        self.prepared(commit=True); self.coordinates()
+        with patch.object(source, 'validate_remote_tag', side_effect=ValueError('Remote unavailable')):
+            self.assert_reject_unchanged()
 
     def sync_main_only(self):
         self.call('push', '--no-follow-tags', 'origin', 'main')
-
-    def test_push_remote_main_mismatch(self):
-        self.prepared(commit=True); self.execute('tag-release')
-        self.call('commit', '--allow-empty', '-m', 'TEST unpushed main')
-        with self.assertRaisesRegex(ValueError, 'origin/main'): self.execute('push-release-tag')
 
     def test_caller_worktree_branch_and_store_boundary(self):
         self.call('switch', '-c', 'other')
@@ -270,6 +383,7 @@ class SourceTests(unittest.TestCase):
             self.assertIn('exec python3 -B ${./tools/release}/release.py ${name} "$@"', text)
             self.assertIn('export PATH=${pkgs.lib.makeBinPath', text)
             self.assertNotIn('cd ${', text)
+            self.assertIn('releaseCommands = [ "prepare-release" "release-tag" ];', text)
 
     def test_real_cli_outside_worktree_with_public_identity(self):
         import re
@@ -296,9 +410,16 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(before, (self.call('rev-parse', 'HEAD'), self.call('show-ref'), self.call('ls-remote', 'origin')))
         self.assertEqual(set(self.call('diff', '--name-only').splitlines()), source.METADATA)
         self.commit(); self.sync_main_only()
-        for command in ('check-release', 'tag-release', 'push-release-tag'):
-            subprocess.run([sys.executable, '-B', str(REPO / 'tools/release/release.py'), command, '0.1.2'],
-                           cwd=self.root, check=True, stdout=subprocess.DEVNULL)
+        for command in ('release-tag', 'release-tag'):
+            result = subprocess.run([sys.executable, '-B', str(REPO / 'tools/release/release.py'), command, '0.1.2'],
+                                    cwd=self.root, check=True, capture_output=True, text=True)
+            self.assertIn('source_commit: ' + self.call('rev-parse', 'HEAD'), result.stdout)
+            self.assertIn('GitHub Release workflow inputs:', result.stdout)
+        import json
+        result = subprocess.run([sys.executable, '-B', str(REPO / 'tools/release/release.py'),
+                                 'release-tag', '0.1.2', '--json'], cwd=self.root, check=True,
+                                capture_output=True, text=True)
+        self.assertEqual(json.loads(result.stdout)['source_commit'], self.call('rev-parse', 'HEAD'))
         self.assertIn('refs/tags/v0.1.2', self.call('ls-remote', 'origin'))
 
     def test_code_canonical_parser(self):

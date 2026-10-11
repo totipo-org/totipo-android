@@ -62,7 +62,7 @@
         androidPackage = pkgs.callPackage ./package.nix {
           inherit jdk gradle androidSdk;
         };
-        releaseCommands = [ "prepare-release" "check-release" "tag-release" "push-release-tag" ];
+        releaseCommands = [ "prepare-release" "release-tag" ];
         releasePrograms = builtins.listToAttrs (map (name: {
           inherit name;
           value = pkgs.writeShellScriptBin name ''

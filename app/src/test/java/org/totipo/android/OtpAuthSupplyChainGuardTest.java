@@ -44,7 +44,7 @@ public final class OtpAuthSupplyChainGuardTest {
 
     @Test public void reviewedSupplyChainInputsRemainPinned() throws Exception {
         // Stable build scripts remain fully pinned; VERSION and VERSION_CODE are release metadata.
-        // App script and flake rebaselined once for the reviewed release-source migration/apps.
+        // Flake pin reviewed for the two-command release interface; toolchain inputs unchanged.
         var baseline = java.util.Map.ofEntries(
                 java.util.Map.entry("app/build.gradle.kts", "eb6dbefbbdef74771d5d428969248dd936b40955c0b8286adcb07ff8db41e98c"),
                 java.util.Map.entry("build.gradle.kts", "08ecc23eea4637d5b5d0bf36b9f9d39f67e23fa3a6be57f34f594d6ad8daa348"),
@@ -55,7 +55,7 @@ public final class OtpAuthSupplyChainGuardTest {
                 java.util.Map.entry("gradle/verification-metadata.xml", "0492327c6a5445cec7c140630598f97853074573a4acf2e2d8565ce481cbfba4"),
                 java.util.Map.entry("app/gradle.lockfile", "4d3aee17359005cc60a5f3286c4583a35fffcdce91bb6992ad792eebf5c42226"),
                 java.util.Map.entry("buildscript-gradle.lockfile", "22efaa36cdbc4212cb62beb29837199812865f2b303caaef124b07e9915fc1a0"),
-                java.util.Map.entry("flake.nix", "dbc85c66c608a2f8866c2cae24a66b96238d08a3591b21ee959f2ca3da8e78b2"),
+                java.util.Map.entry("flake.nix", "2942b4d0ae94a5c9ab47a0a24c00c4a8a6b355910a04d90fcb2a1dee81234ef8"),
                 // Rebaselined for the intentional flake update in 5f2fdd8.
                 java.util.Map.entry("flake.lock", "44728fcfd8529462cb415b186ee4ce3400343dd911d325b6a965bd386b9f7749"),
                 // Rebaselined for the verified Google Play SDK Index snapshot refresh.

@@ -1,10 +1,9 @@
 # Protected Android releases
 
-The permanent public signing identity is installed for review and commit.
-See [public identity and provisioning status](signing/README.md). Private-key backup and
-protected-environment setup are human-reported only; no production
-signing or release has occurred in this milestone. No Android production key is
-shared with Totipo Java.
+Release 0.1.2 (versionCode 3) is the first successfully published release and remains
+unchanged. Its permanent public signing identity is committed; see
+[public identity and provisioning status](signing/README.md). No Android production
+key is shared with Totipo Java.
 
 Release source has two mutable authorities: `VERSION` supplies versionName and
 `VERSION_CODE` supplies Android versionCode. Both are canonical files ending in one
@@ -13,23 +12,33 @@ leading zeros. Gradle fails on missing/malformed values without a default. Stabl
 reviewed build/dependency scripts remain fully supply-chain pinned; metadata edits
 need no pin update. VERSION_CODE is included in the Nix Android source filter.
 
-Future release preparation uses the repository's x86_64-linux Nix apps, from the
-actual working Git repository (including a subdirectory):
+Use exactly two release-specific commands from the repository root, with the next
+reviewed canonical stable version substituted for `<VERSION>`:
 
 ```sh
-nix run path:.#prepare-release -- 0.1.2
-# Review VERSION and VERSION_CODE; commit normally, push main normally, wait for CI.
-nix run path:.#check-release -- 0.1.2
-nix run path:.#tag-release -- 0.1.2
-nix run path:.#push-release-tag -- 0.1.2
-# Dispatch the normal protected GitHub Release workflow on reviewed main.
+nix run path:.#prepare-release -- <VERSION>
 ```
 
-These commands are future instructions. This machinery migration retains source
-0.1.1 / code 2; it does not prepare 0.1.2. There is no automatic commit, main push,
-workflow dispatch, signing or publication. Tagging creates one local annotated
-`v<VERSION>` tag with message `Totipo Android <VERSION>`; the push app sends only
-that tag, without force or automatic follow-tags. Git tags are unsigned.
+Review the diff, commit normally, push main normally, and wait for ordinary CI as
+desired. Then run:
+
+```sh
+nix run path:.#release-tag -- <VERSION>
+```
+
+`prepare-release` prints the resulting VERSION and VERSION_CODE and leaves their
+exact diff unstaged/uncommitted. `release-tag` independently performs all readiness
+checks, creates the unsigned annotated `v<VERSION>` tag if needed with exact message
+`Totipo Android <VERSION>`, pushes only that tag without force/follow-tags, and
+revalidates the remote object, peeled commit, source metadata and live main.
+It prints version, versionCode, tag, the full 40-character `source_commit`, and
+copy-ready GitHub Release workflow inputs (`version` and `source_commit`). Optional
+`--json` prints deterministic version/version_code/tag/source_commit coordinates.
+
+Manually run the normal protected Release workflow on main with those printed
+inputs, then approve the `android-release` environment. These apps never commit,
+push main, dispatch workflows, sign APKs or create GitHub Releases. Do not rerun
+preparation for the published 0.1.2 release.
 
 Every valid annotated Android release tag consumes its semantic version and code,
 even if publication subsequently fails. Preparation alone consumes nothing: an
@@ -47,7 +56,8 @@ build metadata and leading-zero forms are unsupported.
 
 Each command reads origin with `git ls-remote` and compares release tag object IDs
 and peels with local objects. No fetch or ref mutation is performed to inspect
-history. Missing/stale/extra local release tags fail: synchronize and review the
+history. Target remote tags are fetched only into a disposable isolated Git object
+database for full validation, leaving worktree refs unchanged. Missing/stale/extra local release tags fail: synchronize and review the
 repository's tags before retrying. Network/authentication errors fail closed. The
 Nix wrappers include Python, Git, OpenSSH, JDK/keytool and CA certificates; normal
 Git/SSH credentials and configuration still belong to the caller. No SDK is needed.
@@ -63,13 +73,26 @@ unrelated dirty/untracked or staged path is rejected. File replacements are atom
 individually; interruption between replacements leaves a partial diff which must
 be reviewed/reset before retrying.
 
-Check is read-only and permits that exact prepared diff or clean committed source.
-Tag requires clean committed main, both live remote main and local origin/main at
-HEAD, absent local/remote target tag, and matching source metadata/readiness. Push
-also requires the local annotated target tag to peel to HEAD and the remote target
-to remain absent. Existing tags are never moved, deleted, adopted or overwritten.
-All four commands validate canonical wiring, application ID, reviewed build pins,
-public certificate/fingerprint and absence of tracked private key material.
+`release-tag` requires clean committed main, both live remote main and local
+origin/main equal to HEAD, matching source VERSION/code, coherent consumed history,
+canonical Gradle wiring, application ID, stable supply-chain inventory, valid public
+signer and the private-material guard. It rejects multiple/different push endpoints.
+A correct local-only target tag resumes by pushing it; a correct local/remote pair
+is a successful no-op with the same printed coordinates. Wrong/lightweight/signed/
+misnamed/message-mismatched/source-mismatched tags fail without moving/deleting
+anything. A remote-only target is rejected until the human synchronizes and reviews
+its local object. No tag is automatically adopted or overwritten.
+
+Checks precede mutation and remote state is rechecked immediately before and after
+push. Git cannot transact main and a separate tag across client/network failures:
+a push followed by a failed verification can leave the exact local/remote tag in
+place. Resolve the reported condition and repeat; the command validates that state
+without recreation. It never reports success on unverified remote state.
+
+For diagnostic / developer use only, the internal read-only CLI
+`python3 -B tools/release/release.py check-release <VERSION>` permits the exact
+prepared diff or clean committed source. It is not a public Nix app or a required
+release step.
 
 Qualify the unsigned APK from the committed source. Its observed versionName and
 versionCode remain authoritative in provenance through signing; changing source
@@ -82,8 +105,8 @@ unsigned APK. Qualification checks versionName against VERSION once. Downstream
 verification compares both APKs against validated provenance and rehashes the
 unsigned input. The signed APK never supplies its own expected version.
 
-Dispatch `.github/workflows/release.yml` on main with VERSION and the full reviewed
-current main commit SHA. Every job revalidates source, VERSION, annotated local and
+Dispatch `.github/workflows/release.yml` on main with the printed `version` and `source_commit` (full reviewed
+current main commit SHA). Every job revalidates source, VERSION, annotated local and
 remote tag, current remote main, clean checkout and committed public signing identity.
 Main moving during approval fails closed. Release concurrency is serialized.
 

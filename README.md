@@ -305,9 +305,9 @@ keys and signature policy are unchanged. Nix owns the build environment and
 qualification; CI does not separately provision Java, Android or Gradle, refresh
 dependency state or publish releases. The revised workflow has not yet run remotely.
 
-Release preparation, source checking and local annotated tagging use the
-repository-native `prepare-release`, `check-release`, `tag-release` and
-`push-release-tag` Nix apps. See [the release procedure](release/README.md) for
+The two release-specific Nix apps are `prepare-release` before human review/commit
+and `release-tag` after pushing main. `release-tag` validates, creates/pushes the
+annotated tag and prints the exact source commit and protected workflow inputs. See [the release procedure](release/README.md) for
 consumed-tag code allocation, validation and the deliberate commit/approval boundaries.
 
 ## Limitations

@@ -184,8 +184,50 @@ class ReleaseTests(unittest.TestCase):
         uses = re.findall(r'uses: ([^\s]+)', text)
         self.assertTrue(uses)
         self.assertTrue(all(re.fullmatch(r'[\w/-]+@[0-9a-f]{40}', u) for u in uses))
+        reviewed = {
+            'actions/checkout': ('3d3c42e5aac5ba805825da76410c181273ba90b1', 'v7.0.1'),
+            'cachix/install-nix-action': ('13d8dd58da0234aa297dedd986986ccb8e7f3e24', 'v31.11.1'),
+            'actions/upload-artifact': ('cf430e030ddbb5b0abf93d22962f4752f3646cd9', 'v7.0.2'),
+            'actions/download-artifact': ('9000827ccba6bdab643e8b6fd33ac0654aef8333', 'v8.0.2'),
+        }
+        workflows = {p.name: p for p in path.parent.iterdir() if p.suffix in ('.yml', '.yaml')}
+        self.assertEqual(set(workflows), {'ci.yml', 'release.yml'})
+        # Include local action/reusable-workflow files, so a new uses cannot evade coverage.
+        candidates = set(workflows.values()) | set(path.parents[1].rglob('*.yml')) | set(path.parents[1].rglob('*.yaml'))
+        seen = set()
+        for candidate in candidates:
+            contents = candidate.read_text()
+            entries = [line for line in contents.splitlines() if re.search(r'\buses\s*:', line)]
+            for line in entries:
+                match = re.fullmatch(r'\s*(?:-\s*)?uses: ([\w/-]+)@([0-9a-f]{40}) # (v[0-9]+\.[0-9]+\.[0-9]+)', line)
+                self.assertIsNotNone(match, line)
+                action, sha, tag = match.groups()
+                self.assertIn(action, reviewed)
+                self.assertEqual((sha, tag), reviewed[action])
+                seen.add(action)
+            self.assertNotIn('ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION', contents)
+        self.assertEqual(seen, set(reviewed))
+        self.assertIn('REQUESTED_COMMIT: ${{ inputs.source_commit }}', text)
+        self.assertEqual(text.count('persist-credentials: false'), 4)
+        self.assertEqual(text.count('fetch-depth: 0'), 4)
+        self.assertEqual(text.count('archive: true'), 3)
+        self.assertEqual(text.count('overwrite: false'), 3)
+        self.assertEqual(text.count('include-hidden-files: false'), 3)
+        self.assertEqual(text.count('retention-days: 7'), 3)
+        self.assertNotIn('artifact-ids:', text)
+        self.assertNotIn('github-token:', text)
+        self.assertNotIn('run-id:', text)
         jobs = re.split(r'^  (qualify|sign|verify|publish):\n', text, flags=re.M)
         sections = dict(zip(jobs[1::2], jobs[2::2]))
+        self.assertEqual(set(sections), {'qualify', 'sign', 'verify', 'publish'})
+        self.assertNotIn('needs:', sections['qualify'])
+        for job, prior, artifact in [('sign', 'qualify', 'qualified-unsigned'),
+                                     ('verify', 'sign', 'signed-candidate'),
+                                     ('publish', 'verify', 'verified-release')]:
+            self.assertIn('needs: ' + prior, sections[job])
+            self.assertIn('name: ' + artifact, sections[job])
+        self.assertEqual(text.count('contents: write'), 1)
+        self.assertNotIn('id-token:', text)
         for job in ('qualify', 'verify', 'publish'):
             self.assertNotIn('secrets.', sections[job])
             self.assertNotIn('environment:', sections[job])

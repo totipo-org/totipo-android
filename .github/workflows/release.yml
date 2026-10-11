@@ -7,7 +7,7 @@ on:
         description: Exact release VERSION (existing annotated v<VERSION> tag required)
         required: true
         type: string
-      commit:
+      source_commit:
         description: Full reviewed current main commit SHA
         required: true
         type: string
@@ -25,7 +25,7 @@ defaults:
 
 env:
   REQUESTED_VERSION: ${{ inputs.version }}
-  REQUESTED_COMMIT: ${{ inputs.commit }}
+  REQUESTED_COMMIT: ${{ inputs.source_commit }}
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
@@ -55,10 +55,13 @@ jobs:
         run: nix flake check --print-build-logs path:.
       - name: Materialize same derivation and prepare verified unsigned bundle
         run: nix develop path:.#ci --command python3 -B tools/release/release.py prepare --bundle "$RUNNER_TEMP/bundle"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualified-unsigned
           path: ${{ runner.temp }}/bundle
+          archive: true
+          overwrite: false
+          include-hidden-files: false
           if-no-files-found: error
           retention-days: 7
 
@@ -79,7 +82,7 @@ jobs:
         with:
           extra_nix_config: |
             accept-flake-config = true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: qualified-unsigned
           path: ${{ runner.temp }}/bundle
@@ -125,10 +128,13 @@ jobs:
           rm -rf "$private_dir"
       - name: Check original unsigned hash after secret step has ended
         run: nix develop path:.#ci --command python3 -B tools/release/release.py bundle --bundle "$RUNNER_TEMP/bundle"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-candidate
           path: ${{ runner.temp }}/bundle
+          archive: true
+          overwrite: false
+          include-hidden-files: false
           if-no-files-found: error
           retention-days: 7
 
@@ -146,16 +152,19 @@ jobs:
         with:
           extra_nix_config: |
             accept-flake-config = true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signed-candidate
           path: ${{ runner.temp }}/bundle
       - name: Verify pinned signer, release boundaries, payload equivalence and input immutability
         run: nix develop path:.#ci --command python3 -B tools/release/release.py finalize --bundle "$RUNNER_TEMP/bundle" --output "$RUNNER_TEMP/verified"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verified-release
           path: ${{ runner.temp }}/verified
+          archive: true
+          overwrite: false
+          include-hidden-files: false
           if-no-files-found: error
           retention-days: 7
 
@@ -175,7 +184,7 @@ jobs:
         with:
           extra_nix_config: |
             accept-flake-config = true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: verified-release
           path: ${{ runner.temp }}/bundle

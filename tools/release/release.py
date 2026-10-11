@@ -293,16 +293,19 @@ def publish(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['identity', 'guard', 'prepare', 'bundle', 'finalize', 'publish',
-                        'prepare-release', 'check-release', 'tag-release', 'push-release-tag'])
+                        'prepare-release', 'check-release', 'release-tag'])
     parser.add_argument('target', nargs='?')
     parser.add_argument('--version', default=os.environ.get('REQUESTED_VERSION'))
     parser.add_argument('--commit', default=os.environ.get('REQUESTED_COMMIT'))
     parser.add_argument('--bundle', type=Path)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--json', action='store_true', help='Machine-readable release-tag coordinates')
     args = parser.parse_args()
-    if args.command in ('prepare-release', 'check-release', 'tag-release', 'push-release-tag'):
+    if args.json and args.command != 'release-tag':
+        parser.error('--json requires release-tag')
+    if args.command in ('prepare-release', 'check-release', 'release-tag'):
         import source
-        source.execute(args.command, args.target)
+        source.execute(args.command, args.target, args.json)
     elif args.command == 'identity':
         identity(args.version, args.commit)
     elif args.command == 'guard':
