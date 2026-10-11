@@ -14,14 +14,13 @@ import os
 from pathlib import Path
 import subprocess
 import zipfile
+from android_harness import AndroidToolchain, compile_java, dex_classes, link_manifest, append_entries, copy_apk_entries, test_sign
 
 root = Path(__file__).resolve().parents[2]
 out = root / '.gradle/security-qualification'
 out.mkdir(parents=True, exist_ok=True)
-sdk = Path(os.environ['ANDROID_HOME'])
-bt = sdk / 'build-tools/36.0.0'
-platform = sdk / 'platforms/android-37.0/android.jar'
-java = Path(os.environ['JAVA_HOME']) / 'bin'
+tc = AndroidToolchain.discover()
+sdk, bt, platform, java = tc.sdk, tc.bt, tc.platform, tc.java
 package = 'org.totipo.securityqualification'
 parser = argparse.ArgumentParser()
 parser.add_argument('--serial', default='37311JEGR05916')
@@ -52,11 +51,12 @@ if args.build_only or args.prepare or args.update_harness:
     classes, dex = out / 'classes', out / 'dex'
     classes.mkdir(exist_ok=True)
     dex.mkdir(exist_ok=True)
-    run([java / 'javac', '-source', '17', '-target', '17', '-classpath', os.pathsep.join(map(str, [platform, app, *jars])), '-d', classes,
-         root / 'tools/device/TokenLifecycleRegression.java', root / 'tools/device/SecurityRegression.java'])
+    names = ['TokenLifecycleRegression', 'SecurityRegression']
+    class_files = compile_java(tc, [root / 'tools/device' / (name + '.java') for name in names],
+                               classes, [platform, app, *jars],
+                               ['org/totipo/android/' + name for name in names])
     if args.prepare or args.update_harness:
-        run([bt / 'd8', '--min-api', '30', '--lib', platform, '--classpath', app,
-             *sum([['--classpath', str(jar)] for jar in jars], []), '--output', dex, *classes.rglob('*.class')])
+        dex_classes(tc, class_files, dex, min_api=30, classpath=[app, *jars])
         manifest = out / 'AndroidManifest.xml'
         manifest.write_text('''<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.totipo.securityqualification">
 <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="37" />
@@ -69,20 +69,18 @@ if args.build_only or args.prepare or args.update_harness:
 </manifest>''')
         unsigned, aligned, signed = out / 'unsigned.apk', out / 'aligned.apk', out / 'tests.apk'
         manifest_apk = out / 'manifest.apk'
-        run([bt / 'aapt2', 'link', '-I', platform, '--manifest', manifest, '-o', manifest_apk])
+        link_manifest(tc, manifest, manifest_apk)
         source_apk = root / 'app/build/outputs/apk/release/app-release-unsigned.apk'
-        with zipfile.ZipFile(unsigned, 'w') as target, zipfile.ZipFile(source_apk) as source, zipfile.ZipFile(manifest_apk) as linked:
-            target.writestr('AndroidManifest.xml', linked.read('AndroidManifest.xml'))
+        with zipfile.ZipFile(unsigned, 'w'):
+            pass
+        copy_apk_entries(manifest_apk, unsigned, ['AndroidManifest.xml'])
+        with zipfile.ZipFile(source_apk) as source:
             app_dex = [n for n in source.namelist() if n.startswith('classes') and n.endswith('.dex')]
-            for name in source.namelist():
-                if name in app_dex or name == 'resources.arsc' or name.startswith('res/'):
-                    target.writestr(name, source.read(name))
-            target.write(dex / 'classes.dex', 'classes' + str(len(app_dex) + 1) + '.dex')
-        run([bt / 'zipalign', '-f', '-P', '16', '4', unsigned, aligned])
-        key = out / 'test-only.p12'
-        if not key.exists():
-            run([java / 'keytool', '-genkeypair', '-keystore', key, '-storepass', 'test-only', '-keypass', 'test-only', '-alias', 'security-tests', '-dname', 'CN=Disposable Security Tests', '-keyalg', 'RSA', '-validity', '3650'])
-        run([bt / 'apksigner', 'sign', '--ks', key, '--ks-pass', 'pass:test-only', '--out', signed, aligned])
+            selected = [n for n in source.namelist() if n in app_dex or n == 'resources.arsc' or n.startswith('res/')]
+        copy_apk_entries(source_apk, unsigned, selected)
+        append_entries(unsigned, [(dex / 'classes.dex', 'classes' + str(len(app_dex) + 1) + '.dex')])
+        test_sign(tc, unsigned, aligned, signed, out / 'test-only.p12',
+                  alias='security-tests', dname='CN=Disposable Security Tests', page_align=True)
         existing = adb('shell', 'pm', 'path', package, capture_output=True, text=True, check=False)
         assert existing.returncode in (0, 1), 'Unable to inspect installed test package'
         assert bool(existing.stdout.strip()) == args.update_harness, 'Use --prepare for a new isolated package or --update-harness for a physical harness correction'

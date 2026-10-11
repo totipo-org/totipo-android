@@ -31,7 +31,8 @@ public final class SafOutboundRegression extends Instrumentation {
     private void waitIdle() throws Exception {
         long end = SystemClock.uptimeMillis() + 120000;
         while (SystemClock.uptimeMillis() < end) {
-            synchronized (isolated) { if (!(Boolean)field(isolated, "operating") && !(Boolean)field(isolated, "viewQueued") && !(Boolean)field(isolated, "providerActive")) return; }
+            synchronized (isolated) { if (!(Boolean)field(isolated, "operating") && !(Boolean)field(isolated, "viewQueued") && !(Boolean)field(isolated, "providerActive")
+                    && !(Boolean)field(isolated, "syncPending") && !(Boolean)field(isolated, "syncDrainQueued")) return; }
             SystemClock.sleep(20);
         }
         throw new AssertionError("Worker timed out");
@@ -132,6 +133,13 @@ public final class SafOutboundRegression extends Instrumentation {
             Files.write(root.resolve("vault"), canonicalVault);
             LocalStoreQualification.run(directory);
             check(true, "r19_local_coordinated_store_and_orphan_veto");
+            // No controller/session owns this root yet: assert the fixture precondition
+            // before opened() can request automatic Sync, never against a transient view.
+            try (var files = Files.list(root)) {
+                check(files.map(path -> path.getFileName().toString()).toList().equals(List.of("vault"))
+                        && Arrays.equals(canonicalVault, Files.readAllBytes(root.resolve("vault"))),
+                        "isolated_replica_empty_before_observation");
+            }
             var ownerConstructor = ownerClass.getDeclaredConstructor(Path.class); ownerConstructor.setAccessible(true);
             Object owner = ownerConstructor.newInstance(directory);
             Class<?> controllerClass = loader.loadClass("org.totipo.android.AndroidVaultController");
@@ -182,12 +190,33 @@ public final class SafOutboundRegression extends Instrumentation {
                 }
                 result.putString("stream", "R19 BLOCKED PASS checks=" + checks + "\n"); finish(-1, result); return;
             }
-            check(tokens() == 0, "isolated_replica_initially_empty");
-            command("importProviderChanges", new Class<?>[0]); waitIdle(); waitTokens((int)before.keySet().stream().filter(n -> n.matches("objects-v1/[0-9a-f]{64}")).count());
+            // Unlock itself requests import/observe/publish. Do not race it with
+            // a second request or require the pre-import presentation to be visible.
+            waitTokens((int)before.keySet().stream().filter(n -> n.matches("objects-v1/[0-9a-f]{64}")).count());
             check(field(isolated, "vault") == coordinator && field(coordinator, "session") == session
                     && field(coordinator, "store") == store && field(isolated, "owner") == owner, "same_session_owner_and_store");
             check(Arrays.equals(canonicalVault, Files.readAllBytes(root.resolve("vault"))), "provider_vault_not_adopted");
-            check(((String)call(call(isolated, "syncView"), "message")).contains("Changes imported"), "import_status_honest");
+            check(call(call(coordinator, "sessionVaultId"), "hex").equals(java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(canonicalVault))), "matching_session_vault_identity");
+            check("Verified against bound shared folder".equals(field(isolated, "lastSyncResult")), "automatic_open_sync_verified");
+            Map<String, String> imported = new TreeMap<>();
+            try (var files = Files.list(root.resolve("objects-v1"))) {
+                for (Path path : files.toList()) imported.put("objects-v1/" + path.getFileName(), java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path))));
+            }
+            Map<String, String> expectedImported = new TreeMap<>(before);
+            expectedImported.keySet().removeIf(name -> !name.matches("objects-v1/[0-9a-f]{64}"));
+            check(imported.equals(expectedImported), "exact_matching_fixture_objects_imported");
+            Set<String> accounts = new TreeSet<>();
+            for (Object token : (List<?>)call(call(call(isolated, "snapshot"), "view"), "tokens")) {
+                List<?> alternatives = (List<?>)call(token, "alternatives");
+                check(!(Boolean)call(token, "conflict") && alternatives.size() == 1, "matching_fixture_single_alternative");
+                Object descriptor = alternatives.get(0);
+                check("M3A public fixture".equals(call(descriptor, "issuer")), "matching_fixture_issuer");
+                accounts.add((String)call(descriptor, "account"));
+            }
+            check(tokens() == 3 && accounts.equals(Set.of("test 0", "test 1", "test 2")), "exact_matching_fixture_accounts");
+            check(before.equals(inventory(uri)), "automatic_open_sync_zero_provider_mutation");
             Object firstToken = ((List<?>)call(call(call(isolated, "snapshot"), "view"), "tokens")).get(0);
             Object id = call(firstToken, "id");
             command("showCode", new Class<?>[]{loader.loadClass("org.totipo.TokenId")}, id); waitIdle();
@@ -220,7 +249,7 @@ public final class SafOutboundRegression extends Instrumentation {
                 expected = files.filter(path -> !before.containsKey("objects-v1/" + path.getFileName())).toList();
             }
             check(!expected.isEmpty(), "isolated_authorship_created_missing_objects");
-            command("publishLocalChanges", new Class<?>[0]); waitIdle();
+            // Add has already requested automatic Sync; waitIdle includes its queued drain.
             check(call(call(isolated, "syncView"), "message").equals("Local changes published"), "production_postflight_verified_publication");
             check(field(field(isolated, "vault"), "session") == writerSession, "writer_session_retained");
             Map<String, String> after = inventory(uri);

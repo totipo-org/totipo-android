@@ -32,7 +32,8 @@ public final class SafBootstrapRegression extends Instrumentation {
     private void waitIdle() throws Exception {
         long end = SystemClock.uptimeMillis() + 120000;
         while (SystemClock.uptimeMillis() < end) {
-            synchronized (isolated) { if (!(Boolean)field(isolated, "operating") && !(Boolean)field(isolated, "viewQueued") && !(Boolean)field(isolated, "providerActive")) return; }
+            synchronized (isolated) { if (!(Boolean)field(isolated, "operating") && !(Boolean)field(isolated, "viewQueued") && !(Boolean)field(isolated, "providerActive")
+                    && !(Boolean)field(isolated, "syncPending") && !(Boolean)field(isolated, "syncDrainQueued")) return; }
             SystemClock.sleep(20);
         }
         throw new AssertionError("Worker timed out");
@@ -124,6 +125,14 @@ public final class SafBootstrapRegression extends Instrumentation {
             Class<?> ownerClass = loader.loadClass("org.totipo.android.LocalReplicaOwner");
             directory = Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "m3a-isolated-");
             Path root = directory.resolve("totipo-vault"); Files.createDirectories(root);
+            if (mode.equals("join")) {
+                // Durable empty-replica safety is checked before controller/session observation.
+                try (var entries = Files.list(root)) {
+                    check(entries.findAny().isEmpty(), "join_local_empty_before_observation");
+                }
+                check(!Files.exists(root.resolve("vault")) && !Files.exists(root.resolve("objects-v1")),
+                        "join_local_vault_and_objects_absent_before_observation");
+            }
             var ownerConstructor = ownerClass.getDeclaredConstructor(Path.class); ownerConstructor.setAccessible(true);
             Object owner = ownerConstructor.newInstance(directory);
             Class<?> controllerClass = loader.loadClass("org.totipo.android.AndroidVaultController");
@@ -155,18 +164,39 @@ public final class SafBootstrapRegression extends Instrumentation {
                 check(!Files.exists(root.resolve("vault")),"wrong_password_local_vault_absent");
                 check(!Files.exists(root.resolve("objects-v1")),"wrong_password_local_objects_unchanged");
                 check(before.equals(inventory(uri)),"wrong_password_provider_unchanged");
+                check(call(call(isolated,"snapshot"),"state").toString().equals("NO_LOCAL_VAULT")
+                        && field(isolated,"vault")==null,"wrong_password_no_session");
                 command("joinExistingVault",new Class<?>[]{char[].class},new char[0]); waitIdle();
                 check(call(call(isolated,"snapshot"),"state").toString().equals("OPEN"),"joined_open");
-                check(tokens()==0,"join_no_automatic_import");
+                // RETIRED M3C product requirement: join_no_automatic_import deliberately
+                // required Join/Import separation. Current Join/open triggers ordinary Sync.
+                // Never require even transient post-Join emptiness or an explicit first Import.
                 Object coordinator=field(isolated,"vault"),session=field(coordinator,"session");
                 byte[] local=Files.readAllBytes(root.resolve("vault"));
                 String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(local));
                 check(hash.equals(before.get("vault")),"exact_local_provider_vault_hash");
-                check(call(session,"vaultId").equals(loader.loadClass("org.totipo.Totipo").getMethod("vaultId",byte[].class).invoke(null,local)),"joined_vault_id");
+                check(call(coordinator,"sessionVaultId").equals(loader.loadClass("org.totipo.Totipo").getMethod("vaultId",byte[].class).invoke(null,local)),"joined_vault_id");
                 recordInventory("local",Map.of("vault",hash));
-                command("importProviderChanges",new Class<?>[0]);waitIdle();waitTokens(3);
-                check(field(coordinator,"session")==session,"join_import_same_session");
-                check(before.equals(inventory(uri)),"join_import_provider_unchanged");
+                waitTokens(3); waitIdle();
+                check("Verified against bound shared folder".equals(field(isolated,"lastSyncResult")),"join_automatic_sync_verified");
+                Map<String,String> imported=new TreeMap<>(),expectedImported=new TreeMap<>(before);
+                expectedImported.keySet().removeIf(name -> !name.matches("objects-v1/[0-9a-f]{64}"));
+                try(var files=Files.list(root.resolve("objects-v1"))) {
+                    for(Path path:files.toList()) imported.put("objects-v1/"+path.getFileName(),java.util.HexFormat.of().formatHex(
+                            java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path))));
+                }
+                check(expectedImported.size()==3 && imported.equals(expectedImported),"join_exact_provider_objects_imported");
+                Set<String> accounts=new TreeSet<>();
+                for(Object token:(List<?>)call(call(call(isolated,"snapshot"),"view"),"tokens")) {
+                    List<?> alternatives=(List<?>)call(token,"alternatives");
+                    check(!(Boolean)call(token,"conflict") && alternatives.size()==1,"join_fixture_single_alternative");
+                    Object descriptor=alternatives.get(0);
+                    check("M3A public fixture".equals(call(descriptor,"issuer")),"join_fixture_issuer");
+                    accounts.add((String)call(descriptor,"account"));
+                }
+                check(tokens()==3 && accounts.equals(Set.of("test 0","test 1","test 2")),"join_exact_fixture_accounts");
+                check(field(isolated,"vault")==coordinator && field(coordinator,"session")==session,"join_automatic_sync_same_session");
+                check(before.equals(inventory(uri)),"join_automatic_sync_provider_unchanged");
             } else {
                 command("create",new Class<?>[]{char[].class},new char[0]);waitIdle();
                 check(call(call(isolated,"snapshot"),"state").toString().equals("OPEN"),"local_created_open");

@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 import time
-import zipfile
+from android_harness import AndroidToolchain, compile_java, dex_classes, link_manifest, append_entries
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / '.gradle/m3d-syncthing'
@@ -40,15 +40,11 @@ def save(path, value):
 
 
 def build():
-    sdk = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT'])
-    bt = sdk / 'build-tools/36.0.0'
-    platform = sdk / 'platforms/android-37.0/android.jar'
+    tc = AndroidToolchain.discover()
     classes, dex = OUT / 'classes', OUT / 'dex'
-    classes.mkdir(exist_ok=True); dex.mkdir(exist_ok=True)
-    run([Path(os.environ['JAVA_HOME']) / 'bin/javac', '-source', '17', '-target', '17',
-         '-classpath', platform, '-d', classes, ROOT / 'tools/device/SyncthingE2eRegression.java'])
-    run([bt / 'd8', '--min-api', '26', '--lib', platform, '--output', dex,
-         *sorted(classes.glob('org/totipo/syncthingqualification/*.class'))])
+    class_files = compile_java(tc, [ROOT / 'tools/device/SyncthingE2eRegression.java'], classes,
+                               [tc.platform], ['org/totipo/syncthingqualification/SyncthingE2eRegression'])
+    dex_classes(tc, class_files, dex)
     manifest = OUT / 'AndroidManifest.xml'
     manifest.write_text(f'''<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{PACKAGE}">
 <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37" />
@@ -56,9 +52,8 @@ def build():
 <instrumentation android:name="{PACKAGE}.SyncthingE2eRegression" android:targetPackage="org.totipo.android" />
 </manifest>\n''')
     apk = OUT / 'observer-unsigned.apk'
-    run([bt / 'aapt2', 'link', '-I', platform, '--manifest', manifest, '-o', apk])
-    with zipfile.ZipFile(apk, 'a') as archive:
-        archive.write(dex / 'classes.dex', 'classes.dex')
+    link_manifest(tc, manifest, apk)
+    append_entries(apk, [(dex / 'classes.dex', 'classes.dex')])
     print('Standalone observation APK built; production APK/source untouched.')
 
 
