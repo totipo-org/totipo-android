@@ -1,8 +1,10 @@
 # Protected Android releases
 
-The machinery is implemented but production signing is intentionally unprovisioned.
-See [public identity and future provisioning](signing/README.md). No Android
-production key is shared with Totipo Java.
+The permanent public signing identity is installed for review and commit.
+See [public identity and provisioning status](signing/README.md). Private-key,
+recovery and protected-environment setup are human-reported only; no production
+signing or release has occurred in this milestone. No Android production key is
+shared with Totipo Java.
 
 Before cutting an Android release, intentionally update VERSION (which supplies
 Android versionName) and increment versionCode in app/build.gradle.kts according
@@ -77,8 +79,8 @@ identity. Downloaded APK whole-file SHA equality also preserves this payload pro
 
 A failed remote verification leaves a draft unpublished. An existing release or
 draft fails closed; recovery is a human review task, not automatic overwrite.
-The workflow requires environment protections to be configured by the future
-human provisioning milestone; YAML cannot itself enforce required reviewers.
+The workflow requires human-configured environment protections. Their setup is
+human-reported only; YAML cannot itself enforce required reviewers.
 
 ## Local qualification
 
