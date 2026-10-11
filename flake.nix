@@ -62,6 +62,17 @@
         androidPackage = pkgs.callPackage ./package.nix {
           inherit jdk gradle androidSdk;
         };
+        releaseCommands = [ "prepare-release" "check-release" "tag-release" "push-release-tag" ];
+        releasePrograms = builtins.listToAttrs (map (name: {
+          inherit name;
+          value = pkgs.writeShellScriptBin name ''
+            export PATH=${pkgs.lib.makeBinPath [ pkgs.python3 pkgs.git pkgs.openssh jdk pkgs.coreutils ]}
+            export JAVA_HOME=${jdk}/lib/openjdk
+            export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+            exec python3 -B ${./tools/release}/release.py ${name} "$@"
+          '';
+        }) releaseCommands);
       in
       {
         formatter = pkgs.nixpkgs-fmt;
@@ -71,14 +82,37 @@
         };
         checks = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
           android = androidPackage;
+          release-apps = pkgs.runCommand "release-app-wrappers" {
+            nativeBuildInputs = [ pkgs.git pkgs.gnugrep ];
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME" "$TMPDIR/caller"
+            cd "$TMPDIR/caller"
+            git init -b main
+            git -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -m Fixture
+            ${pkgs.lib.concatMapStringsSep "\n" (name: ''
+              ${releasePrograms.${name}}/bin/${name} --help > /dev/null
+              if ${releasePrograms.${name}}/bin/${name} 0.1.2 > response 2>&1; then
+                echo "Unexpected success in incomplete caller fixture" >&2
+                exit 1
+              fi
+              grep -q 'Missing/nonregular VERSION' response
+              test ! -e VERSION && test ! -e VERSION_CODE
+            '') releaseCommands}
+            touch "$out"
+          '';
         };
-        apps = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+        apps = pkgs.lib.optionalAttrs (system == "x86_64-linux") ((builtins.mapAttrs (name: program: {
+          type = "app";
+          program = "${program}/bin/${name}";
+          meta.description = "Totipo Android ${name} in the caller's Git worktree";
+        }) releasePrograms) // {
           update-package-deps = {
             type = "app";
             program = "${androidPackage.mitmCache.updateScript}";
             meta.description = "Update the pinned Android Gradle download cache";
           };
-        };
+        });
 
         devShells.ci = pkgs.mkShell (androidEnv // {
           packages = androidPackages;

@@ -4,6 +4,16 @@ import org.gradle.api.artifacts.result.ResolvedDependencyResult
 
 plugins { id("com.android.application") }
 
+// Release metadata is deliberately outside the reviewed stable build/dependency pin.
+val versionCodeText = providers.fileContents(rootProject.layout.projectDirectory.file("VERSION_CODE")).asText.get()
+require(Regex("[1-9][0-9]*\n").matches(versionCodeText)) {
+    "VERSION_CODE must contain one canonical positive decimal integer and a final LF"
+}
+val releaseVersionCode = versionCodeText.removeSuffix("\n").toIntOrNull()
+require(releaseVersionCode != null && releaseVersionCode in 1..2100000000) {
+    "VERSION_CODE must be in 1..2100000000"
+}
+
 android {
     namespace = "org.totipo.android"
     enableKotlin = false
@@ -13,7 +23,7 @@ android {
         applicationId = "org.totipo.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
+        versionCode = releaseVersionCode
         versionName = rootProject.version.toString()
     }
     compileOptions {

@@ -254,9 +254,11 @@ class ReleaseTests(unittest.TestCase):
         args = argparse.Namespace(version='1.0.0', commit='a' * 40, bundle=bundle)
         commands = []
         created = False
+        events = []
         def fake_run(*cmd):
             nonlocal created
             commands.append(cmd)
+            events.append(('command', cmd))
             if cmd[:3] == ('gh', 'release', 'create'):
                 created = True
                 return ''
@@ -269,9 +271,16 @@ class ReleaseTests(unittest.TestCase):
                     raise subprocess.CalledProcessError(1, cmd, output='{"status":"404"}')
                 return json.dumps([[dict(draft=True, tag_name='v1.0.0', id=42)] if created else []])
             raise AssertionError(cmd)
-        with patch.dict('os.environ', GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release.subprocess, 'run', return_value=SimpleNamespace(stdout='HTTP/2.0 404 Not Found\n\n{"message":"Not Found","status":"404"}', returncode=1)), patch.object(release, 'identity'), patch.object(release, 'run', side_effect=fake_run):
+        with patch.dict('os.environ', GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed', side_effect=lambda apk, bundle: events.append(('verify', apk))), patch.object(release, 'compare'), patch.object(release.subprocess, 'run', return_value=SimpleNamespace(stdout='HTTP/2.0 404 Not Found\n\n{"message":"Not Found","status":"404"}', returncode=1)), patch.object(release, 'identity', side_effect=lambda *args: events.append(('identity', args))), patch.object(release, 'run', side_effect=fake_run):
             release.publish(args)
         self.assertTrue(any('PATCH' in c for c in commands))
+        self.assertEqual([event[1] for event in events if event[0] == 'verify'],
+                         [apk, self.root / 'remote-release' / apk.name])
+        self.assertEqual(events[-2][0], 'identity')
+        self.assertEqual(events[-1][0], 'command')
+        self.assertIn('PATCH', events[-1][1])
+        self.assertLess(next(i for i, e in enumerate(events) if e == ('verify', self.root / 'remote-release' / apk.name)),
+                        len(events) - 1)
 
     def test_remote_mismatch_leaves_draft(self):
         import argparse, json

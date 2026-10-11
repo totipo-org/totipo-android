@@ -70,6 +70,8 @@ def identity(version, commit):
     require(remote.get('refs/heads/main') == commit, 'Reviewed source is no longer current main')
     require(remote.get(tag) == run('git', 'rev-parse', tag) and
             remote.get(tag + '^{}') == commit, 'Remote annotated tag differs')
+    from source import code
+    code((ROOT / 'VERSION_CODE').read_bytes())
     guard()
     return expected_identity()
 
@@ -174,8 +176,8 @@ def prepare(args):
     identity(args.version, args.commit)
 
 
-def bundle_check(args, identity_check=None):
-    cert = (identity_check or identity)(args.version, args.commit)
+def bundle_check(args):
+    cert = identity(args.version, args.commit)
     p = load_provenance(args.bundle / 'release-provenance.json')
     require(p['version'] == args.version and p['source_commit'] == args.commit and
             p['certificate_sha256'] == cert, 'Provenance identity differs')
@@ -254,8 +256,8 @@ def listed_release(repo, tag):
     return matching[0] if matching else None
 
 
-def publish(args, identity_check=None):
-    p = bundle_check(args, identity_check=identity_check)
+def publish(args):
+    p = bundle_check(args)
     apk = args.bundle / f'totipo-android-{args.version}.apk'
     checksum = args.bundle / (apk.name + '.sha256')
     require(checksum.read_text() == sha(apk) + '  ' + apk.name + '\n', 'Signed checksum differs')
@@ -283,20 +285,25 @@ def publish(args, identity_check=None):
         require(sha(downloaded / local.name) == sha(local), 'Remote release bytes differ')
     verify_signed(downloaded / apk.name, args.bundle)
     # Exact bytes imply the payload equivalence already proved in verify job.
-    (identity_check or identity)(args.version, args.commit)
+    identity(args.version, args.commit)
     run('gh', 'api', '--method', 'PATCH', f"repos/{repo}/releases/{record['id']}",
         '-F', 'draft=false')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['identity', 'guard', 'prepare', 'bundle', 'finalize', 'publish'])
+    parser.add_argument('command', choices=['identity', 'guard', 'prepare', 'bundle', 'finalize', 'publish',
+                        'prepare-release', 'check-release', 'tag-release', 'push-release-tag'])
+    parser.add_argument('target', nargs='?')
     parser.add_argument('--version', default=os.environ.get('REQUESTED_VERSION'))
     parser.add_argument('--commit', default=os.environ.get('REQUESTED_COMMIT'))
     parser.add_argument('--bundle', type=Path)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
-    if args.command == 'identity':
+    if args.command in ('prepare-release', 'check-release', 'tag-release', 'push-release-tag'):
+        import source
+        source.execute(args.command, args.target)
+    elif args.command == 'identity':
         identity(args.version, args.commit)
     elif args.command == 'guard':
         guard()

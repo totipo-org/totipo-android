@@ -15,10 +15,38 @@ public final class OtpAuthSupplyChainGuardTest {
         }
     }
 
+    private static String digest(byte[] contents) throws Exception {
+        return java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-256").digest(contents));
+    }
+
+    @Test public void releaseMetadataDoesNotChangeProtectedBuildPin() throws Exception {
+        byte[] stableBuild = Files.readAllBytes(Path.of("build.gradle.kts"));
+        String reviewed = digest(stableBuild);
+        // Synthetic source inventories: no repository mutation and no metadata in the pin.
+        for (String releaseCode : List.of("2\n", "3\n")) {
+            var source = java.util.Map.of("app/build.gradle.kts", stableBuild,
+                    "VERSION_CODE", releaseCode.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            assertEquals(reviewed, digest(source.get("app/build.gradle.kts")));
+        }
+        String build = new String(stableBuild, java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(build.contains("versionCode = releaseVersionCode"));
+        for (String changed : List.of(
+                build.replace("com.android.application", "unreviewed.plugin"),
+                build.replace("org.totipo:totipo-core:0.2.0", "org.totipo:totipo-core:9.9.9"),
+                build.replace("isMinifyEnabled = false", "isMinifyEnabled = true"))) {
+            assertNotEquals(reviewed, digest(changed.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        }
+        String settings = Files.readString(Path.of("../settings.gradle.kts"));
+        assertNotEquals(digest(settings.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                digest((settings + "\nrepositories { mavenLocal() }\n").getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
     @Test public void reviewedSupplyChainInputsRemainPinned() throws Exception {
-        // Java 0.2.0 is the approved Totipo-only dependency change; unrelated pins remain unchanged.
+        // Stable build scripts remain fully pinned; VERSION and VERSION_CODE are release metadata.
+        // App script and flake rebaselined once for the reviewed release-source migration/apps.
         var baseline = java.util.Map.ofEntries(
-                java.util.Map.entry("app/build.gradle.kts", "69b3f5c737e5f98a1d99be4fe02204f6f2cfadef1b85323c66916a9619db8736"),
+                java.util.Map.entry("app/build.gradle.kts", "eb6dbefbbdef74771d5d428969248dd936b40955c0b8286adcb07ff8db41e98c"),
                 java.util.Map.entry("build.gradle.kts", "08ecc23eea4637d5b5d0bf36b9f9d39f67e23fa3a6be57f34f594d6ad8daa348"),
                 java.util.Map.entry("settings.gradle.kts", "948017ca7cb553ecfd91a9f3eab56a1db4870c7eb4c0086cb2f4527503f89141"),
                 java.util.Map.entry("gradle.properties", "3db21dde187dd9e9cba8400b07e91374f69131754994c004b2810949be97c27b"),
@@ -27,7 +55,7 @@ public final class OtpAuthSupplyChainGuardTest {
                 java.util.Map.entry("gradle/verification-metadata.xml", "0492327c6a5445cec7c140630598f97853074573a4acf2e2d8565ce481cbfba4"),
                 java.util.Map.entry("app/gradle.lockfile", "4d3aee17359005cc60a5f3286c4583a35fffcdce91bb6992ad792eebf5c42226"),
                 java.util.Map.entry("buildscript-gradle.lockfile", "22efaa36cdbc4212cb62beb29837199812865f2b303caaef124b07e9915fc1a0"),
-                java.util.Map.entry("flake.nix", "1ee5379470643f1699d65e7ba6ea834ffe4cc277d8df49cc59f68c1311b7a5a9"),
+                java.util.Map.entry("flake.nix", "dbc85c66c608a2f8866c2cae24a66b96238d08a3591b21ee959f2ca3da8e78b2"),
                 // Rebaselined for the intentional flake update in 5f2fdd8.
                 java.util.Map.entry("flake.lock", "44728fcfd8529462cb415b186ee4ce3400343dd911d325b6a965bd386b9f7749"),
                 // Rebaselined for the verified Google Play SDK Index snapshot refresh.

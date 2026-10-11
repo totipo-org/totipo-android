@@ -1,6 +1,7 @@
 # Totipo Android
 
-Unreleased (`0.0.0-dev`). Totipo creates, unlocks and explicitly locks an
+Current source version is recorded in `VERSION`; Android versionCode is recorded
+in `VERSION_CODE`. Totipo creates, unlocks and explicitly locks an
 app-private local vault in no-backup storage. After setup, the main screen contains
 **Sync**, search, tokens and **Add token**, with **Lock**, **Manage sync folder** and
 **Diagnostics** in overflow. Show code and Copy code retain their conceal/expiry
@@ -287,14 +288,14 @@ x86_64-linux; the unsigned APK hash matched before and after rebuild. Remote
 CI and optional device evidence are recorded separately in the M0 report.
 
 The package installs only
-`result/share/totipo-android/totipo-android-0.0.0-dev-unsigned.apk`.
+`result/share/totipo-android/totipo-android-<VERSION>-unsigned.apk`.
 The debug APK is built and verified but not installed into the package output.
 Both APK checks validate ZIP integrity, manifest boundaries, canonical branding,
 product/controller and NIO/core/BC DEX presence, and test/standalone-class exclusion.
 Debug verification requires the existing diagnostic classes; release verification
 excludes them and requires absence of APK/JAR signing. No signing secret, AAB or Play integration exists. Protected release machinery
-is documented in [Android releases](release/README.md); production signing identity
-and GitHub environment remain intentionally unprovisioned. Debug signing keys are local generated
+is documented in [Android releases](release/README.md); the public production signing identity is committed; protected GitHub environment
+provisioning is human-reported. Debug signing keys are local generated
 development state.
 
 Push/PR and manual-dispatch CI run one package-inclusive flake check on Linux,
@@ -303,6 +304,11 @@ accepts the repository's reviewed flake cache configuration; cache URLs, trusted
 keys and signature policy are unchanged. Nix owns the build environment and
 qualification; CI does not separately provision Java, Android or Gradle, refresh
 dependency state or publish releases. The revised workflow has not yet run remotely.
+
+Release preparation, source checking and local annotated tagging use the
+repository-native `prepare-release`, `check-release`, `tag-release` and
+`push-release-tag` Nix apps. See [the release procedure](release/README.md) for
+consumed-tag code allocation, validation and the deliberate commit/approval boundaries.
 
 ## Limitations
 

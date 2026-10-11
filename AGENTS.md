@@ -129,7 +129,7 @@ and `tools`, plus these exact files:
 build.gradle.kts  settings.gradle.kts  gradle.properties
 app/build.gradle.kts  app/gradle.lockfile
 buildscript-gradle.lockfile  app/buildscript-gradle.lockfile
-VERSION  LICENSE  branding-provenance.json
+VERSION  VERSION_CODE  LICENSE  branding-provenance.json
 ```
 
 The filter excludes any `.git`, `.gradle`, `build` or `.direnv` path component and

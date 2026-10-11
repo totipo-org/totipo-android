@@ -1,4 +1,4 @@
-{ lib, stdenv, jdk, gradle, androidSdk, python3 }:
+{ lib, stdenv, jdk, gradle, androidSdk, python3, git }:
 let
   version = lib.removeSuffix "\n" (builtins.readFile ./VERSION);
   cache = builtins.fromJSON (builtins.readFile ./package-deps.json);
@@ -18,7 +18,7 @@ let
     "build.gradle.kts" "settings.gradle.kts" "gradle.properties"
     "app/build.gradle.kts" "app/gradle.lockfile"
     "buildscript-gradle.lockfile" "app/buildscript-gradle.lockfile"
-    "VERSION" "LICENSE" "branding-provenance.json"
+    "VERSION" "VERSION_CODE" "LICENSE" "branding-provenance.json"
   ];
 in
 assert builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?" version != null;
@@ -42,7 +42,7 @@ stdenv.mkDerivation (finalAttrs: {
     pkg = finalAttrs.finalPackage;
     data = ./package-deps.json;
   };
-  nativeBuildInputs = [ gradle python3 ];
+  nativeBuildInputs = [ gradle python3 git ];
   JAVA_HOME = "${jdk}/lib/openjdk";
   ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
   ANDROID_SDK_ROOT = "${androidSdk}/libexec/android-sdk";

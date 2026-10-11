@@ -1,18 +1,80 @@
 # Protected Android releases
 
 The permanent public signing identity is installed for review and commit.
-See [public identity and provisioning status](signing/README.md). Private-key,
-recovery and protected-environment setup are human-reported only; no production
+See [public identity and provisioning status](signing/README.md). Private-key backup and
+protected-environment setup are human-reported only; no production
 signing or release has occurred in this milestone. No Android production key is
 shared with Totipo Java.
 
-Before cutting an Android release, intentionally update VERSION (which supplies
-Android versionName) and increment versionCode in app/build.gradle.kts according
-to Android update requirements. Review the source on main and prepare an annotated
-`v<VERSION>` tag pointing to that exact source. Qualify the resulting unsigned APK.
-Its observed versionName/versionCode then flow through provenance and signing;
-changing either value requires no second verifier edit. VERSION must be a release
-version, not a development version. The workflow never creates or pushes tags.
+Release source has two mutable authorities: `VERSION` supplies versionName and
+`VERSION_CODE` supplies Android versionCode. Both are canonical files ending in one
+LF; VERSION_CODE is a decimal integer in 1..2100000000, without spaces, signs or
+leading zeros. Gradle fails on missing/malformed values without a default. Stable
+reviewed build/dependency scripts remain fully supply-chain pinned; metadata edits
+need no pin update. VERSION_CODE is included in the Nix Android source filter.
+
+Future release preparation uses the repository's x86_64-linux Nix apps, from the
+actual working Git repository (including a subdirectory):
+
+```sh
+nix run path:.#prepare-release -- 0.1.2
+# Review VERSION and VERSION_CODE; commit normally, push main normally, wait for CI.
+nix run path:.#check-release -- 0.1.2
+nix run path:.#tag-release -- 0.1.2
+nix run path:.#push-release-tag -- 0.1.2
+# Dispatch the normal protected GitHub Release workflow on reviewed main.
+```
+
+These commands are future instructions. This machinery migration retains source
+0.1.1 / code 2; it does not prepare 0.1.2. There is no automatic commit, main push,
+workflow dispatch, signing or publication. Tagging creates one local annotated
+`v<VERSION>` tag with message `Totipo Android <VERSION>`; the push app sends only
+that tag, without force or automatic follow-tags. Git tags are unsigned.
+
+Every valid annotated Android release tag consumes its semantic version and code,
+even if publication subsequently fails. Preparation alone consumes nothing: an
+abandoned untagged preparation may be reset. The next code is the maximum consumed
+code plus one, rejecting duplicates and overflow; it never comes from the working
+file, a patch number, an operator code or successful GitHub releases alone.
+
+History accepts only canonical numeric stable `vX.Y.Z` annotated tags peeling to
+commits whose VERSION exactly matches. Any v-prefixed tag with unsupported syntax
+fails rather than being skipped. VERSION_CODE is read for new-format tagged sources;
+only legacy tagged sources use an unambiguous literal `versionCode = <integer>`
+from app/build.gradle.kts. Current source always requires VERSION_CODE. Target
+X.Y.Z must be strictly newer numerically than every consumed tag; prerelease,
+build metadata and leading-zero forms are unsupported.
+
+Each command reads origin with `git ls-remote` and compares release tag object IDs
+and peels with local objects. No fetch or ref mutation is performed to inspect
+history. Missing/stale/extra local release tags fail: synchronize and review the
+repository's tags before retrying. Network/authentication errors fail closed. The
+Nix wrappers include Python, Git, OpenSSH, JDK/keytool and CA certificates; normal
+Git/SSH credentials and configuration still belong to the caller. No SDK is needed.
+The executable comes from the Nix store but discovers the caller's Git worktree;
+store worktrees are explicitly refused.
+
+Prepare requires main and a clean tree/index, or the exact unstaged metadata diff
+already expected for the same target. It validates history, source wiring, stable
+supply-chain pins and the public signer before atomically replacing each changed
+metadata file, checks the result, and leaves everything unstaged/uncommitted.
+Running it again reports already prepared without incrementing the code. Any
+unrelated dirty/untracked or staged path is rejected. File replacements are atomic
+individually; interruption between replacements leaves a partial diff which must
+be reviewed/reset before retrying.
+
+Check is read-only and permits that exact prepared diff or clean committed source.
+Tag requires clean committed main, both live remote main and local origin/main at
+HEAD, absent local/remote target tag, and matching source metadata/readiness. Push
+also requires the local annotated target tag to peel to HEAD and the remote target
+to remain absent. Existing tags are never moved, deleted, adopted or overwritten.
+All four commands validate canonical wiring, application ID, reviewed build pins,
+public certificate/fingerprint and absence of tracked private key material.
+
+Qualify the unsigned APK from the committed source. Its observed versionName and
+versionCode remain authoritative in provenance through signing; changing source
+metadata requires no signed-verifier version edit. The workflow never creates or
+pushes tags.
 
 Application ID `org.totipo.android` is independently pinned application identity.
 Mutable versionName/versionCode are extracted with pinned aapt2 from the qualified
@@ -88,78 +150,6 @@ tag endpoint. Hosted bytes and signature/boundaries must pass before publication
 The workflow requires human-configured environment protections. Their setup is
 human-reported only; YAML cannot itself enforce required reviewers.
 
-## Recovery after a verified publish failure
-
-Normal release uses reviewed current main/source/tag -> protected sign -> verify
--> publish. It still requires dispatch SHA = checkout = remote main = annotated
-tag target = release source. Never rerun signing merely to repair publication.
-
-If a normal release fails after verify and before successful publication, retain
-its Actions run ID. A later reviewed tooling revision can publish the exact signed
-candidate without rebuilding, re-signing, changing VERSION/versionCode, changing
-the tag, or changing the signing identity. Recovery never changes the release
-artifact or signing identity. It is a deliberate `workflow_dispatch`; no failed
-run automatically triggers publication.
-
-After reviewing, committing, pushing and qualifying the tooling, dispatch
-`.github/workflows/recover-release.yml` **from current main** with:
-
-| Input | Meaning |
-| --- | --- |
-| `version` | Exact old release VERSION, with existing annotated `v<VERSION>` tag |
-| `source_commit` | Full old tagged release source SHA |
-| `failed_run_id` | Original failed normal protected-release run ID |
-
-Recovery tooling source is current committed main. Release artifact source is the
-old exact tagged source. They are checked separately; current main need not equal
-release source. Main drift, dirty checkout, tag object/peel drift, target VERSION
-disagreement, or any difference between target/current public certificate and
-fingerprint files fails closed. Current certificate is parsed with pinned JDK and
-checked against its DER fingerprint. No tag is created, pushed, moved or deleted.
-
-`recover-verify` has only contents read and actions read. It checks same repository
-and head repository, workflow ID/file `.github/workflows/release.yml`, manual event,
-main head branch, exact head SHA, completed failure, and successful qualify/sign/
-verify jobs followed by failed publish. This initial implementation accepts only
-`run_attempt == 1`; rerun-attempt selection requires a separate design. GitHub's
-workflow-run REST response exposes these identities, but **does not expose original
-workflow_dispatch input values**. Tag/source/VERSION validation plus provenance
-bind the requested version/source instead; no input correlation is invented.
-
-The job selects exactly one unexpired `verified-release` artifact belonging to
-that run/repository/head SHA. Authenticated GitHub CLI artifact retrieval uses
-only actions read; arbitrary URLs/names alone are insufficient. The downloaded
-archive must match GitHub's recorded SHA-256 digest and contain exactly the signed
-APK/checksum, original provenance, and original unsigned APK/checksum. Missing,
-ambiguous, expired, unavailable, unexpected-path, duplicate, symlink, oversized or
-corrupt archives fail closed.
-
-Current verifiers independently check the exact existing provenance schema (no
-schema-version field was present), version/source/tag/app identity, versionName/
-versionCode, production fingerprint, unsigned hash/checksum/metadata/boundaries,
-signed hash/checksum/metadata, one production signer, v1/v4 disabled and v2/v3
-enabled, alignment, release boundaries, and signed-vs-unsigned ZIP payload equality.
-Provenance remains byte-identical. Actual APK hashes are logged as evidence, never
-hard-coded into recovery tooling.
-
-Only this reverified bundle plus a recovery receipt identifying tooling/source/tag
-object/run/artifact is uploaded as **same-run `recovery-verified`**.
-`recover-publish` has contents write, no cross-run acquisition and no actions-read
-grant. It downloads only that same-run artifact, validates the receipt and current
-tooling/target again, reruns bundle/APK verification, then calls the same normal
-publication function: reject existing release/draft -> create draft/upload three
-public assets -> redownload -> compare bytes -> reverify signer/boundaries ->
-revalidate source/tag -> publish. Neither recovery job has an Android signing
-environment, signing secret, signing/key-generation command or APK build step.
-
-Recovery remains possible only while the original Actions artifact is retained
-(normal retention is seven days), all provenance/source/tag/signer checks pass,
-and no release or draft exists. If a prior failure already left a draft, **stop**:
-this workflow deliberately does not resume or delete it. A published-tag 404 alone
-does not prove draft absence; the authenticated list is mandatory. The 0.1.0
-traceback actually failed at the tag lookup *after* draft creation returned success,
-so operators must check draft state even when the public Releases page is empty.
-
 ## HTTP interface references
 
 The runner supplies GitHub CLI, outside Android secret scope. No third-party Python
@@ -178,9 +168,14 @@ Use the pinned development environment. Fast standard-library tests:
 ```sh
 python3 -B -m unittest discover -s tools/release -p 'test_*.py'
 python3 -B tools/release/release.py guard
+python3 -B tools/release/test-build-metadata.py
 ```
 
-The existing Nix package install check also runs the fast tests. After the final
+The existing Nix package install check also runs the fast Python tests using explicit
+Git input. `checks.release-apps` executes every packaged app help entry point and
+checks that incomplete disposable caller worktrees fail without metadata writes.
+The standalone metadata harness uses one offline Gradle invocation in a temporary
+project; it runs the exact parser text and checks valid, malformed and missing files. After the final
 normal and strict Gradle gates and existing artifact verification, run:
 
 ```sh
