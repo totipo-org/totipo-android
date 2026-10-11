@@ -13,7 +13,7 @@ android {
         applicationId = "org.totipo.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
+        versionCode = 2
         versionName = rootProject.version.toString()
     }
     compileOptions {
