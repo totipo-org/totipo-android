@@ -1,0 +1,97 @@
+name: Android verified release recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact old release VERSION (existing annotated tag required)
+        required: true
+        type: string
+      source_commit:
+        description: Full old tagged release source SHA, distinct from recovery tooling main
+        required: true
+        type: string
+      failed_run_id:
+        description: Original failed protected release workflow run ID (first attempt)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  REQUESTED_VERSION: ${{ inputs.version }}
+  REQUESTED_COMMIT: ${{ inputs.source_commit }}
+  FAILED_RUN_ID: ${{ inputs.failed_run_id }}
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  recover-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Validate current-main tooling dispatch and target inputs
+        run: |
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]]
+          [[ "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FAILED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+      - name: Verify current tooling, exact old tagged source and public identity
+        run: nix develop path:.#ci --command python3 -B tools/release/recover.py identity
+      - name: Acquire exact failed-run artifact and independently reverify unchanged candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: nix develop path:.#ci --command python3 -B tools/release/recover.py acquire --bundle "$RUNNER_TEMP/recovery-bundle"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: recovery-verified
+          path: ${{ runner.temp }}/recovery-bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  recover-publish:
+    needs: recover-verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+      - name: Revalidate current tooling and exact target before receiving bundle
+        run: nix develop path:.#ci --command python3 -B tools/release/recover.py identity
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: recovery-verified
+          path: ${{ runner.temp }}/recovery-bundle
+      - name: Reverify same-run evidence and use shared draft publication path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: nix develop path:.#ci --command python3 -B tools/release/recover.py publish --bundle "$RUNNER_TEMP/recovery-bundle"

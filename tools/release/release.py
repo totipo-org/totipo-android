@@ -48,11 +48,15 @@ def guard():
         require(path.name in {Path(p).name for p in allowed}, 'Unexpected signing material on disk')
 
 
-def identity(version, commit):
+def validate_request(version, commit):
     require(re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?', version),
             'Invalid version')
     require(not version.endswith(('-dev', '-SNAPSHOT')), 'Development version cannot release')
     require(re.fullmatch('[0-9a-f]{40}', commit), 'Full reviewed commit required')
+
+
+def identity(version, commit):
+    validate_request(version, commit)
     require(os.environ['GITHUB_REF'] == 'refs/heads/main', 'Dispatch must select main')
     require(os.environ['GITHUB_SHA'] == commit, 'Dispatch SHA must equal reviewed commit')
     require(run('git', 'rev-parse', 'HEAD') == commit, 'Checkout differs from reviewed source')
@@ -170,8 +174,8 @@ def prepare(args):
     identity(args.version, args.commit)
 
 
-def bundle_check(args):
-    cert = identity(args.version, args.commit)
+def bundle_check(args, identity_check=None):
+    cert = (identity_check or identity)(args.version, args.commit)
     p = load_provenance(args.bundle / 'release-provenance.json')
     require(p['version'] == args.version and p['source_commit'] == args.commit and
             p['certificate_sha256'] == cert, 'Provenance identity differs')
@@ -202,17 +206,66 @@ def finalize(args):
         shutil.copyfile(args.bundle / name, args.output / name)
 
 
-def publish(args):
-    p = bundle_check(args)
+def release_record(record, tag):
+    require(type(record) is dict and type(record.get('id')) is int and record['id'] > 0
+            and record.get('tag_name') == tag and type(record.get('draft')) is bool,
+            'Malformed release response')
+    return record
+
+
+def lookup_release(repo, tag):
+    """Published release lookup: only machine-readable HTTP 404 is absence.
+
+    gh api --include prints the status line and headers even on HTTP errors.
+    Never inspect human stderr; CLI/transport failures without a valid response
+    remain fatal. Drafts require a separate paginated list below.
+    """
+    result = subprocess.run(['gh', 'api', '--include', '--method', 'GET',
+                             f'repos/{repo}/releases/tags/{tag}'], cwd=ROOT,
+                            text=True, capture_output=True, check=False, timeout=60)
+    response = result.stdout.replace('\r\n', '\n')
+    headers, separator, body = response.partition('\n\n')
+    status = re.fullmatch(r'HTTP/(?:1\.[01]|2(?:\.0)?) (\d{3})(?: [^\n]*)?',
+                          headers.split('\n')[0])
+    require(separator and status and all(':' in line for line in headers.split('\n')[1:]),
+            'Missing/malformed GitHub HTTP response')
+    code = int(status[1])
+    record = json.loads(body)
+    if code == 404:
+        require(result.returncode == 1 and type(record) is dict and
+                type(record.get('message')) is str and bool(record['message']) and
+                record.get('status', '404') == '404', 'Malformed GitHub 404 response')
+        return None
+    require(code == 200 and result.returncode == 0, f'GitHub release lookup failed: HTTP {code}')
+    return release_record(record, tag)
+
+
+def listed_release(repo, tag):
+    # Tag lookup omits drafts. Contents-write publication token sees drafts here.
+    pages = json.loads(run('gh', 'api', '--paginate', '--slurp',
+                          f'repos/{repo}/releases?per_page=100'))
+    require(type(pages) is list and pages and all(type(page) is list for page in pages),
+            'Malformed release list')
+    records = [r for page in pages for r in page]
+    require(all(type(r) is dict and type(r.get('tag_name')) is str for r in records),
+            'Malformed release list entry')
+    matching = [release_record(r, tag) for r in records if r['tag_name'] == tag]
+    require(len(matching) <= 1, 'Ambiguous releases for target tag')
+    return matching[0] if matching else None
+
+
+def publish(args, identity_check=None):
+    p = bundle_check(args, identity_check=identity_check)
     apk = args.bundle / f'totipo-android-{args.version}.apk'
     checksum = args.bundle / (apk.name + '.sha256')
     require(checksum.read_text() == sha(apk) + '  ' + apk.name + '\n', 'Signed checksum differs')
     verify_signed(apk, args.bundle)
+    compare(args.bundle / 'unsigned-release.apk', apk)
     repo = os.environ['GITHUB_REPOSITORY']
     tag = p['tag']
     # Fail on existing release, including drafts. No overwrite/resume ambiguity.
-    releases = json.loads(run('gh', 'api', f'repos/{repo}/releases?per_page=100'))
-    require(not any(r['tag_name'] == tag for r in releases), 'Release already exists')
+    require(lookup_release(repo, tag) is None, 'Release already exists')
+    require(listed_release(repo, tag) is None, 'Release/draft already exists')
     notes = args.bundle.parent / 'release-notes.txt'
     notes.write_text(f"Totipo Android {args.version}\n\nSource: {args.commit}\nTag: {tag}\n"
                      f"APK: {apk.name}\nSHA-256: {sha(apk)}\n"
@@ -221,8 +274,8 @@ def publish(args):
     run('gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
         '--title', f'Totipo Android {args.version}', '--notes-file', str(notes),
         str(apk), str(checksum), str(args.bundle / 'release-provenance.json'))
-    record = json.loads(run('gh', 'api', f'repos/{repo}/releases/tags/{tag}'))
-    require(record['draft'] and record['tag_name'] == tag, 'Expected draft release')
+    record = listed_release(repo, tag)
+    require(record is not None and record['draft'], 'Expected newly created draft release')
     downloaded = args.bundle.parent / 'remote-release'
     downloaded.mkdir()
     run('gh', 'release', 'download', tag, '--repo', repo, '--dir', str(downloaded))
@@ -230,7 +283,7 @@ def publish(args):
         require(sha(downloaded / local.name) == sha(local), 'Remote release bytes differ')
     verify_signed(downloaded / apk.name, args.bundle)
     # Exact bytes imply the payload equivalence already proved in verify job.
-    identity(args.version, args.commit)
+    (identity_check or identity)(args.version, args.commit)
     run('gh', 'api', '--method', 'PATCH', f"repos/{repo}/releases/{record['id']}",
         '-F', 'draft=false')
 

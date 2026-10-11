@@ -243,6 +243,36 @@ class ReleaseTests(unittest.TestCase):
             with patch.dict('os.environ', {'ANDROID_HOME': '/pinned/sdk'}), patch.object(signed.subprocess, 'run', return_value=SimpleNamespace(stdout=output)), patch.object(release, 'apk_metadata', return_value=self.metadata()):
                 with self.assertRaises(ValueError): signed.verify('test.apk', p, self.provenance(), self.unsigned)
 
+    def test_initial_404_then_draft_publish(self):
+        # RED on the original implementation: the tag endpoint is for published
+        # releases and must never be used to fetch the draft just created.
+        import argparse, subprocess, shutil
+        bundle = self.root / 'bundle'; bundle.mkdir()
+        apk = bundle / 'totipo-android-1.0.0.apk'; apk.write_bytes(b'signed')
+        (bundle / (apk.name + '.sha256')).write_text(release.sha(apk) + '  ' + apk.name + '\n')
+        (bundle / 'release-provenance.json').write_text('{}')
+        args = argparse.Namespace(version='1.0.0', commit='a' * 40, bundle=bundle)
+        commands = []
+        created = False
+        def fake_run(*cmd):
+            nonlocal created
+            commands.append(cmd)
+            if cmd[:3] == ('gh', 'release', 'create'):
+                created = True
+                return ''
+            if cmd[:3] == ('gh', 'release', 'download'):
+                for path in bundle.iterdir(): shutil.copyfile(path, self.root / 'remote-release' / path.name)
+                return ''
+            if cmd[:2] == ('gh', 'api'):
+                if 'PATCH' in cmd: return '{}'
+                if '/releases/tags/' in cmd[-1]:
+                    raise subprocess.CalledProcessError(1, cmd, output='{"status":"404"}')
+                return json.dumps([[dict(draft=True, tag_name='v1.0.0', id=42)] if created else []])
+            raise AssertionError(cmd)
+        with patch.dict('os.environ', GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release.subprocess, 'run', return_value=SimpleNamespace(stdout='HTTP/2.0 404 Not Found\n\n{"message":"Not Found","status":"404"}', returncode=1)), patch.object(release, 'identity'), patch.object(release, 'run', side_effect=fake_run):
+            release.publish(args)
+        self.assertTrue(any('PATCH' in c for c in commands))
+
     def test_remote_mismatch_leaves_draft(self):
         import argparse, json
         bundle = self.root / 'bundle'; bundle.mkdir()
@@ -254,13 +284,13 @@ class ReleaseTests(unittest.TestCase):
         def fake_run(*cmd):
             commands.append(cmd)
             if cmd[:2] == ('gh', 'api'):
-                if cmd[-1].endswith('?per_page=100'): return '[]'
-                return json.dumps(dict(draft=True, tag_name='v1.0.0', id=42))
+                if not any(c[:3] == ('gh', 'release', 'create') for c in commands): return '[[]]'
+                return json.dumps([[dict(draft=True, tag_name='v1.0.0', id=42)]])
             if cmd[:3] == ('gh', 'release', 'download'):
                 target = self.root / 'remote-release'
                 (target / apk.name).write_bytes(b'tampered')
             return ''
-        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'run', side_effect=fake_run):
+        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release, 'lookup_release', return_value=None), patch.object(release, 'run', side_effect=fake_run):
             with self.assertRaisesRegex(ValueError, 'Remote release bytes'): release.publish(args)
         self.assertTrue(any(c[:3] == ('gh', 'release', 'create') and '--draft' in c for c in commands))
         self.assertFalse(any('PATCH' in c for c in commands))
