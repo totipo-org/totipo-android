@@ -6,14 +6,9 @@ from pathlib import Path
 import re
 import subprocess
 from payload import require
+from source import fingerprint
 from release import load_provenance, bind_unsigned, require_metadata, unsigned_check
 
-
-def fingerprint(path):
-    value = Path(path).read_text().strip()
-    require(re.fullmatch(r'[0-9a-f]{64}', value) is not None,
-            'Expected fingerprint must be 64 lowercase SHA-256 hex characters')
-    return value
 
 
 def verify(apk, expected, provenance, unsigned):

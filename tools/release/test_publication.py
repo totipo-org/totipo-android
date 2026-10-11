@@ -8,9 +8,15 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import release
+from source import Repository
 
 
 class LookupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Repository(Path(self.temp.name))
+
     def response(self, code=404, body=None, returncode=None):
         if body is None:
             body = ({'id': 1, 'draft': False, 'tag_name': 'v1.0.0'} if code == 200
@@ -22,11 +28,11 @@ class LookupTests(unittest.TestCase):
         for code in (200, 404, 401, 403, 429, 500, 503):
             with self.subTest(code=code), patch.object(release.subprocess, 'run', return_value=self.response(code)) as cli:
                 if code == 200:
-                    self.assertEqual(release.lookup_release('example/repo', 'v1.0.0')['id'], 1)
+                    self.assertEqual(release.lookup_release(self.repo, 'example/repo', 'v1.0.0')['id'], 1)
                 elif code == 404:
-                    self.assertIsNone(release.lookup_release('example/repo', 'v1.0.0'))
+                    self.assertIsNone(release.lookup_release(self.repo, 'example/repo', 'v1.0.0'))
                 else:
-                    with self.assertRaises(ValueError): release.lookup_release('example/repo', 'v1.0.0')
+                    with self.assertRaises(ValueError): release.lookup_release(self.repo, 'example/repo', 'v1.0.0')
                 self.assertIn('--include', cli.call_args.args[0])
                 self.assertFalse(cli.call_args.kwargs['check'])
 
@@ -41,10 +47,10 @@ class LookupTests(unittest.TestCase):
         for result in cases:
             with self.subTest(result=result), patch.object(release.subprocess, 'run', return_value=result):
                 with self.assertRaises((ValueError, json.JSONDecodeError)):
-                    release.lookup_release('example/repo', 'v1.0.0')
+                    release.lookup_release(self.repo, 'example/repo', 'v1.0.0')
         for error in (FileNotFoundError('gh'), OSError('network'), subprocess.TimeoutExpired('gh', 60)):
             with patch.object(release.subprocess, 'run', side_effect=error):
-                with self.assertRaises(type(error)): release.lookup_release('example/repo', 'v1.0.0')
+                with self.assertRaises(type(error)): release.lookup_release(self.repo, 'example/repo', 'v1.0.0')
 
     def test_existing_release_never_mutates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -53,17 +59,64 @@ class LookupTests(unittest.TestCase):
             (bundle / (apk.name + '.sha256')).write_text(release.sha(apk) + '  ' + apk.name + '\n')
             args = SimpleNamespace(bundle=bundle, version='1.0.0', commit='a'*40)
             for draft in (False, True):
-                with patch.dict(os.environ, GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value={'tag':'v1.0.0'}), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release, 'lookup_release', return_value=None if draft else {'id':1}), patch.object(release, 'listed_release', return_value={'draft':True}), patch.object(release, 'run') as mutation:
-                    with self.assertRaisesRegex(ValueError, 'already exists'): release.publish(args)
+                with patch.dict(os.environ, GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value={'tag':'v1.0.0'}), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release, 'lookup_release', return_value=None if draft else {'id':1}), patch.object(release, 'listed_release', return_value={'draft':True}), patch.object(Repository, 'run') as mutation:
+                    with self.assertRaisesRegex(ValueError, 'already exists'): release.publish(self.repo, args)
                     mutation.assert_not_called()
 
     def test_paginated_draft_lookup(self):
         record = {'id':1, 'tag_name':'v1.0.0', 'draft':True}
         for pages, error in [([[], [record]], False), ([[record], [record]], True),
                              ({}, True), ([[{}]], True), ([[{'tag_name':'v1.0.0'}]], True)]:
-            with patch.object(release, 'run', return_value=json.dumps(pages)) as cli:
+            with patch.object(Repository, 'run', return_value=json.dumps(pages)) as cli:
                 if error:
-                    with self.assertRaises(ValueError): release.listed_release('example/repo', 'v1.0.0')
-                else: self.assertEqual(release.listed_release('example/repo', 'v1.0.0'), record)
+                    with self.assertRaises(ValueError): release.listed_release(self.repo, 'example/repo', 'v1.0.0')
+                else: self.assertEqual(release.listed_release(self.repo, 'example/repo', 'v1.0.0'), record)
                 self.assertIn('--paginate', cli.call_args.args)
 
+
+
+class DownstreamTests(unittest.TestCase):
+    def test_failures_leave_one_draft_and_retry_never_adopts_it(self):
+        import shutil
+        for failure in ('draft-list', 'download', 'hosted-verify', 'source', 'publish'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); repo = Repository(root)
+                bundle = root / 'bundle'; bundle.mkdir()
+                apk = bundle / 'totipo-android-1.0.0.apk'; apk.write_bytes(b'signed')
+                (bundle / (apk.name + '.sha256')).write_text(release.sha(apk) + '  ' + apk.name + '\n')
+                (bundle / 'release-provenance.json').write_text('{}')
+                args = SimpleNamespace(bundle=bundle, version='1.0.0', commit='a' * 40)
+                commands = []; created = False; verify_calls = 0; failed = False
+                def run(*cmd):
+                    nonlocal created, failed
+                    commands.append(cmd)
+                    if cmd[:3] == ('gh', 'release', 'create'):
+                        created = True
+                        return ''
+                    if cmd[:3] == ('gh', 'release', 'download'):
+                        if failure == 'download': raise OSError('download failure')
+                        for path in bundle.iterdir(): shutil.copyfile(path, root / 'remote-release' / path.name)
+                        return ''
+                    if 'PATCH' in cmd:
+                        if failure == 'publish': raise OSError('publish failure')
+                        raise AssertionError('unexpected publish')
+                    if failure == 'draft-list' and created and not failed:
+                        failed = True
+                        raise OSError('list failure')
+                    return json.dumps([[{'id':42, 'tag_name':'v1.0.0', 'draft':True}] if created else []])
+                def verify(*args):
+                    nonlocal verify_calls
+                    verify_calls += 1
+                    if failure == 'hosted-verify' and verify_calls == 2: raise ValueError('hosted failure')
+                def identity(*args):
+                    if failure == 'source': raise ValueError('source drift')
+                with patch.dict(os.environ, GITHUB_REPOSITORY='example/repo'), \
+                     patch.object(release, 'bundle_check', return_value={'tag':'v1.0.0','certificate_sha256':'b'*64}), \
+                     patch.object(release, 'verify_signed', side_effect=verify), patch.object(release, 'compare'), \
+                     patch.object(release, 'identity', side_effect=identity), \
+                     patch.object(release, 'lookup_release', return_value=None), \
+                     patch.object(Repository, 'run', side_effect=run):
+                    with self.assertRaises((ValueError, OSError)): release.publish(repo, args)
+                    with self.assertRaisesRegex(ValueError, 'already exists'): release.publish(repo, args)
+                self.assertEqual(sum(c[:3] == ('gh', 'release', 'create') for c in commands), 1)
+                self.assertEqual(sum('PATCH' in c for c in commands), int(failure == 'publish'))

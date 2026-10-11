@@ -2,7 +2,7 @@
 """Exercise the exact Gradle metadata parser in a disposable minimal Gradle project.
 
 One offline Gradle invocation; no source edits, Android build or nested package
-build. Final APK qualification separately proves the Android DSL receives 2/0.1.1.
+build. Final APK qualification separately proves the Android DSL receives the canonical VERSION_CODE/VERSION.
 """
 from pathlib import Path
 import subprocess

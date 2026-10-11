@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, 'tools/release')
 import release
 p = release.qualified_provenance(Path(sys.argv[1]), Path('VERSION').read_text().strip(),
-    release.run('git', 'rev-parse', 'HEAD'), '0' * 64,
+    release.discover().run('git', 'rev-parse', 'HEAD'), '0' * 64,
     '/nix/store/' + '0' * 32 + '-TEST-local.drv', '/nix/store/' + '0' * 32 + '-TEST-local')
 Path(sys.argv[2]).write_text(json.dumps(p, sort_keys=True, indent=2) + '\n')
 PYCODE

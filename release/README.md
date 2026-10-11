@@ -184,6 +184,32 @@ as a published-release lookup and
 as including drafts for callers with push authority. The implementation therefore
 uses different endpoints for published absence and draft retrieval.
 
+## Support-tooling policy
+
+The CLI discovers the caller worktree once and passes an immutable
+`source.Repository` to reusable source/history/readiness and publication functions.
+Imports do not discover a repository. `source.py` owns canonical stable release
+syntax, consumed-history policy and public identity; `release.py` owns command,
+artifact/provenance and publication orchestration. Payload and signed-APK verifiers
+remain separate boundaries. Dispatch and provenance use the same stable X.Y.Z
+policy as preparation; APK metadata extraction observes the artifact.
+
+Reviewed digests live in [`reviewed-inputs.sha256`](../tools/release/reviewed-inputs.sha256),
+not Java source syntax. Each sorted line is a lowercase SHA-256, two spaces, an
+allowlisted repository path and one LF. Both Java and Python independently reject
+missing, duplicate, unknown, unsorted or malformed entries and compare file bytes.
+The twelve reviewed values were copied unchanged; updating them requires review,
+not regeneration to match an unreviewed checkout. The public signer fingerprint
+likewise requires exactly 64 lowercase hex characters and LF.
+
+`source.py` also owns the no-network reviewed action SHA/version/runtime table and
+restricted plain-line `uses:` grammar. Readiness, tests and the workflow's
+`action-policy` check share it. The workflow check runs after checkout and before
+Nix installation; it requires the complete workflow declaration inventory. This
+is an internal guard, not a third human release command. Unsupported declaration
+syntax, unknown actions and runtime overrides fail closed. No YAML library or
+live action metadata discovery is used.
+
 ## Local qualification
 
 Use the pinned development environment. Fast standard-library tests:
@@ -191,6 +217,7 @@ Use the pinned development environment. Fast standard-library tests:
 ```sh
 python3 -B -m unittest discover -s tools/release -p 'test_*.py'
 python3 -B tools/release/release.py guard
+python3 -B tools/release/release.py action-policy
 python3 -B tools/release/test-build-metadata.py
 ```
 

@@ -5,24 +5,82 @@ changing worktree refs; target remote validation uses an isolated object databas
 Unavailable/stale history objects fail closed. Any v-prefixed
 tag must obey the stable Android tag contract, rather than being silently skipped.
 """
+import base64
+from dataclasses import dataclass
+import hashlib
 import os
-import json
 from pathlib import Path
 import re
 import subprocess
 import tempfile
-import release
 from payload import require
 
 MAX_CODE = 2100000000
 VERSION_RE = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
 METADATA = {'VERSION', 'VERSION_CODE'}
-CODE_WIRING = 'versionCode = releaseVersionCode'
-NAME_WIRING = 'versionName = rootProject.version.toString()'
 
 
-def git(*args):
-    return subprocess.check_output(['git', *args], cwd=release.ROOT)
+@dataclass(frozen=True)
+class Repository:
+    """An explicit caller worktree; construction does no discovery or I/O."""
+    root: Path
+
+    def __post_init__(self):
+        require(isinstance(self.root, Path) and self.root.is_absolute(), 'Absolute repository path required')
+
+    @property
+    def cert(self):
+        return self.root / 'release/signing/android-release-cert.pem'
+
+    @property
+    def fingerprint(self):
+        return self.root / 'release/signing/android-release-cert.sha256'
+
+    def git(self, *args):
+        return subprocess.check_output(['git', *args], cwd=self.root)
+
+    def run(self, *args):
+        return subprocess.check_output(args, text=True, cwd=self.root).strip()
+
+
+def discover():
+    # CLI boundary only: the executable may live in the store.
+    root = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()).resolve()
+    require(not root.is_relative_to('/nix/store'), 'Refusing a Nix-store worktree')
+    return Repository(root)
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def fingerprint(path):
+    data = Path(path).read_bytes()
+    require(re.fullmatch(rb'[0-9a-f]{64}\n', data),
+            'Expected fingerprint must be 64 lowercase SHA-256 hex characters and LF')
+    return data.decode().removesuffix('\n')
+
+
+def expected_identity(repo):
+    require(repo.cert.is_file() and repo.fingerprint.is_file(),
+            'Production identity unprovisioned: public android-release-cert.pem/.sha256 required')
+    value = fingerprint(repo.fingerprint)
+    pem = repo.cert.read_text()
+    match = re.fullmatch(r'-----BEGIN CERTIFICATE-----\n([A-Za-z0-9+/=\n]+)-----END CERTIFICATE-----\n?', pem)
+    require(match, 'Expected exactly one PEM certificate')
+    der = base64.b64decode(match[1].replace('\n', ''), validate=True)
+    require(hashlib.sha256(der).hexdigest() == value, 'Certificate/fingerprint mismatch')
+    repo.run(str(Path(os.environ['JAVA_HOME']) / 'bin/keytool'), '-printcert', '-file', str(repo.cert))
+    return value
+
+
+def guard(repo):
+    tracked = repo.git('ls-files', '-z', 'release/signing').decode().split('\0')
+    allowed = {'release/signing/README.md', 'release/signing/android-release-cert.pem',
+               'release/signing/android-release-cert.sha256'}
+    require(all(not p or p in allowed for p in tracked), 'Unexpected tracked signing file')
+    for path in (repo.root / 'release/signing').iterdir():
+        require(path.name in {Path(p).name for p in allowed}, 'Unexpected signing material on disk')
 
 
 def version(value):
@@ -39,27 +97,27 @@ def code(data):
     return value
 
 
-def blob(ref, name):
-    return git('show', f'{ref}:{name}')
+def blob(repo, ref, name):
+    return repo.git('show', f'{ref}:{name}')
 
 
-def historical_code(ref):
-    files = git('ls-tree', '--name-only', ref).decode().splitlines()
+def historical_code(repo, ref):
+    files = repo.git('ls-tree', '--name-only', ref).decode().splitlines()
     if 'VERSION_CODE' in files:
-        require(git('ls-tree', ref, 'VERSION_CODE').startswith(b'100644 '),
+        require(repo.git('ls-tree', ref, 'VERSION_CODE').startswith(b'100644 '),
                 'Nonregular historical VERSION_CODE')
-        return code(blob(ref, 'VERSION_CODE'))
+        return code(blob(repo, ref, 'VERSION_CODE'))
     # Compatibility only for tagged legacy sources; never for the worktree.
-    script = blob(ref, 'app/build.gradle.kts').decode()
+    script = blob(repo, ref, 'app/build.gradle.kts').decode()
     matches = re.findall(r'^\s*versionCode\s*=\s*([1-9][0-9]*)\s*$', script, re.M)
     require(len(matches) == 1 and len(re.findall(r'\bversionCode\s*=', script)) == 1,
             'Missing/ambiguous legacy versionCode at ' + ref)
     return code((matches[0] + '\n').encode())
 
 
-def remote_refs():
+def remote_refs(repo):
     refs = {}
-    for line in git('ls-remote', 'origin', 'refs/heads/main', 'refs/tags/*').decode().splitlines():
+    for line in repo.git('ls-remote', 'origin', 'refs/heads/main', 'refs/tags/*').decode().splitlines():
         parts = line.split('\t')
         require(len(parts) == 2 and re.fullmatch('[0-9a-f]{40}', parts[0]) and parts[1] not in refs,
                 'Malformed/ambiguous remote refs')
@@ -78,13 +136,13 @@ def release_refs(refs):
     return result
 
 
-def local_refs():
+def local_refs(repo):
     return dict(line.split(' ', 1)[::-1] for line in
-                git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags').decode().splitlines())
+                repo.git('for-each-ref', '--format=%(objectname) %(refname)', 'refs/tags').decode().splitlines())
 
 
-def history(remote, exclude=None):
-    local = release_refs(local_refs())
+def history(repo, remote, exclude=None):
+    local = release_refs(local_refs(repo))
     remote = release_refs(remote)
     if exclude:
         local.pop(exclude, None)
@@ -94,13 +152,13 @@ def history(remote, exclude=None):
             'Local/remote release tags differ; synchronize reviewed tag objects before retrying')
     consumed = []
     for ref in sorted(local):
-        require(git('cat-file', '-t', ref).strip() == b'tag', 'Annotated release tag required: ' + ref)
-        commit = git('rev-parse', ref + '^{commit}').decode().strip()
+        require(repo.git('cat-file', '-t', ref).strip() == b'tag', 'Annotated release tag required: ' + ref)
+        commit = repo.git('rev-parse', ref + '^{commit}').decode().strip()
         require(remote.get(ref + '^{}') == commit, 'Remote tag peel differs: ' + ref)
         target = ref.removeprefix('refs/tags/v')
-        require(git('ls-tree', commit, 'VERSION').startswith(b'100644 '), 'Nonregular tagged VERSION')
-        require(blob(commit, 'VERSION') == (target + '\n').encode(), 'Tag VERSION differs: ' + ref)
-        consumed.append((version(target), historical_code(commit)))
+        require(repo.git('ls-tree', commit, 'VERSION').startswith(b'100644 '), 'Nonregular tagged VERSION')
+        require(blob(repo, commit, 'VERSION') == (target + '\n').encode(), 'Tag VERSION differs: ' + ref)
+        consumed.append((version(target), historical_code(repo, commit)))
     require(len({c for _, c in consumed}) == len(consumed), 'Duplicate consumed versionCodes')
     return consumed
 
@@ -113,32 +171,59 @@ def next_code(target, consumed):
     return value
 
 
-def source_pins():
-    # Reuse the JVM guard's reviewed digest inventory, without a second pin list.
-    test = release.ROOT / 'app/src/test/java/org/totipo/android/OtpAuthSupplyChainGuardTest.java'
-    pins = re.findall(r'Map.entry\("([^"]+)", "([0-9a-f]{64})"\)', test.read_text())
-    require(len(pins) >= 12, 'Reviewed source guard inventory missing')
-    for name, digest in pins:
-        require(release.sha(release.ROOT / name) == digest, 'Reviewed supply-chain pin differs: ' + name)
+REVIEWED_PATHS = frozenset((
+    'app/build.gradle.kts',
+    'app/gradle.lockfile',
+    'build.gradle.kts',
+    'buildscript-gradle.lockfile',
+    'flake.lock',
+    'flake.nix',
+    'gradle.properties',
+    'gradle/verification-metadata.xml',
+    'gradle/wrapper/gradle-wrapper.jar',
+    'gradle/wrapper/gradle-wrapper.properties',
+    'package-deps.json',
+    'settings.gradle.kts',
+))
+INVENTORY = 'tools/release/reviewed-inputs.sha256'
 
 
+def reviewed_inputs(repo):
+    data = (repo.root / INVENTORY).read_bytes()
+    entries = {}
+    for line in data.splitlines(keepends=True):
+        match = re.fullmatch(rb'([0-9a-f]{64})  ([A-Za-z0-9/._-]+)\n', line)
+        require(match, 'Malformed reviewed digest entry')
+        digest, name = (v.decode() for v in match.groups())
+        require(name in REVIEWED_PATHS and name not in entries, 'Unknown/duplicate reviewed path: ' + name)
+        entries[name] = digest
+    require(set(entries) == REVIEWED_PATHS and list(entries) == sorted(entries),
+            'Missing/unsorted reviewed input inventory')
+    return entries
 
-def machinery_ready():
-    root = release.ROOT
+
+def source_pins(repo):
+    for name, digest in reviewed_inputs(repo).items():
+        path = repo.root / name
+        require(path.is_file() and not path.is_symlink() and sha(path) == digest,
+                'Reviewed supply-chain pin differs: ' + name)
+
+
+def machinery_ready(repo):
+    root = repo.root
     for name in ('tools/release/release.py', 'tools/release/source.py', 'tools/release/payload.py',
                  'tools/release/verify-signed-apk.py', 'tools/verify-apk.py', '.github/workflows/release.yml',
-                 'release/signing/android-release-cert.pem', 'release/signing/android-release-cert.sha256'):
+                 'release/signing/android-release-cert.pem', 'release/signing/android-release-cert.sha256', INVENTORY):
         require((root / name).is_file() and not (root / name).is_symlink(), 'Release prerequisite missing: ' + name)
-        git('ls-files', '--error-unmatch', name)
+        repo.git('ls-files', '--error-unmatch', name)
     workflow = (root / '.github/workflows/release.yml').read_text()
     require('workflow_dispatch:' in workflow and 'environment: android-release' in workflow,
             'Normal protected release workflow missing')
-    require(all(re.fullmatch(r'[\w/-]+@[0-9a-f]{40}', action)
-                for action in re.findall(r'uses: ([^\s]+)', workflow)), 'Unpinned release workflow action')
+    action_policy(repo)
 
 
-def source_ready():
-    root = release.ROOT
+def source_ready(repo):
+    root = repo.root
     code((root / 'VERSION_CODE').read_bytes())  # No legacy current-source fallback.
     build = (root / 'app/build.gradle.kts').read_text()
     require(re.findall(r'^\s*versionCode\s*=\s*(.*)$', build, re.M) == ['releaseVersionCode'],
@@ -152,11 +237,11 @@ def source_ready():
     root_build = (root / 'build.gradle.kts').read_text()
     require('layout.projectDirectory.file("VERSION")' in root_build and
             'version = versionText.removeSuffix("\\n")' in root_build, 'VERSION wiring missing')
-    source_pins()
-    machinery_ready()
-    release.guard()
-    release.expected_identity()
-    for name in git('ls-files', '-z').decode().split('\0'):
+    source_pins(repo)
+    machinery_ready(repo)
+    guard(repo)
+    expected_identity(repo)
+    for name in repo.git('ls-files', '-z').decode().split('\0'):
         if not name:
             continue
         path = root / name
@@ -167,33 +252,28 @@ def source_ready():
                                   path.read_bytes()), 'Private key in source: ' + name)
 
 
-def worktree():
-    # The executable may live in the store. Resolve the caller, never __file__.
-    root = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()).resolve()
-    require(not root.is_relative_to('/nix/store'), 'Refusing a Nix-store worktree')
-    release.ROOT = root
-    release.CERT = root / 'release/signing/android-release-cert.pem'
-    release.FP = root / 'release/signing/android-release-cert.sha256'
-    require(git('branch', '--show-current').strip() == b'main', 'Release source requires main')
-    git('rev-parse', '--verify', 'HEAD^{commit}')
+def worktree(repo):
+    root = repo.root
+    require(repo.git('branch', '--show-current').strip() == b'main', 'Release source requires main')
+    repo.git('rev-parse', '--verify', 'HEAD^{commit}')
     for name in METADATA:
         require((root / name).is_file() and not (root / name).is_symlink(), 'Missing/nonregular ' + name)
-        require(git('ls-files', '--error-unmatch', name), 'Untracked release metadata')
+        require(repo.git('ls-files', '--error-unmatch', name), 'Untracked release metadata')
     return root
 
 
-def dirty_policy(target, expected, clean=False):
-    require(not git('diff', '--cached', '--name-only', '-z'), 'Staged changes forbidden')
-    require(not git('ls-files', '--others', '--exclude-standard', '-z'), 'Untracked paths forbidden')
-    dirty = set(filter(None, git('diff', '--name-only', '-z').decode().split('\0')))
+def dirty_policy(repo, target, expected, clean=False):
+    require(not repo.git('diff', '--cached', '--name-only', '-z'), 'Staged changes forbidden')
+    require(not repo.git('ls-files', '--others', '--exclude-standard', '-z'), 'Untracked paths forbidden')
+    dirty = set(filter(None, repo.git('diff', '--name-only', '-z').decode().split('\0')))
     require(not dirty if clean else dirty <= METADATA, 'Unrelated/dirty source forbidden')
     if dirty:
-        require((release.ROOT / 'VERSION').read_bytes() == (target + '\n').encode() and
-                (release.ROOT / 'VERSION_CODE').read_bytes() == f'{expected}\n'.encode(),
+        require((repo.root / 'VERSION').read_bytes() == (target + '\n').encode() and
+                (repo.root / 'VERSION_CODE').read_bytes() == f'{expected}\n'.encode(),
                 'Only exact expected prepared metadata diff is permitted')
         for name in dirty:
-            require(git('ls-tree', 'HEAD', name).startswith(b'100644 '), 'Noncanonical metadata mode')
-            require((release.ROOT / name).stat().st_mode & 0o777 == 0o644, 'Metadata mode changed')
+            require(repo.git('ls-tree', 'HEAD', name).startswith(b'100644 '), 'Noncanonical metadata mode')
+            require((repo.root / name).stat().st_mode & 0o777 == 0o644, 'Metadata mode changed')
     return dirty
 
 
@@ -211,7 +291,8 @@ def atomic_write(path, data):
             os.unlink(temporary)
 
 
-def validate_tag(oid, target, head, expected, read=git):
+def validate_tag(repo, oid, target, head, expected, read=None):
+    read = repo.git if read is None else read
     require(re.fullmatch('[0-9a-f]{40}', oid), 'Malformed target tag object')
     require(read('cat-file', '-t', oid).strip() == b'tag', 'Annotated target tag required')
     raw = read('cat-file', 'tag', oid)
@@ -226,7 +307,7 @@ def validate_tag(oid, target, head, expected, read=git):
                 read('show', f'{head}:{name}') == (value + '\n').encode(), 'Target tag metadata differs')
 
 
-def validate_remote_tag(remote, ref, target, head, expected, oid):
+def validate_remote_tag(repo, remote, ref, target, head, expected, oid):
     require(remote.get(ref) == oid and remote.get(ref + '^{}') == head,
             'Remote target tag object/peel differs')
     # Fetch into an isolated object database: never adopt/move a worktree tag.
@@ -234,95 +315,132 @@ def validate_remote_tag(remote, ref, target, head, expected, oid):
         def read(*args):
             return subprocess.check_output(['git', '--git-dir=' + tmp, *args])
         read('init', '--bare', '--quiet')
-        url = git('remote', 'get-url', 'origin').decode().strip()
+        url = repo.git('remote', 'get-url', 'origin').decode().strip()
         read('-c', 'gc.auto=0', 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head',
              '--no-auto-maintenance', url, ref)
-        validate_tag(oid, target, head, expected, read)
+        validate_tag(repo, oid, target, head, expected, read)
 
 
-def release_tag(target, expected, remote, ref, local):
-    head = git('rev-parse', '--verify', 'HEAD^{commit}').decode().strip()
+def release_tag(repo, target, expected, remote, ref, local):
+    head = repo.git('rev-parse', '--verify', 'HEAD^{commit}').decode().strip()
     require(re.fullmatch('[0-9a-f]{40}', head), 'Full source commit required')
     def main_ready(refs):
         require(refs['refs/heads/main'] == head and
-                git('rev-parse', 'refs/remotes/origin/main').decode().strip() == head,
+                repo.git('rev-parse', 'refs/remotes/origin/main').decode().strip() == head,
                 'origin/main must resolve to HEAD (remote and tracking ref)')
     main_ready(remote)
     # Verify and push to the same single endpoint; multiple push URLs fail closed.
-    url = git('remote', 'get-url', 'origin').decode().strip()
-    require(git('remote', 'get-url', '--push', '--all', 'origin').decode().splitlines() == [url],
+    url = repo.git('remote', 'get-url', 'origin').decode().strip()
+    require(repo.git('remote', 'get-url', '--push', '--all', 'origin').decode().splitlines() == [url],
             'origin push endpoint differs from inspected origin')
     oid = local.get(ref)
     if oid:
-        validate_tag(oid, target, head, expected)
+        validate_tag(repo, oid, target, head, expected)
     if ref in remote or ref + '^{}' in remote:
         require(oid is not None, 'Remote target exists without reviewed local tag')
-        validate_remote_tag(remote, ref, target, head, expected, oid)
+        validate_remote_tag(repo, remote, ref, target, head, expected, oid)
     # Recheck source cleanliness and remote state immediately before mutation.
-    dirty_policy(target, expected, clean=True)
-    require(git('rev-parse', 'HEAD').decode().strip() == head, 'HEAD changed during validation')
-    current = remote_refs()
+    dirty_policy(repo, target, expected, clean=True)
+    require(repo.git('rev-parse', 'HEAD').decode().strip() == head, 'HEAD changed during validation')
+    current = remote_refs(repo)
     require(current == remote, 'Remote refs changed during validation')
     main_ready(current)
     if oid is None:
-        git('tag', '--no-sign', '-a', 'v' + target, '-m', 'Totipo Android ' + target, head)
-        oid = git('rev-parse', ref).decode().strip()
-    validate_tag(oid, target, head, expected)
+        repo.git('tag', '--no-sign', '-a', 'v' + target, '-m', 'Totipo Android ' + target, head)
+        oid = repo.git('rev-parse', ref).decode().strip()
+    validate_tag(repo, oid, target, head, expected)
     if ref not in remote:
-        git('-c', 'remote.origin.mirror=false', 'push', '--no-follow-tags', '--no-force',
+        repo.git('-c', 'remote.origin.mirror=false', 'push', '--no-follow-tags', '--no-force',
             url, oid + ':' + ref)
-    final = remote_refs()
+    final = remote_refs(repo)
     main_ready(final)
-    validate_remote_tag(final, ref, target, head, expected, oid)
+    validate_remote_tag(repo, final, ref, target, head, expected, oid)
     # Cover remote movement during isolated-object validation too.
-    require(remote_refs() == final, 'Remote changed after tag verification')
-    require(git('rev-parse', 'HEAD').decode().strip() == head and
-            local_refs().get(ref) == oid, 'Local source/tag changed during verification')
-    dirty_policy(target, expected, clean=True)
+    require(remote_refs(repo) == final, 'Remote changed after tag verification')
+    require(repo.git('rev-parse', 'HEAD').decode().strip() == head and
+            local_refs(repo).get(ref) == oid, 'Local source/tag changed during verification')
+    dirty_policy(repo, target, expected, clean=True)
     return dict(version=target, version_code=expected, tag='v' + target, source_commit=head)
 
 
-def execute(command, target, json_output=False):
-    require(command in ('prepare-release', 'check-release', 'release-tag'), 'Unknown source command')
+def identity(repo, target, commit):
     version(target)
-    root = worktree()
-    remote = remote_refs()
-    ref = 'refs/tags/v' + target
-    tagging = command == 'release-tag'
-    require(tagging or (ref not in remote and ref + '^{}' not in remote), 'Target remote tag already exists')
-    local = local_refs()
-    require(tagging or ref not in local, 'Target local tag already exists')
-    consumed = history(remote, exclude=ref if tagging else None)
-    expected = next_code(target, consumed)
-    dirty_policy(target, expected, clean=tagging)
-    source_ready()
-    if command == 'prepare-release':
-        current = (root / 'VERSION').read_bytes()
-        version(current.decode().removesuffix('\n'))
-        require(current.endswith(b'\n'), 'Malformed VERSION')
-        changes = [(root / 'VERSION', (target + '\n').encode()),
-                   (root / 'VERSION_CODE', f'{expected}\n'.encode())]
-        changed = [p.name for p, data in changes if p.read_bytes() != data]
-        for path, data in changes:
-            if path.name in changed:
-                atomic_write(path, data)
-        # Focused post-write checks; no build, signing or Git mutation.
-        dirty_policy(target, expected)
-        source_ready()
-        print(('Prepared' if changed else 'Already prepared') + f' VERSION={target}; VERSION_CODE={expected}')
-        print('Changed paths: ' + (', '.join(changed) or 'none'))
-        return
-    require((root / 'VERSION').read_bytes() == (target + '\n').encode(), 'VERSION differs from target')
-    require(code((root / 'VERSION_CODE').read_bytes()) == expected, 'VERSION_CODE differs from consumed history')
-    if tagging:
-        result = release_tag(target, expected, remote, ref, local)
-        if json_output:
-            print(json.dumps(result, sort_keys=True, indent=2))
-        else:
-            print('Release tag ready.\n')
-            for key in ('version', 'version_code', 'tag', 'source_commit'):
-                print(f'  {"versionCode" if key == "version_code" else key}: {result[key]}')
-            print('\nGitHub Release workflow inputs:\n')
-            print(f'  version: {target}\n  source_commit: {result["source_commit"]}')
-        return
-    print(f'{command}: {target}; VERSION_CODE={expected}; PASS')
+    require(re.fullmatch('[0-9a-f]{40}', commit), 'Full reviewed commit required')
+    require(os.environ['GITHUB_REF'] == 'refs/heads/main', 'Dispatch must select main')
+    require(os.environ['GITHUB_SHA'] == commit, 'Dispatch SHA must equal reviewed commit')
+    require(repo.run('git', 'rev-parse', 'HEAD') == commit, 'Checkout differs from reviewed source')
+    require((repo.root / 'VERSION').read_text() == target + '\n', 'VERSION differs')
+    require(not repo.run('git', 'status', '--porcelain', '--untracked-files=all'), 'Checkout mutated')
+    tag = 'refs/tags/v' + target
+    require(repo.run('git', 'cat-file', '-t', tag) == 'tag', 'Existing annotated tag required')
+    require(repo.run('git', 'rev-parse', tag + '^{commit}') == commit, 'Tag source differs')
+    remote = dict(line.split()[::-1] for line in repo.run('git', 'ls-remote', 'origin',
+                  'refs/heads/main', tag, tag + '^{}').splitlines())
+    require(remote.get('refs/heads/main') == commit, 'Reviewed source is no longer current main')
+    require(remote.get(tag) == repo.run('git', 'rev-parse', tag) and
+            remote.get(tag + '^{}') == commit, 'Remote annotated tag differs')
+    code((repo.root / 'VERSION_CODE').read_bytes())
+    guard(repo)
+    return expected_identity(repo)
+
+
+# Reviewed in ANDROID_ACTIONS_RELEASE_UX_REPORT.md. Runtime is review metadata,
+# never inferred from the tag text or fetched over the network at qualification.
+REVIEWED_ACTIONS = {
+    'actions/checkout': ('3d3c42e5aac5ba805825da76410c181273ba90b1', 'v7.0.1', 'node24'),
+    'cachix/install-nix-action': ('13d8dd58da0234aa297dedd986986ccb8e7f3e24', 'v31.11.1', 'composite'),
+    'actions/upload-artifact': ('cf430e030ddbb5b0abf93d22962f4752f3646cd9', 'v7.0.2', 'node24'),
+    'actions/download-artifact': ('9000827ccba6bdab643e8b6fd33ac0654aef8333', 'v8.0.2', 'node24'),
+}
+
+
+def workflow_actions(contents):
+    """Restricted declaration grammar, not a general YAML parser.
+
+    Uses must occupy a plain line with its reviewed version comment. Quoted,
+    flow, multiline, alias/anchor and merge declarations are unsupported.
+    """
+    require('ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION' not in contents,
+            'Unreviewed Node runtime override')
+    seen = []
+    block_indent = None
+    for line in contents.splitlines():
+        if line.lstrip().startswith('#'):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if block_indent is not None and (not line.strip() or indent > block_indent):
+            continue  # Literal/folded scalar contents are not YAML declarations.
+        block_indent = None
+        require(not re.match(r'''\s*(?:-\s*)?["']''', line)
+                and not re.match(r'\s*(?:-\s*)?[{\[]', line)
+                and not re.search(r':\s*[{\[]', line)
+                and line.strip() not in ('---', '...') and not line.startswith('%'),
+                'Unsupported quoted/flow/document workflow grammar')
+        require('\t' not in line and not re.search(r'(?:^|\s)[&*][\w-]+|<<\s*:', line),
+                'Unsupported workflow alias/anchor/tab grammar')
+        if re.search(r'\buses\b[\s\"\x27]*:', line, re.I):
+            match = re.fullmatch(r'\s*(?:-\s*)?uses: ([\w/-]+)@([0-9a-f]{40}) # (v[0-9]+\.[0-9]+\.[0-9]+)', line)
+            require(match, 'Unsupported/unpinned action declaration: ' + line)
+            action, digest, tag = match.groups()
+            require(action in REVIEWED_ACTIONS and (digest, tag) == REVIEWED_ACTIONS[action][:2],
+                    'Unreviewed action/version/runtime association: ' + action)
+            seen.append(action)
+        if re.search(r':\s*[|>][+-]?\s*$', line):
+            block_indent = indent
+    return seen
+
+
+def action_policy(repo):
+    github = repo.root / '.github'
+    workflows = github / 'workflows'
+    declared = {p.name for p in workflows.iterdir() if p.suffix in ('.yml', '.yaml')}
+    require(declared == {'ci.yml', 'release.yml'}, 'Unreviewed workflow inventory')
+    candidates = sorted(set(github.rglob('*.yml')) | set(github.rglob('*.yaml')))
+    seen = set()
+    for path in candidates:
+        require(not path.is_symlink(), 'Symlink workflow/action refused')
+        actions = workflow_actions(path.read_text())
+        if path.parent == workflows:
+            require(actions, 'Workflow has no reviewed actions')
+        seen.update(actions)
+    require(seen == set(REVIEWED_ACTIONS), 'Missing reviewed action declaration')

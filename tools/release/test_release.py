@@ -9,6 +9,7 @@ from unittest.mock import patch
 import zipfile
 from payload import compare, inventory
 import release
+import source
 
 spec = importlib.util.spec_from_file_location('signed', Path(__file__).with_name('verify-signed-apk.py'))
 signed = importlib.util.module_from_spec(spec)
@@ -20,6 +21,7 @@ class ReleaseTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.repo = source.Repository(self.root)
 
     def metadata(self, code=42, name='1.0.0', app='org.totipo.android'):
         return dict(application_id=app, version_code=code, version_name=name)
@@ -44,7 +46,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_non_one_signed_metadata_and_mismatches(self):
         provenance = self.provenance()
-        fp = self.root / 'fp'; fp.write_text('a' * 64)
+        fp = self.root / 'fp'; fp.write_text('a' * 64 + '\n')
         # Exercise the verifier, with external SDK responses deterministically mocked.
         for actual, error in ((self.metadata(), None), (self.metadata(code=43), 'versionCode mismatch'),
                               (self.metadata(name='1.0.1'), 'versionName mismatch')):
@@ -83,7 +85,7 @@ class ReleaseTests(unittest.TestCase):
     def test_apk_metadata_pins_identity(self):
         for app in ('org.totipo.android', 'org.attacker'):
             badging = f"package: name='{app}' versionCode='42' versionName='1.0.0' platformBuildVersionName='test'\n"
-            with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), patch.object(release, 'run', return_value=badging):
+            with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), patch.object(release, 'sdk_output', return_value=badging):
                 if app == release.APPLICATION_ID: self.assertEqual(release.apk_metadata('fixture'), self.metadata())
                 else:
                     with self.assertRaisesRegex(ValueError, 'applicationId'): release.apk_metadata('fixture')
@@ -107,7 +109,7 @@ class ReleaseTests(unittest.TestCase):
         (self.root / 'totipo-android-1.0.0.apk').write_bytes(b'signed')
         args = argparse.Namespace(version='1.0.0', bundle=self.root, output=self.root / 'verified')
         with patch.object(release, 'bundle_check', return_value=release.load_provenance(provenance)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'):
-            release.finalize(args)
+            release.finalize(self.repo, args)
         self.assertEqual((args.output / provenance.name).read_bytes(), original)
         self.assertEqual((args.output / 'unsigned-release.apk').read_bytes(), self.unsigned.read_bytes())
 
@@ -152,28 +154,28 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(signed.fingerprint(p), 'a' * 64)
 
     def test_unprovisioned_and_malformed_identity(self):
-        with patch.object(release, 'CERT', self.root / 'cert'), patch.object(release, 'FP', self.root / 'fp'):
-            with self.assertRaisesRegex(ValueError, 'unprovisioned'): release.expected_identity()
-            release.CERT.write_text('not a certificate')
-            release.FP.write_text('a' * 64)
-            with self.assertRaisesRegex(ValueError, 'PEM'): release.expected_identity()
+        with self.assertRaisesRegex(ValueError, 'unprovisioned'): source.expected_identity(self.repo)
+        self.repo.cert.parent.mkdir(parents=True)
+        self.repo.cert.write_text('not a certificate')
+        self.repo.fingerprint.write_text('a' * 64 + '\n')
+        with self.assertRaisesRegex(ValueError, 'PEM'): source.expected_identity(self.repo)
 
     def test_source_fail_closed(self):
         for version, commit in (('x; echo bad', 'a' * 40), ('1.0.0-dev', 'a' * 40), ('1.0.0', 'main')):
-            with self.assertRaises(ValueError): release.identity(version, commit)
+            with self.assertRaises(ValueError): source.identity(self.repo, version, commit)
         with patch.dict('os.environ', {'GITHUB_REF': 'refs/tags/v1.0.0'}):
-            with self.assertRaisesRegex(ValueError, 'main'): release.identity('1.0.0', 'a' * 40)
+            with self.assertRaisesRegex(ValueError, 'main'): source.identity(self.repo, '1.0.0', 'a' * 40)
 
     def test_private_tracking_guard(self):
         area = self.root / 'release/signing'
         area.mkdir(parents=True)
         (area / 'README.md').write_text('public')
-        with patch.object(release, 'ROOT', self.root), patch.object(release, 'run', return_value='release/signing/private.p12'):
-            with self.assertRaisesRegex(ValueError, 'tracked'): release.guard()
-        with patch.object(release, 'ROOT', self.root), patch.object(release, 'run', return_value='release/signing/README.md'):
-            release.guard()
+        with patch.object(source.Repository, 'git', return_value=b'release/signing/private.p12'):
+            with self.assertRaisesRegex(ValueError, 'tracked'): source.guard(self.repo)
+        with patch.object(source.Repository, 'git', return_value=b'release/signing/README.md'):
+            source.guard(self.repo)
             (area / 'private.key').write_text('TEST')
-            with self.assertRaisesRegex(ValueError, 'material'): release.guard()
+            with self.assertRaisesRegex(ValueError, 'material'): source.guard(self.repo)
 
     def test_workflow_static_contract(self):
         path = Path(__file__).resolve().parents[2] / '.github/workflows/release.yml'
@@ -181,32 +183,7 @@ class ReleaseTests(unittest.TestCase):
             self.skipTest('Workflow intentionally outside filtered Android package source')
         text = path.read_text()
         import re
-        uses = re.findall(r'uses: ([^\s]+)', text)
-        self.assertTrue(uses)
-        self.assertTrue(all(re.fullmatch(r'[\w/-]+@[0-9a-f]{40}', u) for u in uses))
-        reviewed = {
-            'actions/checkout': ('3d3c42e5aac5ba805825da76410c181273ba90b1', 'v7.0.1'),
-            'cachix/install-nix-action': ('13d8dd58da0234aa297dedd986986ccb8e7f3e24', 'v31.11.1'),
-            'actions/upload-artifact': ('cf430e030ddbb5b0abf93d22962f4752f3646cd9', 'v7.0.2'),
-            'actions/download-artifact': ('9000827ccba6bdab643e8b6fd33ac0654aef8333', 'v8.0.2'),
-        }
-        workflows = {p.name: p for p in path.parent.iterdir() if p.suffix in ('.yml', '.yaml')}
-        self.assertEqual(set(workflows), {'ci.yml', 'release.yml'})
-        # Include local action/reusable-workflow files, so a new uses cannot evade coverage.
-        candidates = set(workflows.values()) | set(path.parents[1].rglob('*.yml')) | set(path.parents[1].rglob('*.yaml'))
-        seen = set()
-        for candidate in candidates:
-            contents = candidate.read_text()
-            entries = [line for line in contents.splitlines() if re.search(r'\buses\s*:', line)]
-            for line in entries:
-                match = re.fullmatch(r'\s*(?:-\s*)?uses: ([\w/-]+)@([0-9a-f]{40}) # (v[0-9]+\.[0-9]+\.[0-9]+)', line)
-                self.assertIsNotNone(match, line)
-                action, sha, tag = match.groups()
-                self.assertIn(action, reviewed)
-                self.assertEqual((sha, tag), reviewed[action])
-                seen.add(action)
-            self.assertNotIn('ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION', contents)
-        self.assertEqual(seen, set(reviewed))
+        source.action_policy(source.Repository(path.parents[2]))
         self.assertIn('REQUESTED_COMMIT: ${{ inputs.source_commit }}', text)
         self.assertEqual(text.count('persist-credentials: false'), 4)
         self.assertEqual(text.count('fetch-depth: 0'), 4)
@@ -246,8 +223,8 @@ class ReleaseTests(unittest.TestCase):
     def test_prepare_refuses_parallel_derivation(self):
         import argparse
         args = argparse.Namespace(version='1.0.0', commit='a' * 40, bundle=self.root / 'bundle')
-        with patch.object(release, 'identity', return_value='b' * 64), patch.object(release, 'run', side_effect=['/nix/store/check.drv', '/nix/store/other.drv']):
-            with self.assertRaisesRegex(ValueError, 'derivations differ'): release.prepare(args)
+        with patch.object(release, 'identity', return_value='b' * 64), patch.object(source.Repository, 'run', side_effect=['/nix/store/check.drv', '/nix/store/other.drv']):
+            with self.assertRaisesRegex(ValueError, 'derivations differ'): release.prepare(self.repo, args)
         self.assertFalse(args.bundle.exists())
 
     def test_bundle_refuses_changed_unsigned_and_provenance(self):
@@ -263,15 +240,15 @@ class ReleaseTests(unittest.TestCase):
         provenance.write_text(json.dumps(p))
         (self.root / 'unsigned-release.apk.sha256').write_text(p['unsigned_sha256'] + '  unsigned-release.apk\n')
         with patch.object(release, 'identity', return_value='b' * 64), patch.object(release, 'unsigned_check'), patch.object(release, 'apk_metadata', return_value=dict(application_id=p['application_id'], version_code=p['version_code'], version_name=p['version_name'])):
-            release.bundle_check(args)
+            release.bundle_check(self.repo, args)
             apk.write_bytes(b'changed')
-            with self.assertRaisesRegex(ValueError, 'changed'): release.bundle_check(args)
+            with self.assertRaisesRegex(ValueError, 'changed'): release.bundle_check(self.repo, args)
             p['source_commit'] = 'c' * 40; provenance.write_text(json.dumps(p))
-            with self.assertRaisesRegex(ValueError, 'identity'): release.bundle_check(args)
+            with self.assertRaisesRegex(ValueError, 'identity'): release.bundle_check(self.repo, args)
 
     def test_signature_output_rejections(self):
         from types import SimpleNamespace
-        p = self.root / 'fingerprint'; p.write_text('a' * 64)
+        p = self.root / 'fingerprint'; p.write_text('a' * 64 + '\n')
         valid = ('Verified using v1 scheme (JAR signing): false\n'
                  'Verified using v2 scheme (APK Signature Scheme v2): true\n'
                  'Verified using v3 scheme (APK Signature Scheme v3): true\n'
@@ -284,6 +261,18 @@ class ReleaseTests(unittest.TestCase):
         for output in cases:
             with patch.dict('os.environ', {'ANDROID_HOME': '/pinned/sdk'}), patch.object(signed.subprocess, 'run', return_value=SimpleNamespace(stdout=output)), patch.object(release, 'apk_metadata', return_value=self.metadata()):
                 with self.assertRaises(ValueError): signed.verify('test.apk', p, self.provenance(), self.unsigned)
+
+    def test_alignment_failure_is_fatal(self):
+        import subprocess
+        provenance = self.provenance()
+        fp = self.root / 'fp'; fp.write_text('a' * 64 + '\n')
+        with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), \
+             patch.object(signed, 'unsigned_check'), patch.object(signed, 'bind_unsigned'), \
+             patch.object(signed, 'require_metadata'), \
+             patch.object(signed.subprocess, 'run', side_effect=[SimpleNamespace(stdout=self.signature()),
+                          subprocess.CalledProcessError(1, 'zipalign')]):
+            with self.assertRaises(subprocess.CalledProcessError):
+                signed.verify('signed.apk', fp, provenance, self.unsigned)
 
     def test_initial_404_then_draft_publish(self):
         # RED on the original implementation: the tag endpoint is for published
@@ -313,8 +302,8 @@ class ReleaseTests(unittest.TestCase):
                     raise subprocess.CalledProcessError(1, cmd, output='{"status":"404"}')
                 return json.dumps([[dict(draft=True, tag_name='v1.0.0', id=42)] if created else []])
             raise AssertionError(cmd)
-        with patch.dict('os.environ', GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed', side_effect=lambda apk, bundle: events.append(('verify', apk))), patch.object(release, 'compare'), patch.object(release.subprocess, 'run', return_value=SimpleNamespace(stdout='HTTP/2.0 404 Not Found\n\n{"message":"Not Found","status":"404"}', returncode=1)), patch.object(release, 'identity', side_effect=lambda *args: events.append(('identity', args))), patch.object(release, 'run', side_effect=fake_run):
-            release.publish(args)
+        with patch.dict('os.environ', GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed', side_effect=lambda repo, apk, bundle: events.append(('verify', apk))), patch.object(release, 'compare'), patch.object(release.subprocess, 'run', return_value=SimpleNamespace(stdout='HTTP/2.0 404 Not Found\n\n{"message":"Not Found","status":"404"}', returncode=1)), patch.object(release, 'identity', side_effect=lambda *args: events.append(('identity', args))), patch.object(source.Repository, 'run', side_effect=fake_run):
+            release.publish(self.repo, args)
         self.assertTrue(any('PATCH' in c for c in commands))
         self.assertEqual([event[1] for event in events if event[0] == 'verify'],
                          [apk, self.root / 'remote-release' / apk.name])
@@ -341,8 +330,8 @@ class ReleaseTests(unittest.TestCase):
                 target = self.root / 'remote-release'
                 (target / apk.name).write_bytes(b'tampered')
             return ''
-        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release, 'lookup_release', return_value=None), patch.object(release, 'run', side_effect=fake_run):
-            with self.assertRaisesRegex(ValueError, 'Remote release bytes'): release.publish(args)
+        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release, 'lookup_release', return_value=None), patch.object(source.Repository, 'run', side_effect=fake_run):
+            with self.assertRaisesRegex(ValueError, 'Remote release bytes'): release.publish(self.repo, args)
         self.assertTrue(any(c[:3] == ('gh', 'release', 'create') and '--draft' in c for c in commands))
         self.assertFalse(any('PATCH' in c for c in commands))
 

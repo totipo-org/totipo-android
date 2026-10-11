@@ -42,24 +42,51 @@ public final class OtpAuthSupplyChainGuardTest {
                 digest((settings + "\nrepositories { mavenLocal() }\n").getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
+    private static final java.util.Set<String> REVIEWED_PATHS = java.util.Set.of(
+            "app/build.gradle.kts",
+            "app/gradle.lockfile",
+            "build.gradle.kts",
+            "buildscript-gradle.lockfile",
+            "flake.lock",
+            "flake.nix",
+            "gradle.properties",
+            "gradle/verification-metadata.xml",
+            "gradle/wrapper/gradle-wrapper.jar",
+            "gradle/wrapper/gradle-wrapper.properties",
+            "package-deps.json",
+            "settings.gradle.kts");
+
+    private static java.util.Map<String, String> reviewedInputs(String data) {
+        var entries = new java.util.LinkedHashMap<String, String>();
+        for (String line : data.split("(?<=\\n)", -1)) {
+            if (line.isEmpty()) continue;
+            if (!line.matches("[0-9a-f]{64}  [A-Za-z0-9/._-]+\\n"))
+                throw new IllegalArgumentException("Malformed reviewed digest entry");
+            String name = line.substring(66, line.length() - 1);
+            if (!REVIEWED_PATHS.contains(name) || entries.putIfAbsent(name, line.substring(0, 64)) != null)
+                throw new IllegalArgumentException("Unknown/duplicate reviewed path");
+        }
+        if (!entries.keySet().equals(REVIEWED_PATHS)
+                || !new java.util.ArrayList<>(entries.keySet()).equals(entries.keySet().stream().sorted().toList()))
+            throw new IllegalArgumentException("Missing/unsorted reviewed input inventory");
+        return entries;
+    }
+
+    @Test public void reviewedInventoryFailsClosed() throws Exception {
+        String inventory = Files.readString(Path.of("../tools/release/reviewed-inputs.sha256"));
+        assertEquals(REVIEWED_PATHS, reviewedInputs(inventory).keySet());
+        String first = inventory.substring(0, inventory.indexOf('\n') + 1);
+        for (String bad : List.of("", inventory.substring(first.length()), inventory + first,
+                inventory.replace("app/build.gradle.kts", "unknown"), inventory.toUpperCase(java.util.Locale.ROOT),
+                inventory.replaceFirst("  ", " "), inventory.stripTrailing(), inventory.replace("\n", "\r\n"),
+                inventory.substring(first.length()) + first)) {
+            assertThrows(IllegalArgumentException.class, () -> reviewedInputs(bad));
+        }
+    }
+
     @Test public void reviewedSupplyChainInputsRemainPinned() throws Exception {
-        // Stable build scripts remain fully pinned; VERSION and VERSION_CODE are release metadata.
-        // Flake pin reviewed for the two-command release interface; toolchain inputs unchanged.
-        var baseline = java.util.Map.ofEntries(
-                java.util.Map.entry("app/build.gradle.kts", "eb6dbefbbdef74771d5d428969248dd936b40955c0b8286adcb07ff8db41e98c"),
-                java.util.Map.entry("build.gradle.kts", "08ecc23eea4637d5b5d0bf36b9f9d39f67e23fa3a6be57f34f594d6ad8daa348"),
-                java.util.Map.entry("settings.gradle.kts", "948017ca7cb553ecfd91a9f3eab56a1db4870c7eb4c0086cb2f4527503f89141"),
-                java.util.Map.entry("gradle.properties", "3db21dde187dd9e9cba8400b07e91374f69131754994c004b2810949be97c27b"),
-                java.util.Map.entry("gradle/wrapper/gradle-wrapper.properties", "e81b90975868be2513ca00d6a5a01303a406a5cb01a306210b887e983e4b17ae"),
-                java.util.Map.entry("gradle/wrapper/gradle-wrapper.jar", "238e777fcddd7e34f9708186085def2abd6e08e658505b38718d79d74c21abd5"),
-                java.util.Map.entry("gradle/verification-metadata.xml", "0492327c6a5445cec7c140630598f97853074573a4acf2e2d8565ce481cbfba4"),
-                java.util.Map.entry("app/gradle.lockfile", "4d3aee17359005cc60a5f3286c4583a35fffcdce91bb6992ad792eebf5c42226"),
-                java.util.Map.entry("buildscript-gradle.lockfile", "22efaa36cdbc4212cb62beb29837199812865f2b303caaef124b07e9915fc1a0"),
-                java.util.Map.entry("flake.nix", "2942b4d0ae94a5c9ab47a0a24c00c4a8a6b355910a04d90fcb2a1dee81234ef8"),
-                // Rebaselined for the intentional flake update in 5f2fdd8.
-                java.util.Map.entry("flake.lock", "44728fcfd8529462cb415b186ee4ce3400343dd911d325b6a965bd386b9f7749"),
-                // Rebaselined for the verified Google Play SDK Index snapshot refresh.
-                java.util.Map.entry("package-deps.json", "8d4ac6dd7fc08cc3793ae46f21cb885cf1300ccef992fe9f399fe6982f89c133"));
+        // Expected digests live in data, never in either consumer's source syntax.
+        var baseline = reviewedInputs(Files.readString(Path.of("../tools/release/reviewed-inputs.sha256")));
         for (var entry : baseline.entrySet()) {
             Path input = Path.of("../" + entry.getKey());
             // package.nix deliberately excludes these three evaluator/cache inputs from Gradle's source tree.

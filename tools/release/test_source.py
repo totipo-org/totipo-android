@@ -35,11 +35,7 @@ class SourceTests(unittest.TestCase):
         (self.root / 'build.gradle.kts').write_bytes((REPO / 'build.gradle.kts').read_bytes())
         self.commit()
         self.sync()
-        self.previous = (release.ROOT, release.CERT, release.FP)
-        self.addCleanup(self.restore)
-
-    def restore(self):
-        release.ROOT, release.CERT, release.FP = self.previous
+        self.repo = source.Repository(self.root)
 
     def call(self, *args):
         return subprocess.check_output(['git', *args], cwd=self.root, stderr=subprocess.DEVNULL).decode().strip()
@@ -64,21 +60,14 @@ class SourceTests(unittest.TestCase):
 
     @contextlib.contextmanager
     def context(self, readiness=True):
-        before = Path.cwd()
-        os.chdir(self.root)
-        try:
-            with contextlib.ExitStack() as stack:
-                if readiness:
-                    stack.enter_context(patch.object(source, 'source_pins'))
-                    stack.enter_context(patch.object(source, 'machinery_ready'))
-                    stack.enter_context(patch.object(release, 'guard'))
-                    stack.enter_context(patch.object(release, 'expected_identity', return_value='a' * 64))
-                yield
-        finally:
-            os.chdir(before)
+        with contextlib.ExitStack() as stack:
+            if readiness:
+                for name in ('source_pins', 'machinery_ready', 'guard', 'expected_identity'):
+                    stack.enter_context(patch.object(source, name, return_value='a' * 64))
+            yield
 
     def execute(self, command, target='0.1.2'):
-        with self.context(): source.execute(command, target)
+        with self.context(): release.execute_source(self.repo, command, target)
 
     def prepared(self, commit=False):
         self.execute('prepare-release')
@@ -138,26 +127,26 @@ class SourceTests(unittest.TestCase):
     def test_source_wiring_duplicate_authority_and_identity(self):
         self.prepared(commit=True)
         with self.context():
-            source.worktree()
-            source.source_ready()
+            source.worktree(self.repo)
+            source.source_ready(self.repo)
             p = self.root / 'app/build.gradle.kts'
             original = p.read_text()
             for extra in ('\nversionCode = 99\n', '\nversionName = "other"\n', '\napplicationId = "other"\n'):
                 p.write_text(original + extra)
-                with self.assertRaises(ValueError): source.source_ready()
+                with self.assertRaises(ValueError): source.source_ready(self.repo)
             p.write_text(original)
-            with patch.object(release, 'expected_identity', side_effect=ValueError('Invalid public signer')):
-                with self.assertRaisesRegex(ValueError, 'public signer'): source.source_ready()
+            with patch.object(source, 'expected_identity', side_effect=ValueError('Invalid public signer')):
+                with self.assertRaisesRegex(ValueError, 'public signer'): source.source_ready(self.repo)
         # Actual shared identity parser, no mock: missing and malformed certificate.
-        with patch.object(release, 'CERT', self.root / 'cert'), patch.object(release, 'FP', self.root / 'fp'):
-            with self.assertRaises(ValueError): release.expected_identity()
-            release.CERT.write_text('bad'); release.FP.write_text('a' * 64)
-            with self.assertRaises(ValueError): release.expected_identity()
+        with self.assertRaises(ValueError): source.expected_identity(self.repo)
+        self.repo.cert.parent.mkdir(parents=True)
+        self.repo.cert.write_text('bad'); self.repo.fingerprint.write_text('a' * 64 + '\n')
+        with self.assertRaises(ValueError): source.expected_identity(self.repo)
 
     def test_history_legacy_new_format_and_overflow(self):
         with self.context():
-            source.worktree()
-            self.assertEqual(source.next_code('0.1.2', source.history(source.remote_refs())), 3)
+            source.worktree(self.repo)
+            self.assertEqual(source.next_code('0.1.2', source.history(self.repo, source.remote_refs(self.repo))), 3)
         self.metadata('0.1.2', 3); self.commit(); self.tag('0.1.2'); self.sync()
         self.execute('prepare-release', '0.1.3')
         self.assertEqual((self.root / 'VERSION_CODE').read_text(), '4\n')
@@ -218,7 +207,7 @@ class SourceTests(unittest.TestCase):
         import io
         output = io.StringIO()
         with self.context(), contextlib.redirect_stdout(output):
-            source.execute('release-tag', '0.1.2', json_output)
+            release.execute_source(self.repo, 'release-tag', '0.1.2', json_output)
         return output.getvalue()
 
     def assert_reject_unchanged(self):
@@ -310,28 +299,28 @@ class SourceTests(unittest.TestCase):
         self.prepared(commit=True)
         self.tag('0.1.2')
         with self.context():
-            source.worktree()
-            remote = source.remote_refs()
+            source.worktree(self.repo)
+            remote = source.remote_refs(self.repo)
             oid = self.call('rev-parse', 'v0.1.2')
             head = self.call('rev-parse', 'HEAD')
             self.call('push', 'origin', 'refs/tags/v0.1.2:refs/tags/v0.1.2')
-            remote = source.remote_refs()
-            source.validate_remote_tag(remote, 'refs/tags/v0.1.2', '0.1.2', head, 3, oid)
+            remote = source.remote_refs(self.repo)
+            source.validate_remote_tag(self.repo, remote, 'refs/tags/v0.1.2', '0.1.2', head, 3, oid)
             with self.assertRaisesRegex(ValueError, 'shape'):
-                source.validate_remote_tag(remote, 'refs/tags/v0.1.2', '0.1.3', head, 3, oid)
+                source.validate_remote_tag(self.repo, remote, 'refs/tags/v0.1.2', '0.1.3', head, 3, oid)
             with self.assertRaisesRegex(ValueError, 'metadata'):
-                source.validate_remote_tag(remote, 'refs/tags/v0.1.2', '0.1.2', head, 4, oid)
+                source.validate_remote_tag(self.repo, remote, 'refs/tags/v0.1.2', '0.1.2', head, 4, oid)
         self.call('push', 'origin', ':refs/tags/v0.1.2')
-        original = source.git
+        original = self.repo.git
         def drift(*args):
             result = original(*args)
             if 'push' in args:
                 subprocess.run(['git', '--git-dir=' + str(self.remote), 'update-ref',
                                 'refs/heads/main', head + '^'], check=True)
             return result
-        with self.context(), patch.object(source, 'git', side_effect=drift):
+        with self.context(), patch.object(source.Repository, 'git', side_effect=drift):
             with self.assertRaisesRegex(ValueError, 'origin/main'):
-                source.execute('release-tag', '0.1.2')
+                release.execute_source(self.repo, 'release-tag', '0.1.2')
 
     def test_release_tag_readiness_and_push_endpoint_fail_before_mutation(self):
         self.prepared(commit=True)
@@ -339,6 +328,13 @@ class SourceTests(unittest.TestCase):
             self.assert_reject_unchanged()
         self.call('config', 'remote.origin.pushurl', str(self.base / 'elsewhere.git'))
         self.assert_reject_unchanged()
+
+    def test_pre_push_source_drift_is_rejected_without_tag_mutation(self):
+        self.prepared(commit=True)
+        def drift(repo):
+            (repo.root / 'unexpected').write_text('source drift')
+        with self.context(), patch.object(source, 'source_ready', side_effect=drift):
+            self.assert_reject_unchanged()
 
     def test_release_tag_remote_race_cannot_force_move_tag(self):
         self.prepared(commit=True)
@@ -349,15 +345,15 @@ class SourceTests(unittest.TestCase):
         self.call('config', 'push.followTags', 'true')
         self.call('config', 'remote.origin.mirror', 'true')
         self.call('config', 'remote.origin.push', '+refs/*:refs/*')
-        original = source.git
+        original = self.repo.git
         def race(*args):
             if 'push' in args:
                 subprocess.run(['git', '--git-dir=' + str(self.remote), 'update-ref',
                                 'refs/tags/v0.1.2', wrong], check=True)
             return original(*args)
-        with self.context(), patch.object(source, 'git', side_effect=race):
+        with self.context(), patch.object(source.Repository, 'git', side_effect=race):
             with self.assertRaises(subprocess.CalledProcessError):
-                source.execute('release-tag', '0.1.2')
+                release.execute_source(self.repo, 'release-tag', '0.1.2')
         self.assertIn(wrong + '\trefs/tags/v0.1.2', self.call('ls-remote', 'origin'))
         self.assertNotEqual(wrong, self.call('rev-parse', 'v0.1.2'))
 
@@ -373,7 +369,7 @@ class SourceTests(unittest.TestCase):
         self.call('switch', '-c', 'other')
         with self.assertRaisesRegex(ValueError, 'main'): self.execute('prepare-release')
         with patch.object(source.subprocess, 'check_output', return_value='/nix/store/fixture\n'):
-            with self.assertRaisesRegex(ValueError, 'Nix-store'): source.worktree()
+            with self.assertRaisesRegex(ValueError, 'Nix-store'): source.discover()
         # Executable source is outside the fixture; all preceding operations still
         # modified only the caller's temporary repository.
         self.assertNotEqual(self.root, Path(source.__file__).resolve().parents[2])
@@ -390,10 +386,8 @@ class SourceTests(unittest.TestCase):
         import sys
         if not (REPO / 'release/signing/android-release-cert.pem').is_file():
             self.skipTest('Public identity/workflow/evaluator inputs excluded from Android package source')
-        guard_path = 'app/src/test/java/org/totipo/android/OtpAuthSupplyChainGuardTest.java'
-        guard_text = (REPO / guard_path).read_text()
-        names = re.findall(r'Map.entry\("([^\"]+)", "[0-9a-f]{64}"\)', guard_text)
-        names += [guard_path, '.github/workflows/release.yml',
+        names = list(source.REVIEWED_PATHS)
+        names += [source.INVENTORY, '.github/workflows/release.yml', '.github/workflows/ci.yml',
                   'release/signing/README.md', 'release/signing/android-release-cert.pem',
                   'release/signing/android-release-cert.sha256', 'tools/verify-apk.py']
         names += [str(p.relative_to(REPO)) for p in (REPO / 'tools/release').glob('*.py')]
@@ -431,24 +425,28 @@ class SourceTests(unittest.TestCase):
 
 class SourcePinTests(unittest.TestCase):
     def test_shared_pin_inventory_boundary(self):
-        import hashlib
-        with tempfile.TemporaryDirectory() as tmp, patch.object(release, 'ROOT', Path(tmp)):
-            root = Path(tmp)
-            inventory = root / 'app/src/test/java/org/totipo/android/OtpAuthSupplyChainGuardTest.java'
-            inventory.parent.mkdir(parents=True)
-            names = ['app/build.gradle.kts'] + [f'protected-{n}' for n in range(11)]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = source.Repository(Path(tmp))
             entries = []
-            for name in names:
-                path = root / name
+            for name in sorted(source.REVIEWED_PATHS):
+                path = repo.root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'reviewed build/plugin/dependency/repository/security logic')
-                entries.append('Map.entry("' + name + '", "' + release.sha(path) + '")')
-            inventory.write_text('\n'.join(entries))
+                entries.append(source.sha(path) + '  ' + name + '\n')
+            inventory = repo.root / source.INVENTORY
+            inventory.parent.mkdir(parents=True)
+            inventory.write_text(''.join(entries))
             for data in (b'2\n', b'3\n'):
-                (root / 'VERSION_CODE').write_bytes(data)
-                source.source_pins()
-            for name in names:
-                path = root / name
+                (repo.root / 'VERSION_CODE').write_bytes(data)
+                source.source_pins(repo)
+            for name in source.REVIEWED_PATHS:
+                path = repo.root / name
                 original = path.read_bytes(); path.write_bytes(original + b'unreviewed change')
-                with self.assertRaisesRegex(ValueError, 'pin differs'): source.source_pins()
+                with self.assertRaisesRegex(ValueError, 'pin differs'): source.source_pins(repo)
                 path.write_bytes(original)
+            for data in ('', ''.join(entries[:-1]), ''.join(entries + [entries[0]]),
+                         ''.join(reversed(entries)), ''.join(entries).replace('app/build.gradle.kts', 'unknown'),
+                         ''.join(entries).replace('  ', ' ', 1), ''.join(entries).upper(),
+                         ''.join(entries).rstrip('\n'), ''.join(entries).replace('\n', '\r\n')):
+                inventory.write_bytes(data.encode())
+                with self.subTest(data=data[:80]), self.assertRaises(ValueError): source.reviewed_inputs(repo)
