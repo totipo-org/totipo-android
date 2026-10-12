@@ -301,7 +301,7 @@ The debug APK is built and verified but not installed into the package output.
 Both APK checks validate ZIP integrity, manifest boundaries, canonical branding,
 product/controller and NIO/core/BC DEX presence, and test/standalone-class exclusion.
 Debug verification requires the existing diagnostic classes; release verification
-excludes them and requires absence of APK/JAR signing. No signing secret, AAB or Play integration exists. Protected release machinery
+excludes them and requires absence of APK/JAR signing. No production signing secret, AAB or Play integration exists in the build. Protected release machinery
 is documented in [Android releases](release/README.md); the public production signing identity is committed; protected GitHub environment
 provisioning is human-reported. Debug signing keys are local generated
 development state.
@@ -344,3 +344,61 @@ There is no background sync, Syncthing integration, biometric unlock, inactivity
 field-by-field conflict combination, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
 and universal Android filesystem/runtime or interoperability qualification are not claimed.
 JVM/build evidence complements the isolated physical-device qualification recorded in the report.
+
+## Persistent local qualification signing
+
+`.qualification/signing/` holds persistent **LOCAL NON-PRODUCTION** qualification
+state, per checkout by default. It is ignored and excluded from Git-aware Nix
+source membership. It must survive `.gradle` and `.direnv` cleanup;
+**`git clean -fdx` WILL delete it**. Back it up deliberately if preserving this
+disposable qualification environment matters. Losing the private key means an
+unrelated replacement cannot update the currently installed qualification product.
+Never silently regenerate or rotate it. Another checkout targeting the same
+provisioned device must explicitly import the **same** identity; there is no
+HOME/XDG, Android debug-keystore, production-secret or historical-evidence fallback.
+Production private keys remain forbidden anywhere in the repository/Nix inputs.
+This narrow ignored-state exception applies only to local non-production qualification.
+Detached row/security test keys and ephemeral release signing-smoke keys are separate.
+
+Use the pinned environment and the single supported owner:
+
+```sh
+python3 -B tools/device/qualification_signing.py status
+python3 -B tools/device/qualification_signing.py sign unsigned-helper.apk --aligned helper-aligned.apk --out helper-signed.apk
+```
+
+The generic signing interface supports SAF inbound and otpauth ingress helpers.
+Their existing builders construct unsigned APKs; scenario procedures own install,
+run and cleanup. The signer aligns with `-P 16`, disables v1/v4 as before, checks
+the actual signer and alignment, and performs no device operations. Before any
+product update/instrumentation installation, independently compare the installed
+product certificate to the validated local identity. Installed APKs are compatibility
+observations, never the local signing authority.
+
+The strict loader requires current-user ownership, no symlink components, exact
+0700 directory and 0600 file modes, PKCS12 with exactly one private-key entry,
+and `identity.json` containing only `schema` (integer 1), `purpose`
+(`totipo-android-local-qualification-signing`), nonempty `alias`, and lowercase
+64-hex `certificateSha256`. Duplicate/unknown/missing fields fail. Every load
+exports the actual public certificate and checks alias/fingerprint against metadata;
+metadata cannot adopt another key. The committed production public fingerprint is
+refused. Tool failures suppress subprocess output, including potentially private data.
+
+Migration is explicit, byte-preserving and limited to the existing Wave 2A
+certificate/alias. It never searches for keys:
+
+```sh
+python3 -B tools/device/qualification_signing.py migrate SOURCE_KEYSTORE SOURCE_PASSWORD_FILE
+```
+
+It refuses an existing/partial destination, verifies the expected source identity,
+stages private files, verifies them, publishes `.qualification/signing`, checks
+keystore/password byte equality, then removes only the two supplied private files.
+Historical APKs/reports/directories remain evidence. A failure before publication
+retains the source authority. A failure after publication retains the complete
+verified canonical identity and may leave old private copies: stop and inspect,
+then deliberately retire duplicates; never choose another identity or retry by
+regenerating. An interrupted publication reservation is partial state and fails
+closed. Do not run concurrent migration/signing or modify identity files during use.
+Fresh provisioning is deliberately deferred; missing state always fails, and any
+future provisioning must be explicit after deliberate device reprovisioning.

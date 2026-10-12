@@ -17,7 +17,10 @@ proof-of-rotation are outside this milestone.
 
 Private PKCS#12, JKS, keystore and key files are ignored in this directory. The
 release guard permits tracking only this README and the two named public files.
-Never place private signing material anywhere in the repository or Nix inputs.
+Never place production private signing material anywhere in the repository or Nix inputs.
+The only local exception is ignored NON-PRODUCTION qualification state in
+`.qualification/signing/`, described in the root README; it is never release signing
+material or a production fallback.
 
 The human reports generating the permanent private key, making offline recovery
 copies, and configuring the protected GitHub `android-release` environment and

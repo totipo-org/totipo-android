@@ -23,3 +23,6 @@ totipo-test-sync/
 /release/signing/*.keystore
 /release/signing/*.key
 **/__pycache__/
+
+# Persistent local NON-PRODUCTION qualification identity; never Nix source.
+/.qualification/

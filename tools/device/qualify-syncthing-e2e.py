@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from android_harness import AndroidToolchain, compile_java, dex_classes, link_manifest, append_entries
+from qualification_signing import load
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / '.gradle/m3d-syncthing'
@@ -58,41 +59,31 @@ def build():
 
 
 def sign(only_observer=False):
-    bt = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT']) / 'build-tools/36.0.0'
-    def cert(apk):
-        output = run([bt / 'apksigner', 'verify', '--print-certs', apk])
-        match = re.search(r'certificate SHA-256 digest: ([0-9a-f]+)', output)
-        if not match: raise RuntimeError('Signer unavailable')
-        return match[1]
-    expected = cert(ROOT / '.gradle/m3c-saf/release-signed.apk')
+    tc = AndroidToolchain.discover()
+    identity = load(ROOT, tc)
     sources = [(OUT / 'observer-unsigned.apk', 'observer')]
     if not only_observer:
         sources.insert(0, (ROOT / 'app/build/outputs/apk/release/app-release-unsigned.apk', 'release'))
     for source, name in sources:
         aligned, signed = OUT / (name + '-aligned.apk'), OUT / (name + '-signed.apk')
-        run([bt / 'zipalign', '-f', '-P', '16', '4', source, aligned])
-        run([bt / 'apksigner', 'sign', '--ks', ROOT / '.gradle/m1l-inspection/m1k-debug.keystore',
-             '--ks-pass', 'file:' + str(ROOT / '.gradle/m1m-inspection/signing-password'),
-             '--v1-signing-enabled', 'false', '--v4-signing-enabled', 'false', '--out', signed, aligned])
-        if cert(signed) != expected: raise RuntimeError('Signer mismatch; installation blocked')
-        run([bt / 'zipalign', '-c', '-P', '16', '4', signed])
+        identity.sign(tc, source, aligned, signed)
         if name == 'release': run(['python3', ROOT / 'tools/verify-apk.py', signed, '--no-debug-probe'])
 
-    (OUT / 'signer.txt').write_text('qualification certificate SHA-256=' + expected + '\n')
-    print('Release and separate observer signed with the historical M3C qualification certificate.')
+    (OUT / 'signer.txt').write_text('qualification certificate SHA-256=' + identity.fingerprint + '\n')
+    print('Release and separate observer signed with the validated local qualification certificate.')
 
 
 def install():
-    bt = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT']) / 'build-tools/36.0.0'
+    tc = AndroidToolchain.discover()
+    identity = load(ROOT, tc)
     installed = run(['adb', 'shell', 'pm', 'path', 'org.totipo.android']).splitlines()
     if len(installed) != 1 or not installed[0].startswith('package:'):
         raise RuntimeError('Require existing qualified application APK')
     run(['adb', 'pull', installed[0][8:], OUT / 'installed-before.apk'])
-    def digest(apk):
-        return re.search(r'certificate SHA-256 digest: ([0-9a-f]+)',
-                         run([bt / 'apksigner', 'verify', '--print-certs', apk])).group(1)
-    if digest(OUT / 'installed-before.apk') != digest(OUT / 'release-signed.apk'):
-        raise RuntimeError('Installed signer mismatch; installation blocked')
+    identity.verify(tc, OUT / 'installed-before.apk')
+    # Check every candidate before any install, even a separately invoked install.
+    for name in ['release', 'observer']:
+        identity.verify(tc, OUT / (name + '-signed.apk'))
     for name in ['release', 'observer']:
         if 'Success' not in run(['adb', 'install', '--no-incremental', '-r', OUT / (name + '-signed.apk')]):
             raise RuntimeError('Installation failed')

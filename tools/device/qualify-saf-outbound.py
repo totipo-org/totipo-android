@@ -3,14 +3,15 @@
 All token authoring is isolated. Only the disposable provider fixture gets new objects.
 No picker, Drive, or user's canonical vault modification.
 """
-import os
 from pathlib import Path
-from android_harness import certificate_digest, verify_signer, provider_backup
+from android_harness import AndroidToolchain, provider_backup
+from qualification_signing import load
 import subprocess
 
 workspace = Path(__file__).resolve().parents[2]
 output = workspace / '.gradle/r19-saf'
-bt = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+tc = AndroidToolchain.discover()
+identity = load(workspace, tc)
 
 
 def run(args):
@@ -23,19 +24,20 @@ def run(args):
 run(['python3', workspace / 'tools/device/build-saf-outbound-tests.py'])
 installed = run(['adb', 'shell', 'pm', 'path', 'org.totipo.android']).splitlines()[0].removeprefix('package:')
 run(['adb', 'pull', installed, output / 'installed-before.apk'])
-expected = certificate_digest(bt / 'apksigner', output / 'installed-before.apk', run)
+identity.verify(tc, output / 'installed-before.apk')
 for source, name in [(workspace / 'app/build/outputs/apk/release/app-release-unsigned.apk', 'release'),
                      (output / 'tests-unsigned.apk', 'tests')]:
     aligned = output / (name + '-aligned.apk')
     signed = output / (name + '-signed.apk')
-    run([bt / 'zipalign', '-f', '-P', '16', '4', source, aligned])
-    run([bt / 'apksigner', 'sign', '--ks', workspace / '.gradle/m1l-inspection/m1k-debug.keystore',
-         '--ks-pass', 'file:' + str(workspace / '.gradle/m1m-inspection/signing-password'),
-         '--v1-signing-enabled', 'false', '--v4-signing-enabled', 'false', '--out', signed, aligned])
-    verify_signer(bt / 'apksigner', signed, expected, run)
-    run([bt / 'zipalign', '-c', '-P', '16', '4', signed])
+    identity.sign(tc, source, aligned, signed)
     if name == 'release':
         run(['python3', workspace / 'tools/verify-apk.py', signed, '--no-debug-probe'])
+# Validate both candidates before any device mutation. Preserve release-first install.
+for name in ('release', 'tests'):
+    signed = output / (name + '-signed.apk')
+    identity.verify(tc, signed)
+for name in ('release', 'tests'):
+    signed = output / (name + '-signed.apk')
     if 'Success' not in run(['adb', 'install', '--no-incremental', '-r', signed]):
         raise SystemExit('Install did not succeed')
     print(name + ': signature/alignment/install PASS; app data retained', flush=True)
