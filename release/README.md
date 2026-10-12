@@ -16,14 +16,14 @@ Use exactly two release-specific commands from the repository root, with the nex
 reviewed canonical stable version substituted for `<VERSION>`:
 
 ```sh
-nix run path:.#prepare-release -- <VERSION>
+nix run .#prepare-release -- <VERSION>
 ```
 
 Review the diff, commit normally, push main normally, and wait for ordinary CI as
 desired. Then run:
 
 ```sh
-nix run path:.#release-tag -- <VERSION>
+nix run .#release-tag -- <VERSION>
 ```
 
 `prepare-release` prints the resulting VERSION and VERSION_CODE and leaves their
@@ -114,7 +114,7 @@ The four jobs are:
 
 | Job | Authority and output |
 | --- | --- |
-| qualify | contents read, no environment or signing secrets; `nix flake check --print-build-logs path:.`; compare checks.android/default drvPath, materialize default, verify unsigned APK, upload unsigned bundle |
+| qualify | contents read, no environment or signing secrets; `nix flake check --print-build-logs`; compare checks.android/default drvPath, materialize default, verify unsigned APK, upload unsigned bundle |
 | sign | contents read, protected android-release; verify bundle and resolve pinned SDK/JDK before one secret-bearing shell step; output separate signed candidate |
 | verify | contents read, no signing secrets; verify single pinned certificate and v2/v3 signatures, ordinary release boundaries, payload equivalence and original unsigned hash; output verified assets plus internal unsigned evidence |
 | publish | contents write, no Android key; verify inputs, create draft for existing tag, upload, download all assets, compare bytes and reverify downloaded certificate/boundaries before final publication |

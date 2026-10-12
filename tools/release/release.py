@@ -103,10 +103,10 @@ def qualified_provenance(apk, version, commit, cert, drv, output):
 
 def prepare(repo, args):
     cert = identity(repo, args.version, args.commit)
-    check_drv = repo.run('nix', 'eval', '--raw', 'path:.#checks.x86_64-linux.android.drvPath')
-    package_drv = repo.run('nix', 'eval', '--raw', 'path:.#packages.x86_64-linux.default.drvPath')
+    check_drv = repo.run('nix', 'eval', '--raw', '.#checks.x86_64-linux.android.drvPath')
+    package_drv = repo.run('nix', 'eval', '--raw', '.#packages.x86_64-linux.default.drvPath')
     require(check_drv == package_drv, 'checks.android/packages.default derivations differ')
-    output = repo.run('nix', 'build', '--no-link', '--print-out-paths', 'path:.#packages.x86_64-linux.default')
+    output = repo.run('nix', 'build', '--no-link', '--print-out-paths', '.#packages.x86_64-linux.default')
     require(output.startswith('/nix/store/') and '\n' not in output, 'Unexpected package output')
     apk = Path(output) / f'share/totipo-android/totipo-android-{args.version}-unsigned.apk'
     provenance = qualified_provenance(apk, args.version, args.commit, cert, check_drv, output)

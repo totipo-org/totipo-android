@@ -31,6 +31,34 @@ Classification selects focused checks; it never waives the final gates for chang
 production, test or build inputs. A UI edit to production source still requires them.
 For tooling-only work, use the invalidation matrix below to determine affected gates.
 
+### Local Nix source membership
+
+Local pre-commit Nix qualification uses the Git-aware current working tree.
+Use `nix flake check` for the final local human gate, `nix build .#<target>`,
+`nix run .#<app> -- ...` and `nix develop` for this checkout. Unstaged modifications
+to tracked files participate; existing modified tracked files remain unstaged.
+Explicit `path:` sources are allowed only when raw/non-Git filesystem semantics
+are intentional, such as generated/exported source or a non-Git directory.
+
+For each new file intended for the milestone and eventual commit, including its
+review report, the agent may run:
+
+```sh
+git add --intent-to-add <file>
+git diff --cached --quiet
+```
+
+Intent-to-add establishes source membership only. The invariant is **no staged
+file content**, not a literally empty index. Staging actual contents (`git add`,
+including `-A`, `-f` or `.`) and committing require explicit user authorization.
+Do not reset intent-to-add entries after qualification; leave them for normal
+human review/commit. Before human Nix, record `git status --short`,
+`git diff --name-only` and `git diff --cached --name-only`; the last must show no
+staged-content diff and `git diff --cached --quiet` must pass. Ignored/local
+build, cache and secret state must stay outside Git source membership; never
+intent-add `.gradle`, `.direnv`, `.qualification`, generated build output or secrets.
+Freeze included inputs only after all intended new milestone files are Git-known.
+
 ### Starting baseline
 
 For ordinary PRODUCT_CODE, UI_ONLY or LIFECYCLE_SECURITY work, run once:
@@ -137,8 +165,8 @@ symlinks. JVM tests and all selected `tools/` files (including harness prose) ar
 inputs. `package.nix`, `flake.nix`, `flake.lock` and `package-deps.json` also affect
 qualification through evaluation/cache inputs, even though absent from the filtered
 Gradle source. `AGENTS.md`, `README.md` and `review/` are currently excluded and are
-not otherwise consumed by the package/check. A raw `path:.` flake snapshot can contain
-those docs; their edits do not change the effective Android check inputs. Reinspect
+not otherwise consumed by the package/check. The Git-aware flake source includes Git-known
+docs; their edits do not change the effective Android check inputs. Reinspect
 these rules for each milestone, especially after build/filter changes.
 
 Before asking the human for Nix, record all four freeze statements with evidence:
@@ -149,7 +177,7 @@ Before asking the human for Nix, record all four freeze statements with evidence
 - Qualification harness/tooling stable.
 
 Freeze every included source and evaluator/cache input, including qualification
-tools. Only then request exactly `nix flake check path:.`, one final routine time.
+tools. Only then request exactly `nix flake check`, one final routine time.
 The agent does not run Nix. Do not request `nix build` or `nix build --rebuild` as
 routine gates. A successful check is invalidated by any later included-input edit;
 repeat only after refreezing and record the reason. Excluded report-only edits do

@@ -25,7 +25,7 @@ jobs:
           extra_nix_config: |
             accept-flake-config = true
       - name: Qualify Android package
-        run: nix flake check --print-build-logs path:.
+        run: nix flake check --print-build-logs
       - name: Require reproducibility inputs to remain unchanged
         run: |
           git diff --check

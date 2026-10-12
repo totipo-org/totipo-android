@@ -220,6 +220,22 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(text.count('${{ secrets.'), 4)
         self.assertNotIn('pull_request_target', text)
 
+    def test_prepare_uses_git_worktree_for_matching_derivation_and_build(self):
+        import argparse
+        args = argparse.Namespace(version='1.0.0', commit='a' * 40, bundle=self.root / 'bundle')
+        with patch.object(release, 'identity', return_value='b' * 64), \
+             patch.object(source.Repository, 'run', side_effect=[
+                 '/nix/store/check.drv', '/nix/store/check.drv', '/nix/store/output']) as run, \
+             patch.object(release, 'qualified_provenance', side_effect=ValueError('artifact boundary')):
+            with self.assertRaisesRegex(ValueError, 'artifact boundary'):
+                release.prepare(self.repo, args)
+        self.assertEqual([call.args for call in run.call_args_list], [
+            ('nix', 'eval', '--raw', '.#checks.x86_64-linux.android.drvPath'),
+            ('nix', 'eval', '--raw', '.#packages.x86_64-linux.default.drvPath'),
+            ('nix', 'build', '--no-link', '--print-out-paths', '.#packages.x86_64-linux.default'),
+        ])
+        self.assertFalse(args.bundle.exists())
+
     def test_prepare_refuses_parallel_derivation(self):
         import argparse
         args = argparse.Namespace(version='1.0.0', commit='a' * 40, bundle=self.root / 'bundle')

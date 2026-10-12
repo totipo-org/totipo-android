@@ -68,7 +68,7 @@ stdenv.mkDerivation (finalAttrs: {
   gradleUpdateTask = ":app:assembleDebug :app:assembleRelease check";
   preBuild = ''
     if [ -z "''${IN_GRADLE_UPDATE_DEPS:-}" ] && [ "${if cacheReady then "yes" else "no"}" != yes ]; then
-      echo 'package-deps.json is ungenerated/stale; run nix run path:.#update-package-deps' >&2
+      echo 'package-deps.json is ungenerated/stale; run nix run .#update-package-deps' >&2
       exit 1
     fi
   '';

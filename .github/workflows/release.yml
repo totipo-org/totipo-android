@@ -50,13 +50,13 @@ jobs:
           extra_nix_config: |
             accept-flake-config = true
       - name: Fail closed on source/tag/public identity before protected approval
-        run: nix develop path:.#ci --command python3 -B tools/release/release.py identity
+        run: nix develop .#ci --command python3 -B tools/release/release.py identity
       - name: Focused guardrails
         run: python3 -B -m unittest discover -s tools/release -p 'test_*.py'
       - name: Authoritative qualification
-        run: nix flake check --print-build-logs path:.
+        run: nix flake check --print-build-logs
       - name: Materialize same derivation and prepare verified unsigned bundle
-        run: nix develop path:.#ci --command python3 -B tools/release/release.py prepare --bundle "$RUNNER_TEMP/bundle"
+        run: nix develop .#ci --command python3 -B tools/release/release.py prepare --bundle "$RUNNER_TEMP/bundle"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualified-unsigned
@@ -91,10 +91,10 @@ jobs:
           name: qualified-unsigned
           path: ${{ runner.temp }}/bundle
       - name: Revalidate source and unsigned bundle after approval
-        run: nix develop path:.#ci --command python3 -B tools/release/release.py bundle --bundle "$RUNNER_TEMP/bundle"
+        run: nix develop .#ci --command python3 -B tools/release/release.py bundle --bundle "$RUNNER_TEMP/bundle"
       - name: Resolve trusted pinned SDK and JDK before secrets
         run: |
-          nix develop path:.#ci --command bash -c '
+          nix develop .#ci --command bash -c '
             test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
             printf "APKSIGNER=%s\nANDROID_HOME=%s\nJAVA_HOME=%s\n" \
               "$ANDROID_HOME/build-tools/36.0.0/apksigner" "$ANDROID_HOME" "$JAVA_HOME"
@@ -131,7 +131,7 @@ jobs:
             "$RUNNER_TEMP/bundle/unsigned-release.apk"
           rm -rf "$private_dir"
       - name: Check original unsigned hash after secret step has ended
-        run: nix develop path:.#ci --command python3 -B tools/release/release.py bundle --bundle "$RUNNER_TEMP/bundle"
+        run: nix develop .#ci --command python3 -B tools/release/release.py bundle --bundle "$RUNNER_TEMP/bundle"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-candidate
@@ -163,7 +163,7 @@ jobs:
           name: signed-candidate
           path: ${{ runner.temp }}/bundle
       - name: Verify pinned signer, release boundaries, payload equivalence and input immutability
-        run: nix develop path:.#ci --command python3 -B tools/release/release.py finalize --bundle "$RUNNER_TEMP/bundle" --output "$RUNNER_TEMP/verified"
+        run: nix develop .#ci --command python3 -B tools/release/release.py finalize --bundle "$RUNNER_TEMP/bundle" --output "$RUNNER_TEMP/verified"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verified-release
@@ -200,4 +200,4 @@ jobs:
         env:
           # GitHub runner CLI/API token; no Android private key in this job.
           GH_TOKEN: ${{ github.token }}
-        run: nix develop path:.#ci --command python3 -B tools/release/release.py publish --bundle "$RUNNER_TEMP/bundle"
+        run: nix develop .#ci --command python3 -B tools/release/release.py publish --bundle "$RUNNER_TEMP/bundle"

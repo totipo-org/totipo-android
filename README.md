@@ -118,16 +118,24 @@ for current evidence. Historical M1/M3 reports remain unchanged.
 Use the repository's pinned Nix environment:
 
 ```sh
-nix develop path:.
+nix develop
 jailed-codex
 ```
 
 Or use `.envrc` with `direnv allow`. After changing the shell, exit/re-enter it
-and relaunch jailed-codex. `path:.` includes uncommitted/untracked files during
-M0 review; nothing needs to be staged for Nix validation.
+and relaunch jailed-codex. Local pre-commit Nix qualification uses the Git-aware
+working tree: unstaged modifications to tracked files participate. For each new
+intended milestone file, including its review report, the agent may run
+`git add --intent-to-add <file>` to establish source membership only, then require
+`git diff --cached --quiet` to pass. Existing modified tracked files remain
+unstaged. Staging actual file contents requires explicit user authorization.
+Leave intent-to-add entries in place for human review/commit. Ignored/untracked
+build, cache and local-secret state must remain outside Git source membership.
+Use explicit `path:` sources only for intentional raw/non-Git paths, such as
+generated or exported source. See [agent policy](AGENTS.md#local-nix-source-membership).
 
 The default shell includes jailed-codex for development. For the lightweight
-Android development environment without agent tooling, use `nix develop path:.#ci`.
+Android development environment without agent tooling, use `nix develop .#ci`.
 Both shells share the Android/JDK environment and Python; Nix Gradle remains
 available for the bootstrap toolchain verifier. Ordinary builds use `./gradlew`.
 
@@ -219,7 +227,7 @@ wrapper is a separate deliberate edit/generation and checksum review operation.
 The normal developer, human and CI qualification gate on x86_64-linux is:
 
 ```sh
-nix flake check path:.
+nix flake check
 ```
 
 `checks.android` and `packages.default` reference the same `androidPackage`
@@ -231,7 +239,7 @@ release APK verification with `--unsigned --no-debug-probe`. A second ordinary
 above remains final local Android validation, outside the iteration loop.
 
 Agent does not run Nix. After all package/check inputs (including `tools/` and
-physical harness fixes) are frozen, request one final human `nix flake check path:.`.
+physical harness fixes) are frozen, request one final human `nix flake check`.
 Included-input edits invalidate that result. Under the current source filter,
 `AGENTS.md`, `README.md` and `review/` are excluded from Android qualification inputs;
 documentation-only edits there do not require a new Nix gate. Inspect actual inputs
@@ -240,11 +248,11 @@ for every milestone. Do not request an additional ordinary `nix build`.
 To materialize the package and create a `result` link for output inspection:
 
 ```sh
-nix build path:.
+nix build .
 ```
 
 For a deliberate release/reproducibility comparison only, a human may use
-`nix build --rebuild path:.`. Compare the resulting unsigned APK bytes; this
+`nix build --rebuild .`. Compare the resulting unsigned APK bytes; this
 bounded check does not prove universal reproducibility and is not a routine
 milestone gate.
 
@@ -261,7 +269,7 @@ its Gradle invocation differs from the developer `--offline` repeat above.
 After an intentional dependency change, the human operator runs:
 
 ```sh
-nix run path:.#update-package-deps
+nix run .#update-package-deps
 ```
 
 This generates `package-deps.json`; review the resulting origins, versions and
@@ -271,7 +279,7 @@ refresh runs debug/release assembly and check with strict verification; it does 
 write Gradle locks or metadata. Then validate:
 
 ```sh
-nix flake check path:.
+nix flake check
 ```
 
 The cache also pins lint's Google Play SDK Index at
