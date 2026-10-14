@@ -196,16 +196,7 @@
  },
  "https://maven.google.com": {
   "master-index": {
-   "xml": "sha256-g3pgwRb08TSHEO+jqm/M7Ck1iyMu/jcTNmxJnnwSfHs="
-  }
- },
- "https://repo.gradle.org": {
-  "artifactory/libs-releases/org/gradle/gradle-tooling-api/maven-metadata": {
-   "xml": {
-    "groupId": "org.gradle",
-    "lastUpdated": "20261008100315",
-    "release": "9.9.0-milestone-2"
-   }
+   "xml": "sha256-TY5pdjdTh6YY8xjvPuyvu051HkN2jO/njbNfYIjGibY="
   }
  },
  "https://repo.maven.apache.org/maven2": {

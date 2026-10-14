@@ -293,6 +293,14 @@ SHA-256 for `package-deps.json` in `tools/release/reviewed-inputs.sha256` as wel
 then rerun the checks above.
 This refresh can recur whenever Google replaces the snapshot.
 
+The same applies to Google's Maven group index at
+`https://maven.google.com/master-index.xml`. For a `master-index.xml` mismatch,
+verify that the downloaded response is the expected XML metadata and update
+`https://maven.google.com` → `master-index` → `xml` in `package-deps.json`, along
+with its whole-file reviewed SHA-256. This unversioned index can change independently
+of the application's pinned library versions; a metadata refresh does not require
+upgrading those libraries.
+
 Human-operated flake check, package build and forced rebuild passed on
 x86_64-linux; the unsigned APK hash matched before and after rebuild. Remote
 CI and optional device evidence are recorded separately in the M0 report.
