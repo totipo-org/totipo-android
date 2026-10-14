@@ -4,7 +4,7 @@ import org.gradle.api.artifacts.result.ResolvedDependencyResult
 
 plugins { id("com.android.application") }
 
-// Release metadata is deliberately outside the reviewed stable build/dependency pin.
+// Release metadata is reviewed and committed before CI qualification.
 val versionCodeText = providers.fileContents(rootProject.layout.projectDirectory.file("VERSION_CODE")).asText.get()
 require(Regex("[1-9][0-9]*\n").matches(versionCodeText)) {
     "VERSION_CODE must contain one canonical positive decimal integer and a final LF"

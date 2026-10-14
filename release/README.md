@@ -8,9 +8,10 @@ key is shared with Totipo Java.
 Release source has two mutable authorities: `VERSION` supplies versionName and
 `VERSION_CODE` supplies Android versionCode. Both are canonical files ending in one
 LF; VERSION_CODE is a decimal integer in 1..2100000000, without spaces, signs or
-leading zeros. Gradle fails on missing/malformed values without a default. Stable
-reviewed build/dependency scripts remain fully supply-chain pinned; metadata edits
-need no pin update. VERSION_CODE is included in the Nix Android source filter.
+leading zeros. Gradle fails on missing/malformed values without a default. The
+reviewed Git commits identify build/dependency scripts and metadata together.
+Nix and Gradle retain external tool/dependency pins. VERSION_CODE is included in
+the Nix Android source filter.
 
 Use exactly two release-specific commands from the repository root, with the next
 reviewed canonical stable version substituted for `<VERSION>`:
@@ -65,8 +66,8 @@ The executable comes from the Nix store but discovers the caller's Git worktree;
 store worktrees are explicitly refused.
 
 Prepare requires main and a clean tree/index, or the exact unstaged metadata diff
-already expected for the same target. It validates history, source wiring, stable
-supply-chain pins and the public signer before atomically replacing each changed
+already expected for the same target. It validates history, source wiring,
+release prerequisites and the public signer before atomically replacing each changed
 metadata file, checks the result, and leaves everything unstaged/uncommitted.
 Running it again reports already prepared without incrementing the code. Any
 unrelated dirty/untracked or staged path is rejected. File replacements are atomic
@@ -75,7 +76,7 @@ be reviewed/reset before retrying.
 
 `release-tag` requires clean committed main, both live remote main and local
 origin/main equal to HEAD, matching source VERSION/code, coherent consumed history,
-canonical Gradle wiring, application ID, stable supply-chain inventory, valid public
+canonical Gradle wiring, application ID, release prerequisites, valid public
 signer and the private-material guard. It rejects multiple/different push endpoints.
 A correct local-only target tag resumes by pushing it; a correct local/remote pair
 is a successful no-op with the same printed coordinates. Wrong/lightweight/signed/
@@ -194,23 +195,25 @@ artifact/provenance and publication orchestration. Payload and signed-APK verifi
 remain separate boundaries. Dispatch and provenance use the same stable X.Y.Z
 policy as preparation; APK metadata extraction observes the artifact.
 
-Reviewed digests live in [`reviewed-inputs.sha256`](../tools/release/reviewed-inputs.sha256),
-not Java source syntax. Each sorted line is a lowercase SHA-256, two spaces, an
-allowlisted repository path and one LF. Both Java and Python independently reject
-missing, duplicate, unknown, unsorted or malformed entries and compare file bytes.
-The ten retained reviewed inputs remain protected. Phase A removes only the two
-wrapper entries and updates only the root build/flake digests and the app lockfile
-command-comment digest for reviewed tooling edits;
-updating retained digests requires review, not blanket regeneration to match a checkout.
-The public signer fingerprint likewise requires exactly 64 lowercase hex characters and LF.
+The reviewed Git commit identifies the complete source tree. Actions checks out
+that exact authorized commit; Nix pins build tools and cached external responses,
+and Gradle locks/verification metadata pin resolved dependencies. Provenance binds
+source and accepted artifacts. The redundant repository-file digest table and
+custom Actions YAML grammar/action-comment registry have been retired. Accidental
+source edits no longer fail a second manually maintained hash gate, and alternate
+YAML spellings are no longer rejected by repository Python. Exact commit/tag,
+clean-source, version and public signer checks remain. The no-QR/camera/cloud
+source guard and existing Maven dependency restrictions remain.
 
-`source.py` also owns the no-network reviewed action SHA/version/runtime table and
-restricted plain-line `uses:` grammar. Readiness, tests and the workflow's
-`action-policy` check share it. The workflow check runs after checkout and before
-Nix installation; it requires the complete workflow declaration inventory. This
-is an internal guard, not a third human release command. Unsupported declaration
-syntax, unknown actions and runtime overrides fail closed. No YAML library or
-live action metadata discovery is used.
+External Actions still use full SHA references. GitHub owns workflow execution and
+permissions; source review and effective repository protections govern authority.
+The removed parser ran from the same reviewed source and supplied no independent
+authorization. Before the next live release, the owner must confirm main branch
+protection, required CI, release tag protection, effective Actions permissions,
+android-release environment reviewer/ref restrictions, environment-only signing
+secret scope, and applicable administrator/app/actor bypass permissions. These
+settings have not been independently verified or modified in this phase.
+The public signer fingerprint still requires exactly 64 lowercase hex characters and LF.
 
 ## Local qualification
 
@@ -222,12 +225,14 @@ Fast standard-library tests:
 ```sh
 python3 -B -m unittest discover -s tools/release -p 'test_*.py'
 python3 -B tools/release/release.py guard
-python3 -B tools/release/release.py action-policy
 python3 -B tools/release/test-build-metadata.py
 ```
 
-The existing Nix package install check also runs the fast Python tests using explicit
-Git input. `checks.release-apps` executes every packaged app help entry point and
+The source-aware `checks.release-tooling` runs this suite once with explicit
+Git/JDK inputs and the real source/public identity fixtures. Missing fixture inputs
+fail rather than skip. The package install check retains both APK verifications;
+the release workflow relies on the same flake check instead of repeating the suite.
+`checks.release-apps` executes every packaged app help entry point and
 checks that incomplete disposable caller worktrees fail without metadata writes.
 The standalone metadata harness uses one offline Gradle invocation in a temporary
 project; it runs the exact parser text and checks valid, malformed and missing files. After the final

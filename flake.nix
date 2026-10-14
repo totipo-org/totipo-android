@@ -62,6 +62,16 @@
         androidPackage = pkgs.callPackage ./package.nix {
           inherit jdk gradle androidSdk;
         };
+        # Release fixtures need the caller's source/public identity, outside the
+        # Android package filter. Run this suite once, without package-only skips.
+        releaseTestSource = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./tools/release ./tools/verify-apk.py
+            ./build.gradle.kts ./app/build.gradle.kts
+            ./release/signing ./.github/workflows/release.yml
+          ];
+        };
         releaseCommands = [ "prepare-release" "release-tag" ];
         releasePrograms = builtins.listToAttrs (map (name: {
           inherit name;
@@ -82,6 +92,18 @@
         };
         checks = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
           android = androidPackage;
+          release-tooling = pkgs.runCommand "release-tooling" {
+            nativeBuildInputs = [ pkgs.python3 pkgs.git jdk ];
+            JAVA_HOME = "${jdk}/lib/openjdk";
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            cp -R ${releaseTestSource} source
+            chmod -R u+w source
+            cd source
+            python3 -B -m unittest discover -s tools/release -p 'test_*.py'
+            touch "$out"
+          '';
           release-apps = pkgs.runCommand "release-app-wrappers" {
             nativeBuildInputs = [ pkgs.git pkgs.gnugrep ];
           } ''

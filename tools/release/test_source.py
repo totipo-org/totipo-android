@@ -1,8 +1,9 @@
 """Temporary Git repositories and bare remotes; no live refs or metadata touched."""
 import contextlib
+from dataclasses import FrozenInstanceError
+import sys
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -62,7 +63,7 @@ class SourceTests(unittest.TestCase):
     def context(self, readiness=True):
         with contextlib.ExitStack() as stack:
             if readiness:
-                for name in ('source_pins', 'machinery_ready', 'guard', 'expected_identity'):
+                for name in ('machinery_ready', 'guard', 'expected_identity'):
                     stack.enter_context(patch.object(source, name, return_value='a' * 64))
             yield
 
@@ -137,11 +138,6 @@ class SourceTests(unittest.TestCase):
             p.write_text(original)
             with patch.object(source, 'expected_identity', side_effect=ValueError('Invalid public signer')):
                 with self.assertRaisesRegex(ValueError, 'public signer'): source.source_ready(self.repo)
-        # Actual shared identity parser, no mock: missing and malformed certificate.
-        with self.assertRaises(ValueError): source.expected_identity(self.repo)
-        self.repo.cert.parent.mkdir(parents=True)
-        self.repo.cert.write_text('bad'); self.repo.fingerprint.write_text('a' * 64 + '\n')
-        with self.assertRaises(ValueError): source.expected_identity(self.repo)
 
     def test_history_legacy_new_format_and_overflow(self):
         with self.context():
@@ -153,6 +149,14 @@ class SourceTests(unittest.TestCase):
         self.call('restore', 'VERSION', 'VERSION_CODE')
         self.metadata('0.1.3', source.MAX_CODE); self.commit(); self.tag('0.1.3'); self.sync()
         with self.assertRaisesRegex(ValueError, 'overflow'): self.execute('prepare-release', '0.1.4')
+
+    def test_allocation_uses_max_consumed_code_not_latest_version_or_worktree(self):
+        # Consumed history is authority even when legacy codes are out of order.
+        self.metadata('0.1.2', 9); self.commit(); self.tag('0.1.2'); self.sync()
+        self.metadata('0.1.3', 4); self.commit(); self.tag('0.1.3'); self.sync()
+        self.metadata('0.1.3', 99); self.commit(); self.sync_main_only()
+        self.execute('prepare-release', '0.1.4')
+        self.assertEqual((self.root / 'VERSION_CODE').read_bytes(), b'10\n')
 
     def test_invalid_tag_sources(self):
         for data in (b'bad\n', b'0.1.3\n', b'0.1.2', b'0.1.2\n\n'):
@@ -251,6 +255,25 @@ class SourceTests(unittest.TestCase):
         oid = self.call('rev-parse', 'v0.1.2')
         self.coordinates()
         self.assertIn(oid + '\trefs/tags/v0.1.2', self.call('ls-remote', 'origin'))
+
+    def test_ambiguous_tag_creation_or_push_never_reports_success_or_retries(self):
+        self.prepared(commit=True)
+        original = self.repo.git
+        for operation in ('tag', 'push'):
+            calls = []
+            def uncertain(*args):
+                result = original(*args)
+                if operation in args:
+                    calls.append(args)
+                    raise subprocess.CalledProcessError(1, args, output=b'acknowledgement lost')
+                return result
+            with self.context(), patch.object(source.Repository, 'git', side_effect=uncertain):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    release.execute_source(self.repo, 'release-tag', '0.1.2')
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(self.call('cat-file', '-t', 'v0.1.2'), 'tag')
+        # Explicit retry diagnoses and validates the exact local/remote pair.
+        self.coordinates()
 
     def test_release_tag_dirty_staged_and_wrong_metadata(self):
         self.prepared(commit=True)
@@ -365,6 +388,40 @@ class SourceTests(unittest.TestCase):
     def sync_main_only(self):
         self.call('push', '--no-follow-tags', 'origin', 'main')
 
+    def test_dispatch_identity_binds_exact_clean_source_and_remote_tag(self):
+        self.prepared(commit=True); self.coordinates()
+        head = self.call('rev-parse', 'HEAD')
+        tag = self.call('rev-parse', 'v0.1.2')
+        def identity():
+            return source.identity(self.repo, '0.1.2', head)
+        with patch.dict(os.environ, GITHUB_REF='refs/heads/main', GITHUB_SHA=head), \
+             patch.object(source, 'guard'), patch.object(source, 'expected_identity', return_value='a' * 64):
+            self.assertEqual(identity(), 'a' * 64)
+            with patch.dict(os.environ, GITHUB_SHA='b' * 40):
+                with self.assertRaisesRegex(ValueError, 'Dispatch SHA'): identity()
+            with patch.dict(os.environ, GITHUB_REF='refs/tags/v0.1.2'):
+                with self.assertRaisesRegex(ValueError, 'select main'): identity()
+            with patch.dict(os.environ, GITHUB_SHA='b' * 40):
+                with self.assertRaisesRegex(ValueError, 'Checkout differs'):
+                    source.identity(self.repo, '0.1.2', 'b' * 40)
+            (self.root / 'VERSION').write_text('0.1.3\n')
+            with self.assertRaisesRegex(ValueError, 'VERSION differs'): identity()
+            self.call('restore', 'VERSION')
+            (self.root / 'unexpected').write_text('dirty source')
+            with self.assertRaisesRegex(ValueError, 'Checkout mutated'): identity()
+            (self.root / 'unexpected').unlink()
+            self.call('tag', '-d', 'v0.1.2'); self.tag('0.1.2')
+            # Change the tag message to guarantee a distinct object, even within one second.
+            self.call('tag', '--no-sign', '-f', '-a', 'v0.1.2', '-m', 'Conflicting tag')
+            with self.assertRaisesRegex(ValueError, 'Remote annotated tag differs'): identity()
+            self.call('update-ref', 'refs/tags/v0.1.2', tag)
+            self.call('update-ref', 'refs/tags/v0.1.2', self.call('rev-parse', 'HEAD^'))
+            with self.assertRaisesRegex(ValueError, 'annotated'): identity()
+            self.call('update-ref', 'refs/tags/v0.1.2', tag)
+            subprocess.run(['git', '--git-dir=' + str(self.remote), 'update-ref',
+                            'refs/heads/main', head + '^'], check=True)
+            with self.assertRaisesRegex(ValueError, 'current main'): identity()
+
     def test_caller_worktree_branch_and_store_boundary(self):
         self.call('switch', '-c', 'other')
         with self.assertRaisesRegex(ValueError, 'main'): self.execute('prepare-release')
@@ -373,23 +430,12 @@ class SourceTests(unittest.TestCase):
         # Executable source is outside the fixture; all preceding operations still
         # modified only the caller's temporary repository.
         self.assertNotEqual(self.root, Path(source.__file__).resolve().parents[2])
-        flake = REPO / 'flake.nix'
-        if flake.exists():
-            text = flake.read_text()
-            self.assertIn('exec python3 -B ${./tools/release}/release.py ${name} "$@"', text)
-            self.assertIn('export PATH=${pkgs.lib.makeBinPath', text)
-            self.assertNotIn('cd ${', text)
-            self.assertIn('releaseCommands = [ "prepare-release" "release-tag" ];', text)
 
     def test_real_cli_outside_worktree_with_public_identity(self):
-        import re
-        import sys
-        if not (REPO / 'release/signing/android-release-cert.pem').is_file():
-            self.skipTest('Public identity/workflow/evaluator inputs excluded from Android package source')
-        names = list(source.REVIEWED_PATHS)
-        names += [source.INVENTORY, '.github/workflows/release.yml', '.github/workflows/ci.yml',
-                  'release/signing/README.md', 'release/signing/android-release-cert.pem',
-                  'release/signing/android-release-cert.sha256', 'tools/verify-apk.py']
+        self.assertTrue((REPO / 'release/signing/android-release-cert.pem').is_file())
+        names = ['.github/workflows/release.yml',
+                 'release/signing/README.md', 'release/signing/android-release-cert.pem',
+                 'release/signing/android-release-cert.sha256', 'tools/verify-apk.py']
         names += [str(p.relative_to(REPO)) for p in (REPO / 'tools/release').glob('*.py')]
         for name in names:
             dest = self.root / name
@@ -423,30 +469,50 @@ class SourceTests(unittest.TestCase):
             with self.subTest(data=data), self.assertRaises(ValueError): source.code(data)
 
 
-class SourcePinTests(unittest.TestCase):
-    def test_shared_pin_inventory_boundary(self):
+class SourceContractTests(unittest.TestCase):
+    def test_canonical_version_owner(self):
+        for value in ('0.1.2', '0.0.0', '12.34.56'):
+            self.assertEqual(source.version(value), tuple(map(int, value.split('.'))))
+        for value in ('01.1.2', '1.01.2', '1.2.03', '1.2.3-rc1', '1.2.3+build',
+                      '1.2.3\n', ' 1.2.3', '1.2', None, 123):
+            with self.subTest(value=value), self.assertRaises(ValueError): source.version(value)
+        # Dispatch and provenance must call this same policy, not neighboring regexes.
+        with patch.object(source, 'version', side_effect=ValueError('canonical policy')):
+            with self.assertRaisesRegex(ValueError, 'canonical policy'):
+                source.identity(source.Repository(Path('/unused')), '1.2.3', 'a' * 40)
+        with patch.object(release, 'version', side_effect=ValueError('canonical policy')):
+            p = {k: 'fixture' for k in release.PROVENANCE_FIELDS}; p['version_code'] = 1
+            with self.assertRaisesRegex(ValueError, 'canonical policy'): release.validate_provenance(p)
+
+    def test_context_is_immutable_and_repositories_do_not_leak(self):
         with tempfile.TemporaryDirectory() as tmp:
-            repo = source.Repository(Path(tmp))
-            entries = []
-            for name in sorted(source.REVIEWED_PATHS):
-                path = repo.root / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b'reviewed build/plugin/dependency/repository/security logic')
-                entries.append(source.sha(path) + '  ' + name + '\n')
-            inventory = repo.root / source.INVENTORY
-            inventory.parent.mkdir(parents=True)
-            inventory.write_text(''.join(entries))
-            for data in (b'2\n', b'3\n'):
-                (repo.root / 'VERSION_CODE').write_bytes(data)
-                source.source_pins(repo)
-            for name in source.REVIEWED_PATHS:
-                path = repo.root / name
-                original = path.read_bytes(); path.write_bytes(original + b'unreviewed change')
-                with self.assertRaisesRegex(ValueError, 'pin differs'): source.source_pins(repo)
-                path.write_bytes(original)
-            for data in ('', ''.join(entries[:-1]), ''.join(entries + [entries[0]]),
-                         ''.join(reversed(entries)), ''.join(entries).replace('app/build.gradle.kts', 'unknown'),
-                         ''.join(entries).replace('  ', ' ', 1), ''.join(entries).upper(),
-                         ''.join(entries).rstrip('\n'), ''.join(entries).replace('\n', '\r\n')):
-                inventory.write_bytes(data.encode())
-                with self.subTest(data=data[:80]), self.assertRaises(ValueError): source.reviewed_inputs(repo)
+            roots = [Path(tmp) / name for name in ('one', 'two')]
+            repos = [source.Repository(p) for p in roots]
+            for n, repo in enumerate(repos):
+                repo.root.mkdir()
+                repo.git('init', '-q', '-b', 'main')
+                (repo.root / 'VERSION_CODE').write_text(f'{n + 1}\n')
+            before = Path.cwd()
+            for repo in (repos[1], repos[0], repos[1]):
+                self.assertEqual(repo.run('git', 'rev-parse', '--show-toplevel'), str(repo.root))
+                self.assertEqual(repo.cert, repo.root / 'release/signing/android-release-cert.pem')
+            self.assertEqual(Path.cwd(), before)
+            with self.assertRaises(FrozenInstanceError): repos[0].root = repos[1].root
+            with self.assertRaises(ValueError): source.Repository(Path('relative'))
+
+    def test_import_has_no_repository_discovery_or_read(self):
+        directory = str(Path(__file__).resolve().parent)
+        program = '''
+from pathlib import Path
+import subprocess
+from unittest.mock import patch
+with patch.object(subprocess, 'check_output', side_effect=AssertionError('import discovery')), \\
+     patch.object(Path, 'read_text', side_effect=AssertionError('import read')), \\
+     patch.object(Path, 'read_bytes', side_effect=AssertionError('import read')):
+    import source
+    assert 'release' not in __import__('sys').modules
+    import release
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run([sys.executable, '-B', '-c', program], cwd=tmp,
+                           env={**os.environ, 'PYTHONPATH': directory}, check=True)

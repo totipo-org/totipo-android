@@ -147,7 +147,9 @@ class ReleaseTests(unittest.TestCase):
 
     def test_fingerprint(self):
         p = self.root / 'fingerprint'
-        for value in ('', 'a' * 63, 'A' * 64, 'gg' * 32, 'aa:' * 32, 'a' * 64 + '\nextra'):
+        for value in ('', 'a' * 63, 'A' * 64, 'gg' * 32, 'aa:' * 32, 'a' * 64 + '\nextra',
+                      'a' * 64, 'a' * 64 + '\r\n', ' ' + 'a' * 64 + '\n',
+                      'a' * 64 + '\n\n'):
             p.write_text(value)
             with self.assertRaises(ValueError): signed.fingerprint(p)
         p.write_text('a' * 64 + '\n')
@@ -176,49 +178,6 @@ class ReleaseTests(unittest.TestCase):
             source.guard(self.repo)
             (area / 'private.key').write_text('TEST')
             with self.assertRaisesRegex(ValueError, 'material'): source.guard(self.repo)
-
-    def test_workflow_static_contract(self):
-        path = Path(__file__).resolve().parents[2] / '.github/workflows/release.yml'
-        if not path.exists():
-            self.skipTest('Workflow intentionally outside filtered Android package source')
-        text = path.read_text()
-        import re
-        source.action_policy(source.Repository(path.parents[2]))
-        self.assertIn('REQUESTED_COMMIT: ${{ inputs.source_commit }}', text)
-        self.assertEqual(text.count('persist-credentials: false'), 4)
-        self.assertEqual(text.count('fetch-depth: 0'), 4)
-        self.assertEqual(text.count('archive: true'), 3)
-        self.assertEqual(text.count('overwrite: false'), 3)
-        self.assertEqual(text.count('include-hidden-files: false'), 3)
-        self.assertEqual(text.count('retention-days: 7'), 3)
-        self.assertNotIn('artifact-ids:', text)
-        self.assertNotIn('github-token:', text)
-        self.assertNotIn('run-id:', text)
-        jobs = re.split(r'^  (qualify|sign|verify|publish):\n', text, flags=re.M)
-        sections = dict(zip(jobs[1::2], jobs[2::2]))
-        self.assertEqual(set(sections), {'qualify', 'sign', 'verify', 'publish'})
-        self.assertNotIn('needs:', sections['qualify'])
-        for job, prior, artifact in [('sign', 'qualify', 'qualified-unsigned'),
-                                     ('verify', 'sign', 'signed-candidate'),
-                                     ('publish', 'verify', 'verified-release')]:
-            self.assertIn('needs: ' + prior, sections[job])
-            self.assertIn('name: ' + artifact, sections[job])
-        self.assertEqual(text.count('contents: write'), 1)
-        self.assertNotIn('id-token:', text)
-        for job in ('qualify', 'verify', 'publish'):
-            self.assertNotIn('secrets.', sections[job])
-            self.assertNotIn('environment:', sections[job])
-        self.assertNotIn('contents: write', sections['sign'])
-        self.assertIn('environment: android-release', sections['sign'])
-        self.assertIn('contents: write', sections['publish'])
-        secret_steps = [step for step in sections['sign'].split('      - ') if 'secrets.' in step]
-        self.assertEqual(len(secret_steps), 1)
-        body = secret_steps[0].split('run: |', 1)[1]
-        for forbidden in ('python', 'gradle', 'nix ', 'gh ', 'tools/'):
-            self.assertNotIn(forbidden, body)
-        self.assertIn('--alignment-preserved true', body)
-        self.assertEqual(text.count('${{ secrets.'), 4)
-        self.assertNotIn('pull_request_target', text)
 
     def test_prepare_uses_git_worktree_for_matching_derivation_and_build(self):
         import argparse

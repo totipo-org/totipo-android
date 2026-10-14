@@ -171,53 +171,13 @@ def next_code(target, consumed):
     return value
 
 
-REVIEWED_PATHS = frozenset((
-    'app/build.gradle.kts',
-    'app/gradle.lockfile',
-    'build.gradle.kts',
-    'buildscript-gradle.lockfile',
-    'flake.lock',
-    'flake.nix',
-    'gradle.properties',
-    'gradle/verification-metadata.xml',
-    'package-deps.json',
-    'settings.gradle.kts',
-))
-INVENTORY = 'tools/release/reviewed-inputs.sha256'
-
-
-def reviewed_inputs(repo):
-    data = (repo.root / INVENTORY).read_bytes()
-    entries = {}
-    for line in data.splitlines(keepends=True):
-        match = re.fullmatch(rb'([0-9a-f]{64})  ([A-Za-z0-9/._-]+)\n', line)
-        require(match, 'Malformed reviewed digest entry')
-        digest, name = (v.decode() for v in match.groups())
-        require(name in REVIEWED_PATHS and name not in entries, 'Unknown/duplicate reviewed path: ' + name)
-        entries[name] = digest
-    require(set(entries) == REVIEWED_PATHS and list(entries) == sorted(entries),
-            'Missing/unsorted reviewed input inventory')
-    return entries
-
-
-def source_pins(repo):
-    for name, digest in reviewed_inputs(repo).items():
-        path = repo.root / name
-        require(path.is_file() and not path.is_symlink() and sha(path) == digest,
-                'Reviewed supply-chain pin differs: ' + name)
-
-
 def machinery_ready(repo):
     root = repo.root
     for name in ('tools/release/release.py', 'tools/release/source.py', 'tools/release/payload.py',
                  'tools/release/verify-signed-apk.py', 'tools/verify-apk.py', '.github/workflows/release.yml',
-                 'release/signing/android-release-cert.pem', 'release/signing/android-release-cert.sha256', INVENTORY):
+                 'release/signing/android-release-cert.pem', 'release/signing/android-release-cert.sha256'):
         require((root / name).is_file() and not (root / name).is_symlink(), 'Release prerequisite missing: ' + name)
         repo.git('ls-files', '--error-unmatch', name)
-    workflow = (root / '.github/workflows/release.yml').read_text()
-    require('workflow_dispatch:' in workflow and 'environment: android-release' in workflow,
-            'Normal protected release workflow missing')
-    action_policy(repo)
 
 
 def source_ready(repo):
@@ -235,7 +195,6 @@ def source_ready(repo):
     root_build = (root / 'build.gradle.kts').read_text()
     require('layout.projectDirectory.file("VERSION")' in root_build and
             'version = versionText.removeSuffix("\\n")' in root_build, 'VERSION wiring missing')
-    source_pins(repo)
     machinery_ready(repo)
     guard(repo)
     expected_identity(repo)
@@ -380,65 +339,3 @@ def identity(repo, target, commit):
     code((repo.root / 'VERSION_CODE').read_bytes())
     guard(repo)
     return expected_identity(repo)
-
-
-# Reviewed in ANDROID_ACTIONS_RELEASE_UX_REPORT.md. Runtime is review metadata,
-# never inferred from the tag text or fetched over the network at qualification.
-REVIEWED_ACTIONS = {
-    'actions/checkout': ('3d3c42e5aac5ba805825da76410c181273ba90b1', 'v7.0.1', 'node24'),
-    'cachix/install-nix-action': ('13d8dd58da0234aa297dedd986986ccb8e7f3e24', 'v31.11.1', 'composite'),
-    'actions/upload-artifact': ('cf430e030ddbb5b0abf93d22962f4752f3646cd9', 'v7.0.2', 'node24'),
-    'actions/download-artifact': ('9000827ccba6bdab643e8b6fd33ac0654aef8333', 'v8.0.2', 'node24'),
-}
-
-
-def workflow_actions(contents):
-    """Restricted declaration grammar, not a general YAML parser.
-
-    Uses must occupy a plain line with its reviewed version comment. Quoted,
-    flow, multiline, alias/anchor and merge declarations are unsupported.
-    """
-    require('ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION' not in contents,
-            'Unreviewed Node runtime override')
-    seen = []
-    block_indent = None
-    for line in contents.splitlines():
-        if line.lstrip().startswith('#'):
-            continue
-        indent = len(line) - len(line.lstrip())
-        if block_indent is not None and (not line.strip() or indent > block_indent):
-            continue  # Literal/folded scalar contents are not YAML declarations.
-        block_indent = None
-        require(not re.match(r'''\s*(?:-\s*)?["']''', line)
-                and not re.match(r'\s*(?:-\s*)?[{\[]', line)
-                and not re.search(r':\s*[{\[]', line)
-                and line.strip() not in ('---', '...') and not line.startswith('%'),
-                'Unsupported quoted/flow/document workflow grammar')
-        require('\t' not in line and not re.search(r'(?:^|\s)[&*][\w-]+|<<\s*:', line),
-                'Unsupported workflow alias/anchor/tab grammar')
-        if re.search(r'\buses\b[\s\"\x27]*:', line, re.I):
-            match = re.fullmatch(r'\s*(?:-\s*)?uses: ([\w/-]+)@([0-9a-f]{40}) # (v[0-9]+\.[0-9]+\.[0-9]+)', line)
-            require(match, 'Unsupported/unpinned action declaration: ' + line)
-            action, digest, tag = match.groups()
-            require(action in REVIEWED_ACTIONS and (digest, tag) == REVIEWED_ACTIONS[action][:2],
-                    'Unreviewed action/version/runtime association: ' + action)
-            seen.append(action)
-        if re.search(r':\s*[|>][+-]?\s*$', line):
-            block_indent = indent
-    return seen
-
-
-def action_policy(repo):
-    github = repo.root / '.github'
-    workflows = github / 'workflows'
-    declared = {p.name for p in workflows.iterdir() if p.suffix in ('.yml', '.yaml')}
-    require(declared == {'ci.yml', 'release.yml'}, 'Unreviewed workflow inventory')
-    candidates = sorted(set(github.rglob('*.yml')) | set(github.rglob('*.yaml')))
-    seen = set()
-    for path in candidates:
-        require(not path.is_symlink(), 'Symlink workflow/action refused')
-        actions = workflow_actions(path.read_text())
-        if path.parent == workflows:
-            require(actions, 'Workflow has no reviewed actions')
-        seen.update(actions)
-    require(seen == set(REVIEWED_ACTIONS), 'Missing reviewed action declaration')

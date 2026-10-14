@@ -280,7 +280,7 @@ def execute_source(repo, command, target, json_output=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['identity', 'guard', 'prepare', 'bundle', 'finalize', 'publish',
-                        'prepare-release', 'check-release', 'release-tag', 'action-policy'])
+                        'prepare-release', 'check-release', 'release-tag'])
     parser.add_argument('target', nargs='?')
     parser.add_argument('--version', default=os.environ.get('REQUESTED_VERSION'))
     parser.add_argument('--commit', default=os.environ.get('REQUESTED_COMMIT'))
@@ -295,8 +295,6 @@ if __name__ == '__main__':
         execute_source(repo, args.command, args.target, args.json)
     elif args.command == 'identity':
         identity(repo, args.version, args.commit)
-    elif args.command == 'action-policy':
-        source.action_policy(repo)
     elif args.command == 'guard':
         guard(repo)
     else:

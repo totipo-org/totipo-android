@@ -235,8 +235,10 @@ nix flake check
 derivation. Flake check includes the actual Android package build/test/check work:
 debug/release assembly, JVM tests, lint, strict dependency verification,
 Maven-boundary checks, debug APK verification with `--debug-probe` and unsigned
-release APK verification with `--unsigned --no-debug-probe`. A second ordinary
-`nix build` is not required for qualification. The strict offline Gradle gate
+release APK verification with `--unsigned --no-debug-probe`. The separate
+`checks.release-tooling` runs the release behavior suite with its required source
+and public signing identity; `checks.release-apps` checks packaged command entry points.
+A second ordinary `nix build` is not required for qualification. The strict offline Gradle gate
 above remains final local Android validation, outside the iteration loop.
 
 Agent does not run Nix. After all package/check inputs (including `tools/` and
@@ -288,17 +290,14 @@ The cache also pins lint's Google Play SDK Index at
 URL, so a fresh runner can fail with a `snapshot.gz` fixed-output hash mismatch
 even when application dependencies have not changed. Verify the downloaded
 snapshot and update its `gz` hash under `https://dl.google.com` →
-`play-sdk/index/snapshot` in `package-deps.json`. Update the reviewed whole-file
-SHA-256 for `package-deps.json` in `tools/release/reviewed-inputs.sha256` as well,
-then rerun the checks above.
+`play-sdk/index/snapshot` in `package-deps.json`, then rerun the checks above.
 This refresh can recur whenever Google replaces the snapshot.
 
 The same applies to Google's Maven group index at
 `https://maven.google.com/master-index.xml`. For a `master-index.xml` mismatch,
 verify that the downloaded response is the expected XML metadata and update
-`https://maven.google.com` → `master-index` → `xml` in `package-deps.json`, along
-with its whole-file reviewed SHA-256. This unversioned index can change independently
-of the application's pinned library versions; a metadata refresh does not require
+`https://maven.google.com` → `master-index` → `xml` in `package-deps.json`. This unversioned index can change
+independently of the application's pinned library versions; a metadata refresh does not require
 upgrading those libraries.
 
 Human-operated flake check, package build and forced rebuild passed on
