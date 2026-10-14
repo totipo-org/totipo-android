@@ -198,9 +198,11 @@ Reviewed digests live in [`reviewed-inputs.sha256`](../tools/release/reviewed-in
 not Java source syntax. Each sorted line is a lowercase SHA-256, two spaces, an
 allowlisted repository path and one LF. Both Java and Python independently reject
 missing, duplicate, unknown, unsorted or malformed entries and compare file bytes.
-The twelve reviewed values were copied unchanged; updating them requires review,
-not regeneration to match an unreviewed checkout. The public signer fingerprint
-likewise requires exactly 64 lowercase hex characters and LF.
+The ten retained reviewed inputs remain protected. Phase A removes only the two
+wrapper entries and updates only the root build/flake digests and the app lockfile
+command-comment digest for reviewed tooling edits;
+updating retained digests requires review, not blanket regeneration to match a checkout.
+The public signer fingerprint likewise requires exactly 64 lowercase hex characters and LF.
 
 `source.py` also owns the no-network reviewed action SHA/version/runtime table and
 restricted plain-line `uses:` grammar. Readiness, tests and the workflow's
@@ -212,7 +214,10 @@ live action metadata discovery is used.
 
 ## Local qualification
 
-Use the pinned development environment. Fast standard-library tests:
+Use the pinned Nix/direnv development environment and its `gradle` executable for
+local build qualification and the standalone metadata harness. CI never edits or
+commits source: preparation remains local, followed by human review and commit.
+Fast standard-library tests:
 
 ```sh
 python3 -B -m unittest discover -s tools/release -p 'test_*.py'

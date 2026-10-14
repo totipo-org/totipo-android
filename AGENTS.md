@@ -5,7 +5,8 @@
 **Full qualification at stable boundaries. Focused validation during iteration.**
 This controls interactive agent work; CI continues to run the package-inclusive
 `nix flake check` and its unchanged-input check. Do not weaken final evidence to
-reduce invocation counts. Use the pinned environment described in README.
+reduce invocation counts. Use the pinned Nix/direnv environment described in README.
+Nix provides Gradle, JDK 17 and the Android SDK for all supported command-line builds.
 
 ### Classify before editing
 
@@ -64,7 +65,7 @@ Freeze included inputs only after all intended new milestone files are Git-known
 For ordinary PRODUCT_CODE, UI_ONLY or LIFECYCLE_SECURITY work, run once:
 
 ```sh
-./gradlew check :app:assembleDebug :app:assembleRelease
+gradle check :app:assembleDebug :app:assembleRelease
 ```
 
 Do not use `clean`, `--rerun-tasks` or `--no-build-cache` at baseline. The starting
@@ -80,8 +81,8 @@ During iteration, use no `clean`, no `--rerun-tasks`, no full APK verification a
 each edit, and no human Nix. Prefer compilation and focused tests, for example:
 
 ```sh
-./gradlew :app:compileDebugJavaWithJavac
-./gradlew :app:testDebugUnitTest --tests 'org.totipo.android.SomeFocusedTest'
+gradle :app:compileDebugJavaWithJavac
+gradle :app:testDebugUnitTest --tests 'org.totipo.android.SomeFocusedTest'
 ```
 
 The test class above is a placeholder; select the real affected tests. A row change
@@ -102,14 +103,14 @@ Record why each extra full invocation was necessary, including invalidated passe
 When production/tests are believed stable, run the final normal checkpoint once:
 
 ```sh
-./gradlew check :app:assembleDebug :app:assembleRelease
+gradle check :app:assembleDebug :app:assembleRelease
 ```
 
 Any subsequent production/test/build input change invalidates that checkpoint.
 After final normal PASS, run the fresh/hermetic strict gate once:
 
 ```sh
-./gradlew \
+gradle \
   --offline \
   --no-daemon \
   --no-configuration-cache \
@@ -123,14 +124,13 @@ The strict-clean command belongs only at this stable boundary. Against its outpu
 run one final external artifact-verification set:
 
 ```sh
-python3 tools/verify-wrapper.py
 python3 tools/verify-apk.py \
   app/build/outputs/apk/debug/app-debug.apk \
   --debug-probe
 python3 tools/verify-apk.py \
   app/build/outputs/apk/release/app-release-unsigned.apk \
   --unsigned --no-debug-probe
-./gradlew --offline :app:dependencies --configuration releaseRuntimeClasspath :app:verifyMavenBoundary
+gradle --offline :app:dependencies --configuration releaseRuntimeClasspath :app:verifyMavenBoundary
 ```
 
 Review the current runtime graph and manifest boundaries. `check` already includes
@@ -210,7 +210,7 @@ human results where required, final Git state, and these execution counts:
 | Focused Gradle invocations | As needed; separate test, compile and boundary checks |
 | Final normal full invocations | 1 ordinary full |
 | Strict-clean invocations | 1 offline clean |
-| Artifact-verifier invocations | 1 final set: wrapper + debug APK + release APK (3 external commands); record embedded Gradle verifier executions separately |
+| Artifact-verifier invocations | 1 final set: debug APK + release APK (2 external commands); record embedded Gradle verifier executions separately |
 | Physical harness invocations | Relevant subsystems only; count each phase/run |
 | Human Nix invocations | 1 final routine check |
 

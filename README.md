@@ -115,7 +115,8 @@ for current evidence. Historical M1/M3 reports remain unchanged.
 
 ## Managed development environment
 
-Use the repository's pinned Nix environment:
+Nix is the supported command-line development prerequisite. Use the repository's
+pinned Nix environment, directly or through direnv:
 
 ```sh
 nix develop
@@ -136,8 +137,8 @@ generated or exported source. See [agent policy](AGENTS.md#local-nix-source-memb
 
 The default shell includes jailed-codex for development. For the lightweight
 Android development environment without agent tooling, use `nix develop .#ci`.
-Both shells share the Android/JDK environment and Python; Nix Gradle remains
-available for the bootstrap toolchain verifier. Ordinary builds use `./gradlew`.
+Both shells and jailed-codex share the same Nix Gradle/JDK/SDK derivations and
+Python. All supported command-line builds use `gradle` in this environment.
 
 The flake provides JDK 17, Gradle 9.8.0, Python and a composed Android SDK from
 its existing locked nixpkgs input: API 37.0, Build Tools 36.0.0, platform tools
@@ -149,8 +150,8 @@ same Nix-managed SDK; `JAVA_HOME` is explicitly JDK 17 and forwarded into jail.
 Do not use a host SDK/JDK, sdkmanager to fill gaps, or `local.properties`.
 
 The shell supplies `GRADLE_OPTS` selecting Nix's patched SDK AAPT2. AGP's Maven
-AAPT2 ELF binary does not start in this Nix environment. The bootstrap script
-and package also pass this selection explicitly. AGP labels the option
+AAPT2 ELF binary does not start in this Nix environment. The package also passes
+this selection explicitly. AGP labels the option
 experimental; its warning remains visible. Build Tools version stays 36.0.0.
 
 ## Build and install
@@ -159,19 +160,18 @@ Follow the [Qualification ladder](AGENTS.md#qualification-ladder) for interactiv
 agent work: full qualification at stable boundaries, focused checks during iteration.
 Docs outside package/check inputs need only documentation validation.
 
-Use the wrapper in the managed shell. Bootstrap is for environment setup; the full
-command is the ordinary baseline/final checkpoint for product milestones:
+Use Nix-provided Gradle in the active managed shell. The full command is the
+ordinary baseline/final checkpoint for product milestones:
 
 ```sh
-./bootstrap-m0.sh
-./gradlew check :app:assembleDebug :app:assembleRelease
+gradle check :app:assembleDebug :app:assembleRelease
 ```
 
 After final normal PASS, run the strict offline clean gate once at the stable
 boundary, followed by the ladder's final artifact and affected device checks:
 
 ```sh
-./gradlew --offline --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks --dependency-verification=strict clean check :app:assembleDebug :app:assembleRelease
+gradle --offline --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks --dependency-verification=strict clean check :app:assembleDebug :app:assembleRelease
 ```
 
 `check` includes the debug JVM smoke test, Android lint and debug/release
@@ -193,7 +193,7 @@ terminal in the Nix development shell, outside jailed-codex. The jail does not
 expose `/dev/bus/usb`; start the adb server from the ordinary terminal.
 
 ```sh
-./gradlew installDebug
+gradle installDebug
 ```
 
 Do not evaluate authentication performance using the ordinary debuggable APK on
@@ -211,16 +211,17 @@ Normal builds never regenerate trusted inputs. To intentionally populate/update
 the locks and SHA-256 metadata, within the managed shell:
 
 ```sh
-./bootstrap-m0.sh --refresh-dependencies
+gradle --no-daemon --no-configuration-cache --dependency-verification=strict --warning-mode=all buildEnvironment :app:dependencies --write-locks --write-verification-metadata sha256
+gradle --no-daemon --no-configuration-cache --dependency-verification=strict --warning-mode=all check :app:assembleDebug :app:assembleRelease --write-locks --write-verification-metadata sha256
 ```
 
 Review all changed lockfiles and `gradle/verification-metadata.xml`, including
 plugin/build/test dependencies. Generated hashes are observations, not proof of
 publisher identity. Independently compare expected artifacts to publisher bytes
 and existing reviewed pins. No dynamic versions, Maven Local, source/composite
-substitution or automatic metadata repair is configured. Wrapper pins are checked
-with `python3 tools/verify-wrapper.py` before bootstrap validation. Updating the
-wrapper is a separate deliberate edit/generation and checksum review operation.
+substitution or automatic metadata repair is configured. After review, run the
+normal and strict qualification commands above. Update the Nix dependency-response
+cache with the human-operated procedure below only for a deliberate input change.
 
 ## Nix qualification and package
 
@@ -288,7 +289,8 @@ URL, so a fresh runner can fail with a `snapshot.gz` fixed-output hash mismatch
 even when application dependencies have not changed. Verify the downloaded
 snapshot and update its `gz` hash under `https://dl.google.com` →
 `play-sdk/index/snapshot` in `package-deps.json`. Update the reviewed whole-file
-SHA-256 in `OtpAuthSupplyChainGuardTest` as well, then rerun the checks above.
+SHA-256 for `package-deps.json` in `tools/release/reviewed-inputs.sha256` as well,
+then rerun the checks above.
 This refresh can recur whenever Google replaces the snapshot.
 
 Human-operated flake check, package build and forced rebuild passed on

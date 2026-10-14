@@ -33,5 +33,5 @@ check(rootProject.version.toString() == "9.8.7")
 check(runCatching { parseCode("missing") }.isFailure) { "Used a default" }
 tasks.register("verifyMetadata") { doLast { println("Metadata parser: 2 / synthetic VERSION 9.8.7; 13 malformed inputs and missing file rejected") } }
 ''')
-    subprocess.run([str(root / 'gradlew'), '--offline', '--no-configuration-cache', '-p', str(work),
+    subprocess.run(['gradle', '--offline', '--no-configuration-cache', '-p', str(work),
                     'verifyMetadata'], cwd=root, check=True)

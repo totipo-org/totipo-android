@@ -28,8 +28,3 @@ val verifyBuildDependencies = tasks.register("verifyBuildDependencies") {
 tasks.named("check") { dependsOn(":app:check", verifyBuildDependencies) }
 tasks.named("assemble") { dependsOn(":app:assembleDebug", ":app:assembleRelease") }
 tasks.named("clean") { dependsOn(":app:clean") }
-tasks.named<Wrapper>("wrapper") {
-    gradleVersion = "9.8.0"
-    distributionType = Wrapper.DistributionType.BIN
-    distributionSha256Sum = "bafd5ce9cfaea0fbccfdc8439a1ac42fbd4cd9c89dc9a988228d8a2639a58e6c"
-}

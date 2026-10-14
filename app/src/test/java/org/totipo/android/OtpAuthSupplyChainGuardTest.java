@@ -51,8 +51,6 @@ public final class OtpAuthSupplyChainGuardTest {
             "flake.nix",
             "gradle.properties",
             "gradle/verification-metadata.xml",
-            "gradle/wrapper/gradle-wrapper.jar",
-            "gradle/wrapper/gradle-wrapper.properties",
             "package-deps.json",
             "settings.gradle.kts");
 

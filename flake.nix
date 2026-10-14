@@ -51,7 +51,7 @@
         };
         androidSdk = android.androidsdk;
         sdkRoot = "${androidSdk}/libexec/android-sdk";
-        # The toolchain verifier uses Nix Gradle; app builds use ./gradlew.
+        # Package, development, CI and jailed agents share these tool derivations.
         androidPackages = [ jdk gradle pkgs.python3 androidSdk ];
         androidEnv = {
           JAVA_HOME = "${jdk}/lib/openjdk";
