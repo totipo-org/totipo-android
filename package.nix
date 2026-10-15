@@ -81,6 +81,7 @@ stdenv.mkDerivation (finalAttrs: {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
+    # Authoritative full APK policy: both variants, including the installed release bytes.
     python3 tools/verify-apk.py app/build/outputs/apk/debug/app-debug.apk --debug-probe
     python3 tools/verify-apk.py "$out/share/totipo-android/totipo-android-${version}-unsigned.apk" --unsigned --no-debug-probe
     runHook postInstallCheck

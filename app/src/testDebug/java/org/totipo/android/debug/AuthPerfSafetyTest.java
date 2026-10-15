@@ -75,10 +75,7 @@ public final class AuthPerfSafetyTest {
                 }
             }
         }
-        String verifier = Files.readString(Path.of("../tools/verify-apk.py"));
-        for (String required : List.of("TotipoAuthPerf", "AuthPerfBenchmark", "AuthPerfActivity", "DebugDisposableCreation", "TotipoVaultTiming")) {
-            assertTrue(required, verifier.contains(required));
-        }
+
     }
     @Test public void loggingUsesFixedLabelsAndNumericResultsWithDevicePropertiesOnly() throws Exception {
         String activity = Files.readString(Path.of("src/debug/java/org/totipo/android/debug/AuthPerfActivity.java"));

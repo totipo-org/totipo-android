@@ -22,13 +22,15 @@ p = release.qualified_provenance(Path(sys.argv[1]), Path('VERSION').read_text().
 Path(sys.argv[2]).write_text(json.dumps(p, sort_keys=True, indent=2) + '\n')
 PYCODE
 # Prepare a deliberate changed payload before any key exists.
-python3 -B - "$unsigned" "$work/altered.apk" <<'PY'
+python3 -B - "$unsigned" "$work/altered-unaligned.apk" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2], 'w') as target:
     for entry in source.infolist():
         target.writestr(entry, source.read(entry))
     target.writestr('TEST-ONLY-altered-payload', b'negative test')
 PY
+# The negative must pass alignment to exercise payload rejection specifically.
+"$sdk/zipalign" -P 16 4 "$work/altered-unaligned.apk" "$work/altered.apk"
 # Only trusted platform tools run from key generation through deletion.
 export TEST_STORE_PASSWORD=disposable-local-test-only
 for name in first second; do
@@ -60,7 +62,7 @@ unset TEST_STORE_PASSWORD
 test ! -e "$work/first.p12" && test ! -e "$work/second.p12"
 verify=(python3 -B tools/release/verify-signed-apk.py --provenance "$work/release-provenance.json" --unsigned "$unsigned")
 "${verify[@]}" "$work/first-signed.apk" --fingerprint "$work/expected.sha256"
-python3 -B tools/release/payload.py "$unsigned" "$work/first-signed.apk"
+sha256sum "$work/first-signed.apk"
 expect_failure() {
     if "$@" > "$work/negative.log" 2>&1; then
         echo 'Negative case unexpectedly passed' >&2; exit 1
@@ -85,7 +87,8 @@ PY
 expect_failure "${verify[@]}" "$work/tampered.apk" --fingerprint "$work/expected.sha256"
 # Valid signature under the right key still cannot authorize changed payload.
 "$sdk/apksigner" verify "$work/altered-signed.apk"
-expect_failure python3 -B tools/release/payload.py "$unsigned" "$work/altered-signed.apk"
+expect_failure "${verify[@]}" "$work/altered-signed.apk" --fingerprint "$work/expected.sha256"
+grep -q 'APK ZIP payload differs' "$work/negative.log"
 expect_failure "${verify[@]}" "$work/first-signed.apk" --fingerprint "$work/malformed.sha256"
 test "$before" = "$(sha256sum "$unsigned")"
 test "$provenance_before" = "$(sha256sum "$work/release-provenance.json")"

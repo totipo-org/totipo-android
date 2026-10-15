@@ -59,7 +59,7 @@ class LookupTests(unittest.TestCase):
             (bundle / (apk.name + '.sha256')).write_text(release.sha(apk) + '  ' + apk.name + '\n')
             args = SimpleNamespace(bundle=bundle, version='1.0.0', commit='a'*40)
             for draft in (False, True):
-                with patch.dict(os.environ, GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value={'tag':'v1.0.0'}), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release, 'lookup_release', return_value=None if draft else {'id':1}), patch.object(release, 'listed_release', return_value={'draft':True}), patch.object(Repository, 'run') as mutation:
+                with patch.dict(os.environ, GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value={'tag':'v1.0.0'}), patch.object(release, 'verify_signed'), patch.object(release, 'lookup_release', return_value=None if draft else {'id':1}), patch.object(release, 'listed_release', return_value={'draft':True}), patch.object(Repository, 'run') as mutation:
                     with self.assertRaisesRegex(ValueError, 'already exists'): release.publish(self.repo, args)
                     mutation.assert_not_called()
 
@@ -78,7 +78,7 @@ class LookupTests(unittest.TestCase):
 class DownstreamTests(unittest.TestCase):
     def test_failures_leave_one_draft_and_retry_never_adopts_it(self):
         import shutil
-        for failure in ('draft-list', 'download', 'hosted-verify', 'source', 'publish'):
+        for failure in ('draft-list', 'download', 'hosted-hash', 'source', 'publish'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); repo = Repository(root)
                 bundle = root / 'bundle'; bundle.mkdir()
@@ -86,7 +86,7 @@ class DownstreamTests(unittest.TestCase):
                 (bundle / (apk.name + '.sha256')).write_text(release.sha(apk) + '  ' + apk.name + '\n')
                 (bundle / 'release-provenance.json').write_text('{}')
                 args = SimpleNamespace(bundle=bundle, version='1.0.0', commit='a' * 40)
-                commands = []; created = False; verify_calls = 0; failed = False
+                commands = []; created = False; failed = False
                 def run(*cmd):
                     nonlocal created, failed
                     commands.append(cmd)
@@ -96,6 +96,8 @@ class DownstreamTests(unittest.TestCase):
                     if cmd[:3] == ('gh', 'release', 'download'):
                         if failure == 'download': raise OSError('download failure')
                         for path in bundle.iterdir(): shutil.copyfile(path, root / 'remote-release' / path.name)
+                        if failure == 'hosted-hash':
+                            (root / 'remote-release' / 'release-provenance.json').write_text('changed')
                         return ''
                     if 'PATCH' in cmd:
                         if failure == 'publish': raise OSError('publish failure')
@@ -104,15 +106,11 @@ class DownstreamTests(unittest.TestCase):
                         failed = True
                         raise OSError('list failure')
                     return json.dumps([[{'id':42, 'tag_name':'v1.0.0', 'draft':True}] if created else []])
-                def verify(*args):
-                    nonlocal verify_calls
-                    verify_calls += 1
-                    if failure == 'hosted-verify' and verify_calls == 2: raise ValueError('hosted failure')
                 def identity(*args):
                     if failure == 'source': raise ValueError('source drift')
                 with patch.dict(os.environ, GITHUB_REPOSITORY='example/repo'), \
                      patch.object(release, 'bundle_check', return_value={'tag':'v1.0.0','certificate_sha256':'b'*64}), \
-                     patch.object(release, 'verify_signed', side_effect=verify), patch.object(release, 'compare'), \
+                     patch.object(release, 'verify_signed'), \
                      patch.object(release, 'identity', side_effect=identity), \
                      patch.object(release, 'lookup_release', return_value=None), \
                      patch.object(Repository, 'run', side_effect=run):

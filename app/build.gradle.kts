@@ -131,13 +131,3 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
     }
 }
 tasks.named("check") { dependsOn(verifyMavenBoundary, "testDebugUnitTest", "lint") }
-
-val verifyReleaseApkBoundary = tasks.register<Exec>("verifyReleaseApkBoundary") {
-    group = "verification"
-    description = "Require release NIO/core/BC and exclude all debug probes"
-    dependsOn("assembleRelease")
-    commandLine("python3", rootProject.file("tools/verify-apk.py"),
-        layout.buildDirectory.file("outputs/apk/release/app-release-unsigned.apk").get().asFile,
-        "--unsigned", "--no-debug-probe")
-}
-tasks.named("check") { dependsOn(verifyReleaseApkBoundary) }

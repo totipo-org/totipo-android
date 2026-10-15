@@ -95,16 +95,21 @@ For diagnostic / developer use only, the internal read-only CLI
 prepared diff or clean committed source. It is not a public Nix app or a required
 release step.
 
-Qualify the unsigned APK from the committed source. Its observed versionName and
-versionCode remain authoritative in provenance through signing; changing source
-metadata requires no signed-verifier version edit. The workflow never creates or
-pushes tags.
+Qualify the unsigned APK from committed source. The [final APK policy](../README.md#nix-qualification-and-package)
+checks versionName **equals reviewed VERSION** and versionCode **equals reviewed
+VERSION_CODE**, as well as application ID and SDK properties. The canonical source
+parsers remain authoritative; neither the APK nor generated provenance supplies the
+expected code. The workflow never creates or pushes tags.
 
-Application ID `org.totipo.android` is independently pinned application identity.
-Mutable versionName/versionCode are extracted with pinned aapt2 from the qualified
-unsigned APK. Qualification checks versionName against VERSION once. Downstream
-verification compares both APKs against validated provenance and rehashes the
-unsigned input. The signed APK never supplies its own expected version.
+The authenticated Nix package output has already passed complete unsigned policy in
+installCheck. Preparation inspects its native metadata and records provenance without
+repeating full policy. Bundle handoffs bind unsigned SHA-256, native identity and
+reviewed source. Independent signed acceptance rechecks the unsigned policy, then
+native apksigner validity, the sole expected certificate, v2/v3 enabled and v1/v4
+disabled, direct signed identity/SDK metadata, alignment and exact payload equivalence.
+The same complete ZIP payload proves preservation of the accepted manifest/resources
+and DEX policy in the signed APK. The verifier uses one SDK-decoded manifest and one
+source metadata parser throughout; there is no separate signed version parser.
 
 Dispatch `.github/workflows/release.yml` on main with the printed `version` and `source_commit` (full reviewed
 current main commit SHA). Every job revalidates source, VERSION, annotated local and
@@ -115,10 +120,10 @@ The four jobs are:
 
 | Job | Authority and output |
 | --- | --- |
-| qualify | contents read, no environment or signing secrets; `nix flake check --print-build-logs`; compare checks.android/default drvPath, materialize default, verify unsigned APK, upload unsigned bundle |
+| qualify | contents read, no environment or signing secrets; `nix flake check --print-build-logs`; compare checks.android/default drvPath, materialize the accepted default, bind unsigned source/metadata/hash, upload unsigned bundle |
 | sign | contents read, protected android-release; verify bundle and resolve pinned SDK/JDK before one secret-bearing shell step; output separate signed candidate |
-| verify | contents read, no signing secrets; verify single pinned certificate and v2/v3 signatures, ordinary release boundaries, payload equivalence and original unsigned hash; output verified assets plus internal unsigned evidence |
-| publish | contents write, no Android key; verify inputs, create draft for existing tag, upload, download all assets, compare bytes and reverify downloaded certificate/boundaries before final publication |
+| verify | contents read, no signing secrets; verify single pinned certificate and v2/v3 signatures, independent unsigned policy, signed identity/SDK, payload equivalence and original unsigned hash; output verified assets plus internal unsigned evidence |
+| publish | contents write, no Android key; verify inputs, create draft for existing tag, upload, download all assets, compare whole-file hashes before final publication |
 
 `checks.android` and `packages.default` must resolve to the same derivation.
 Materialization is `nix build --no-link --print-out-paths`, after qualification,
@@ -158,7 +163,7 @@ Build Tools 36.0.0 supplies apksigner and zipalign from the existing locked SDK;
 JDK 17 supplies keytool. Signing explicitly disables v1/v4 and enables v2/v3, with
 `--alignment-preserved true` to retain the qualified ZIP local headers.
 minSdk 26 needs no v1. Verification checks alignment without rewriting the APK.
-The ZIP comparator compares every payload entry, order, central metadata, raw
+The signed verifier invokes the retained ZIP comparator, which compares every payload entry, order, central metadata, raw
 local headers, compressed bytes and uncompressed SHA-256. It permits signing-block
 insertion and changed central-directory offsets; it does not claim whole-file
 identity. Downloaded APK whole-file SHA equality also preserves this payload proof.
@@ -170,7 +175,9 @@ and headers, not human stderr. Only a well-formed HTTP 404 permits proceeding;
 401/403/429/5xx, malformed JSON/HTTP and process/transport failures remain fatal.
 A separate fully paginated release list also rejects drafts. After creating the
 draft, publication reads that draft from the list, never from the published-only
-tag endpoint. Hosted bytes and signature/boundaries must pass before publication.
+tag endpoint. Before upload the publication job independently repeats signed acceptance across its artifact handoff.
+Downloaded whole-file hash equality then preserves that acceptance without another
+manifest/DEX/signature inspection of unchanged bytes.
 The workflow requires human-configured environment protections. Their setup is
 human-reported only; YAML cannot itself enforce required reviewers.
 
@@ -228,6 +235,9 @@ python3 -B tools/release/release.py guard
 python3 -B tools/release/test-build-metadata.py
 ```
 
+The suite includes decoded final-manifest policy negatives; these fixtures do not
+validate binary XML decoding or establish device behavior. Actual SDK inspection of
+both APKs runs in package installCheck and the explicit host commands linked above.
 The source-aware `checks.release-tooling` runs this suite once with explicit
 Git/JDK inputs and the real source/public identity fixtures. Missing fixture inputs
 fail rather than skip. The package install check retains both APK verifications;

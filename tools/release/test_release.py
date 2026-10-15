@@ -50,12 +50,13 @@ class ReleaseTests(unittest.TestCase):
         # Exercise the verifier, with external SDK responses deterministically mocked.
         for actual, error in ((self.metadata(), None), (self.metadata(code=43), 'versionCode mismatch'),
                               (self.metadata(name='1.0.1'), 'versionName mismatch')):
-            with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), patch.object(signed.subprocess, 'run', return_value=SimpleNamespace(stdout=self.signature())), patch.object(release, 'apk_metadata', side_effect=[self.metadata(), actual]):
+            with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), patch.object(signed.subprocess, 'run', return_value=SimpleNamespace(stdout=self.signature())), patch.object(release, 'apk_metadata', side_effect=[self.metadata(), actual]), patch.object(signed, 'compare') as payload_check:
                 if error:
                     with self.assertRaisesRegex(ValueError, error):
                         signed.verify('signed.apk', fp, provenance, self.unsigned)
                 else:
                     signed.verify('signed.apk', fp, provenance, self.unsigned)
+                    payload_check.assert_called_once_with(self.unsigned, 'signed.apk')
 
     def test_unsigned_metadata_and_sha_binding(self):
         for changes, actual, error in (
@@ -68,7 +69,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_schema_fail_closed(self):
         invalid = [('version_code', v) for v in (True, '42', 42.0, 0, -1, 2100000001)] + [
-            ('version_name', ''), ('version_name', 'bad\nname'), ('version_name', 42),
+            ('version_name', ''), ('version_name', 'bad\nname'), ('version_name', 42), ('version_name', '1.0.1'),
             ('application_id', 'org.attacker'), ('source_commit', 'main'), ('tag', 'v2.0.0'),
             ('version', 'bad'), ('unsigned_sha256', 'bad'), ('certificate_sha256', 'bad'),
             ('nix_derivation', '/tmp/x'), ('nix_output', '/tmp/x'),
@@ -82,13 +83,14 @@ class ReleaseTests(unittest.TestCase):
         path = self.provenance(); p = json.loads(path.read_text()); del p['tag']; path.write_text(json.dumps(p))
         with self.assertRaisesRegex(ValueError, 'fields'): release.load_provenance(path)
 
-    def test_apk_metadata_pins_identity(self):
-        for app in ('org.totipo.android', 'org.attacker'):
-            badging = f"package: name='{app}' versionCode='42' versionName='1.0.0' platformBuildVersionName='test'\n"
-            with patch.dict('os.environ', ANDROID_HOME='/pinned/sdk'), patch.object(release, 'sdk_output', return_value=badging):
-                if app == release.APPLICATION_ID: self.assertEqual(release.apk_metadata('fixture'), self.metadata())
-                else:
-                    with self.assertRaisesRegex(ValueError, 'applicationId'): release.apk_metadata('fixture')
+    def test_apk_metadata_binds_reviewed_source(self):
+        with patch.object(release.apk_policy(), 'manifest', return_value='decoded') as native, \
+             patch.object(release.apk_policy(), 'reviewed_metadata', return_value=self.metadata()) as reviewed, \
+             patch.object(release.apk_policy(), 'require_identity', return_value=self.metadata()) as policy:
+            self.assertEqual(release.apk_metadata('fixture'), self.metadata())
+        policy.assert_called_once_with('decoded', self.metadata())
+        native.assert_called_once_with('fixture')
+        reviewed.assert_called_once_with()
 
     def test_qualification_observes_metadata_and_checks_version(self):
         with patch.object(release, 'unsigned_check'), patch.object(release, 'apk_metadata', return_value=self.metadata()):
@@ -108,7 +110,7 @@ class ReleaseTests(unittest.TestCase):
         (self.root / 'unsigned-release.apk.sha256').write_text('fixture checksum')
         (self.root / 'totipo-android-1.0.0.apk').write_bytes(b'signed')
         args = argparse.Namespace(version='1.0.0', bundle=self.root, output=self.root / 'verified')
-        with patch.object(release, 'bundle_check', return_value=release.load_provenance(provenance)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'):
+        with patch.object(release, 'bundle_check', return_value=release.load_provenance(provenance)), patch.object(release, 'verify_signed'):
             release.finalize(self.repo, args)
         self.assertEqual((args.output / provenance.name).read_bytes(), original)
         self.assertEqual((args.output / 'unsigned-release.apk').read_bytes(), self.unsigned.read_bytes())
@@ -178,6 +180,14 @@ class ReleaseTests(unittest.TestCase):
             source.guard(self.repo)
             (area / 'private.key').write_text('TEST')
             with self.assertRaisesRegex(ValueError, 'material'): source.guard(self.repo)
+
+    def test_source_only_packaged_command_needs_no_apk_verifier(self):
+        # Nix prepare-release/release-tag package only this directory, outside Git.
+        import shutil, subprocess, sys
+        commands = self.root / 'packaged-release'
+        shutil.copytree(Path(release.__file__).parent, commands, ignore=shutil.ignore_patterns('__pycache__'))
+        subprocess.run([sys.executable, '-B', str(commands / 'release.py'), '--help'],
+                       check=True, stdout=subprocess.DEVNULL, cwd=self.root)
 
     def test_prepare_uses_git_worktree_for_matching_derivation_and_build(self):
         import argparse
@@ -277,16 +287,15 @@ class ReleaseTests(unittest.TestCase):
                     raise subprocess.CalledProcessError(1, cmd, output='{"status":"404"}')
                 return json.dumps([[dict(draft=True, tag_name='v1.0.0', id=42)] if created else []])
             raise AssertionError(cmd)
-        with patch.dict('os.environ', GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed', side_effect=lambda repo, apk, bundle: events.append(('verify', apk))), patch.object(release, 'compare'), patch.object(release.subprocess, 'run', return_value=SimpleNamespace(stdout='HTTP/2.0 404 Not Found\n\n{"message":"Not Found","status":"404"}', returncode=1)), patch.object(release, 'identity', side_effect=lambda *args: events.append(('identity', args))), patch.object(source.Repository, 'run', side_effect=fake_run):
+        with patch.dict('os.environ', GITHUB_REPOSITORY='example/repo'), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed', side_effect=lambda repo, apk, bundle: events.append(('verify', apk))), patch.object(release.subprocess, 'run', return_value=SimpleNamespace(stdout='HTTP/2.0 404 Not Found\n\n{"message":"Not Found","status":"404"}', returncode=1)), patch.object(release, 'identity', side_effect=lambda *args: events.append(('identity', args))), patch.object(source.Repository, 'run', side_effect=fake_run):
             release.publish(self.repo, args)
         self.assertTrue(any('PATCH' in c for c in commands))
         self.assertEqual([event[1] for event in events if event[0] == 'verify'],
-                         [apk, self.root / 'remote-release' / apk.name])
+                         [apk])
         self.assertEqual(events[-2][0], 'identity')
         self.assertEqual(events[-1][0], 'command')
         self.assertIn('PATCH', events[-1][1])
-        self.assertLess(next(i for i, e in enumerate(events) if e == ('verify', self.root / 'remote-release' / apk.name)),
-                        len(events) - 1)
+
 
     def test_remote_mismatch_leaves_draft(self):
         import argparse, json
@@ -305,7 +314,7 @@ class ReleaseTests(unittest.TestCase):
                 target = self.root / 'remote-release'
                 (target / apk.name).write_bytes(b'tampered')
             return ''
-        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'compare'), patch.object(release, 'lookup_release', return_value=None), patch.object(source.Repository, 'run', side_effect=fake_run):
+        with patch.dict('os.environ', {'GITHUB_REPOSITORY': 'example/repo'}), patch.object(release, 'bundle_check', return_value=dict(tag='v1.0.0', certificate_sha256='b' * 64)), patch.object(release, 'verify_signed'), patch.object(release, 'lookup_release', return_value=None), patch.object(source.Repository, 'run', side_effect=fake_run):
             with self.assertRaisesRegex(ValueError, 'Remote release bytes'): release.publish(self.repo, args)
         self.assertTrue(any(c[:3] == ('gh', 'release', 'create') and '--draft' in c for c in commands))
         self.assertFalse(any('PATCH' in c for c in commands))

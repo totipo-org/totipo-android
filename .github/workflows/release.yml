@@ -186,7 +186,7 @@ jobs:
         with:
           name: verified-release
           path: ${{ runner.temp }}/bundle
-      - name: Draft, upload, redownload, verify hosted bytes and signer, then publish
+      - name: Verify candidate, draft, upload, redownload exact bytes, then publish
         env:
           # GitHub runner CLI/API token; no Android private key in this job.
           GH_TOKEN: ${{ github.token }}

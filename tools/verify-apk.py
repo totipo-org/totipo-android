@@ -1,159 +1,213 @@
 #!/usr/bin/env python3
-"""Check APK ZIP integrity, bootstrap/NIO/core/BC DEX presence and optional unsigned status."""
+"""Totipo final APK policy. SDK tools decode manifests/resources; no binary XML parser."""
 import argparse
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
+import xml.etree.ElementTree as ET
 import zipfile
 
-parser = argparse.ArgumentParser()
-parser.add_argument('apk', type=Path)
-parser.add_argument('--unsigned', action='store_true')
-parser.add_argument('--no-debug-probe', action='store_true', help='Require release DEX to exclude diagnostic classes')
-parser.add_argument('--debug-probe', action='store_true', help='Require existing debug diagnostic classes')
-args = parser.parse_args()
-assert not (args.debug_probe and (args.unsigned or args.no_debug_probe)), 'Conflicting APK boundaries'
-data = args.apk.read_bytes()
-# Inspect the packaged (merged binary) manifest using the project's pinned SDK tool.
-sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
-assert sdk, 'ANDROID_HOME or ANDROID_SDK_ROOT required for packaged manifest inspection'
-manifest = subprocess.check_output([
-    str(Path(sdk) / 'build-tools/36.0.0/aapt2'), 'dump', 'xmltree',
-    str(args.apk), '--file', 'AndroidManifest.xml'], text=True)
-manifest = manifest.replace('http://schemas.android.com/apk/res/android:', 'android:')
-for permission in ('android.permission.CAMERA', 'android.permission.INTERNET', 'android.permission.READ_EXTERNAL_STORAGE',
-                   'android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.MANAGE_EXTERNAL_STORAGE'):
-    assert permission not in manifest, f'Forbidden APK permission: {permission}'
-permissions = re.findall(r'android:name\([^)]*\)="(android.permission.[^"]+)"', manifest)
-assert set(permissions) == {'android.permission.USE_BIOMETRIC'}, 'Unexpected APK permissions'
-assert 'E: service ' not in manifest, 'Unexpected background service'
-resources = subprocess.check_output([
-    str(Path(sdk) / 'build-tools/36.0.0/aapt2'), 'dump', 'resources', str(args.apk)], text=True)
-for attribute, resource in [('icon', 'ic_launcher'), ('roundIcon', 'ic_launcher_round')]:
-    match = re.search(r'resource (0x[0-9a-f]+) (?:org.totipo.android:)?mipmap/' + resource + r'\b', resources)
-    assert match, f'Missing Totipo launcher resource: {resource}'
-    assert re.search(r'android:' + attribute + r'\([^)]*\)=@' + match[1] + r'\b', manifest), 'Wrong application branding'
-root = Path(__file__).resolve().parents[1]
-branding = json.loads((root / 'branding-provenance.json').read_text())
-assert branding['commit'] == 'cdb4e91be1c6d3704874b2b92457ffe7be5e9084'
-for path, provenance in branding['assets'].items():
-    assert hashlib.sha256((root / path).read_bytes()).hexdigest() == provenance['sha256'], f'Changed canonical source: {path}'
-    assert provenance['source'] == 'design/icons/platforms/android/res/' + path.removeprefix('app/src/main/res/')
-enrollment_name = 'org.totipo.android.OtpAuthEnrollmentActivity'
-assert 'OtpAuthIntentProbeActivity' not in manifest, 'Obsolete qualification handler'
-assert len(re.findall(r'android:scheme\([^)]*\)="otpauth"', manifest)) == 1, 'Duplicate/aliased otpauth filters'
-for forbidden in ('android.intent.action.SEND_MULTIPLE', '*/*', 'image/*', 'otpauth-migration'):
-    assert forbidden not in manifest, f'Forbidden enrollment registration: {forbidden}'
-# Every APK has the exact production ingress boundary.
-# xmltree nests attributes and filters beneath their owning Activity.
-activities = []
-lines = manifest.splitlines()
-for index, line in enumerate(lines):
-    match = re.match(r'^( +)E: activity ', line)
-    if match:
-        depth = len(match[1])
-        end = index + 1
-        while end < len(lines):
-            element = re.match(r'^( *)E:', lines[end])
-            if element and len(element[1]) <= depth:
-                break
-            end += 1
-        activities.append('\n'.join(lines[index:end]))
-assert len([activity for activity in activities if 'otpauth' in activity]) == 1, 'Duplicate otpauth handler'
-assert len([activity for activity in activities if 'android.intent.action.SEND' in activity]) == 1, 'Duplicate SEND handler'
-enrollment = [activity for activity in activities if enrollment_name in activity]
-assert len(enrollment) == 1, 'Missing/duplicate production enrollment Activity'
-enrollment = enrollment[0]
-assert re.search(r'android:exported\([^)]*\)=true', enrollment), 'Enrollment must be exported'
-assert enrollment.count('E: intent-filter ') == 2, 'Unexpected enrollment filters'
-filters = re.split(r'^ +E: intent-filter .*$', enrollment, flags=re.MULTILINE)[1:]
-assert len(filters) == 2
-view, send = filters
-for value in ('android.intent.action.VIEW', 'android.intent.category.DEFAULT',
-              'android.intent.category.BROWSABLE'):
-    assert f'="{value}"' in view, f'Missing VIEW boundary: {value}'
-assert view.count('E: action ') == 1 and view.count('E: category ') == 2 and view.count('E: data ') == 1
-for attribute, value in (('scheme', 'otpauth'), ('host', 'totp')):
-    assert re.search(r'android:' + attribute + r'\([^)]*\)="' + value + '"', view), f'Wrong VIEW {attribute}'
-assert send.count('E: action ') == 1 and send.count('E: category ') == 1 and send.count('E: data ') == 1
-for value in ('android.intent.action.SEND', 'android.intent.category.DEFAULT'):
-    assert f'="{value}"' in send, f'Missing SEND boundary: {value}'
-assert re.search(r'android:mimeType\([^)]*\)="text/plain"', send), 'Wrong SEND MIME'
-assert 'android:scheme(' not in send and 'android:host(' not in send
-assert 'android:mimeType(' not in view
-assert 'android:path' not in enrollment and 'android:port(' not in enrollment
-assert not re.search(r'android:host\([^)]*\)="hotp"', manifest)
-assert 'android.intent.action.SEND_MULTIPLE' not in enrollment and '*/*' not in enrollment
-with zipfile.ZipFile(args.apk) as apk:
-    assert apk.testzip() is None, 'Corrupt APK entry'
-    names = apk.namelist()
-    assert len(names) == len(set(names)), 'Duplicate ZIP entry'
-    assert 'AndroidManifest.xml' in names and 'resources.arsc' in names
-    icon_blocks = {}
-    for match in re.finditer(r'(?m)^ +resource (0x[0-9a-f]+) (?:org.totipo.android:)?((?:mipmap|drawable)/ic_launcher[^\s]*)\n', resources):
-        end = re.search(r'(?m)^ +(?:resource |type )', resources[match.end():])
-        icon_blocks[match[2]] = (match[1], resources[match.end():match.end() + end.start()] if end else resources[match.end():])
-    for path in branding['assets']:
-        folder, filename = path.removeprefix('app/src/main/res/').split('/')
-        kind = folder.split('-')[0]
-        qualifier = folder.split('-')[1] if '-' in folder else ''
-        key = kind + '/' + filename.rsplit('.', 1)[0]
-        assert key in icon_blocks, f'Missing packaged icon resource: {key}'
-        block = icon_blocks[key][1]
-        config = re.search(r'\(' + qualifier + r'\) \(file\) (res/[^\s]+)', block)
-        assert config and config[1] in names, f'Missing packaged icon configuration: {path}'
-        if filename.endswith('.xml'):
-            adaptive = subprocess.check_output([str(Path(sdk) / 'build-tools/36.0.0/aapt2'),
-                'dump', 'xmltree', str(args.apk), '--file', config[1]], text=True)
-            assert 'E: adaptive-icon' in adaptive and 'E: foreground' in adaptive and 'E: background' in adaptive
-            for layer in ('background', 'foreground'):
-                assert '@' + icon_blocks['drawable/ic_launcher_' + layer][0] in adaptive, 'Wrong canonical adaptive layer'
-    dex = b''.join(apk.read(name) for name in names if name.startswith('classes') and name.endswith('.dex'))
-    assert dex.startswith(b'dex\n'), 'Missing DEX'
-    for descriptor in [b'Lorg/totipo/android/reconcile/DetachedVaultAuthentication;', b'Lorg/totipo/android/sync/VaultBootstrapEvidence;', b'Lorg/totipo/android/sync/ProviderVaultWriter;', b'Lorg/totipo/android/sync/AndroidProviderVaultPort;', b'Lorg/totipo/android/sync/OutboundImmutablePlanner;', b'Lorg/totipo/android/sync/ProviderObjectWriter;', b'Lorg/totipo/android/sync/DetachedImmutableObject;', b'Lorg/totipo/android/sync/ProviderIoLane;', b'Lorg/totipo/android/sync/SyncFolderBinding;', b'Lorg/totipo/android/sync/AndroidSyncFolderPort;', b'Lorg/totipo/android/MainActivity;', b'Lorg/totipo/android/AddTokenRequest;', b'Lorg/totipo/android/AddTokenOutcome;', b'Lorg/totipo/android/Base32;', b'Lorg/totipo/android/TokenListAdapter;', b'Lorg/totipo/android/RevealedTotp;', b'Lorg/totipo/android/TotpPresentation;', b'Lorg/totipo/android/PlatformCodeClipboard;', b'Lorg/totipo/android/TotipoApplication;', b'Lorg/totipo/android/AndroidVaultController;', b'Lorg/totipo/VaultSession;', b'Lorg/totipo/ObjectCandidateValidation$Valid;', b'Lorg/totipo/ObjectCandidateValidation$Invalid;', b'Lorg/totipo/android/provider/ProviderTreeReader;', b'Lorg/totipo/android/provider/ImmutableCandidateClassifier;', b'Lorg/totipo/android/reconcile/ImmutableCandidateImporter;', b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinator;', b'Lorg/totipo/android/reconcile/CoordinatedPrivateStore;', b'Lorg/totipo/storage/nio/NioTotipoStore;', b'Lorg/totipo/storage/nio/NioStoreComposition;', b'Lorg/totipo/VaultId;', b'Lorg/bouncycastle/crypto/generators/Argon2BytesGenerator;']:
-        assert descriptor in dex, f'Missing packaged class: {descriptor!r}'
-    for descriptor in (b'Lorg/totipo/android/AndroidBiometricCredentials;', b'Lorg/totipo/android/FrameworkBiometricPrompt;', b'Lorg/totipo/android/InactivityLock;', b'Lorg/totipo/android/BiometricRecord;', b'Lorg/totipo/android/OtpAuthEnrollmentActivity;', b'Lorg/totipo/android/OtpAuthUriParser;', b'Lorg/totipo/android/OtpAuthTransport;'):
-        assert descriptor in dex, f'Missing production enrollment class: {descriptor!r}'
-    for retired in (b'Lorg/totipo/PasswordChangeResult;', b'Lorg/totipo/VaultFingerprint;', b'Lorg/totipo/spi/PreparedVault;', b'Lorg/totipo/spi/VaultPrepare;', b'openPrivate'):
-        assert retired not in dex, f'Retired Java API packaged: {retired!r}'
-    assert b'OtpAuthIntentProbeActivity' not in dex, 'Obsolete probe in APK'
-    for forbidden in (b'Lcom/google/api/services/drive/', b'Lcom/google/android/apps/docs/', b'Lcom/nutomic/syncthingandroid/', b'Landroidx/work/', b'Landroidx/biometric/', b'Landroidx/documentfile/', b'Lorg/totipo/safqualification/', b'Lcom/google/zxing/', b'Landroidx/camera/', b'Lcom/google/mlkit/', b'Lcom/google/android/gms/'):
-        assert forbidden not in dex, f'Forbidden QR/camera/service dependency: {forbidden!r}'
-    if args.debug_probe:
-        for descriptor in [b'Lorg/totipo/android/debug/LocalNioProbeActivity;', b'Lorg/totipo/android/reconcile/DebugVaultTiming;', b'Lorg/totipo/android/debug/AuthPerfActivity;', b'Lorg/totipo/android/debug/AuthPerfBenchmark;', b'Lorg/totipo/android/DebugDisposableCreation;', b'Lorg/totipo/android/DebugTotpFixtureActivity;', b'Lorg/totipo/android/reconcile/DebugTotpFixture;']:
-            assert descriptor in dex, f'Missing debug qualification class: {descriptor!r}'
-    if args.no_debug_probe:
-        assert b'OtpAuthIntentProbe' not in dex and b'otpauth TOTP link received' not in dex and b'otpauth TOTP share received' not in dex, 'Otpauth probe in release DEX'
-        for forbidden in [b'SafBootstrapRegression', b'VaultBootstrapTest', b'VaultEnrollmentTest', b'DetachedVaultAuthenticationTest', b'BootstrapSourceGuardTest', b'DebugTotpFixture', b'12345678901234567890', b'Public test fixture',
-                          b'TotpPresentationTest', b'TotpControllerTest', b'TotpCoordinatorTest',
-                          b'SecurityControllerTest', b'BiometricRecordTest', b'InactivityLockTest', b'SecurityRegression',
-                          b'FakeClock', b'FakeClipboard', b'Base32Test', b'EnrollmentSourceGuardTest', b'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ']:
-            assert forbidden not in dex, f'M2A fixture/test seam in release DEX: {forbidden!r}'
-        assert b'EXPECTED_SYNTHETIC_SHA256' not in dex and b'matchesSyntheticOutput' not in dex and b'output_match=1' not in dex and b'30eb8bf0a90f2cd624a1d00aa7093e2c8f11968586718195043150ca6ce50bb1' not in dex, 'M1L equivalence diagnostics in release DEX'
-        assert b'TotipoAuthPerf' not in dex and b'AuthPerfBenchmark' not in dex and b'AuthPerfActivity' not in dex and b'DebugDisposableCreation' not in dex, 'Authentication performance diagnostics in release DEX'
-        assert b'Lorg/totipo/android/debug/' not in dex, 'Debug diagnostic machinery in release DEX'
-        assert b'Lorg/totipo/android/reconcile/DebugVaultTiming' not in dex and b'TotipoVaultTiming' not in dex, 'Unlock timing probe in release DEX'
-    assert b'Lorg/totipo/android/reconcile/ForegroundVaultCoordinatorTest' not in dex, 'Foreground tests/fault fixtures in APK'
-    assert b'Lorg/totipo/android/reconcile/ImmutableCandidateImporterTest' not in dex and b'Lorg/totipo/android/TestReplicaOwners;' not in dex, 'Import tests/fixtures in APK'
-    for descriptor in [b'Lorg/totipo/android/reconcile/HistoricalImmutableCandidateImporter',
-                       b'Lorg/totipo/android/reconcile/CoordinatedNioProbe',
-                       b'Lorg/totipo/android/AndroidVaultControllerTest',
-                       b'Lorg/totipo/android/reconcile/ProductControllerFixtures',
-                       b'Lorg/totipo/android/reconcile/CoordinatedPrivateStoreTest',
-                       b'Lorg/totipo/android/reconcile/CoordinationSourceGuardTest']:
-        assert descriptor not in dex, f'Coordination tests/historical scaffolding in APK: {descriptor!r}'
-    assert b'SafOutboundRegression' not in dex and b'OutboundImmutablePlannerTest' not in dex and b'ProviderObjectWriterTest' not in dex and b'PublicationPort' not in dex, 'Outbound standalone/fake machinery in APK'
-    assert b'Lorg/totipo/qualification/' not in dex and b'Lorg/totipo/ingresstest/' not in dex, 'Standalone device tests in APK'
-    assert b'Lorg/junit/' not in dex and b'Lorg/totipo/android/CoreDependencySmokeTest;' not in dex and b'Lorg/totipo/android/LocalReplicaOwnerTest;' not in dex and b'Lorg/totipo/android/provider/ImmutableCandidateClassifierTest' not in dex and b'Lorg/totipo/android/provider/ProviderSnapshotTest;' not in dex, 'Test classes in APK'
-    if args.unsigned:
-        assert not any(name.upper().startswith('META-INF/') and name.upper().endswith(('.RSA', '.DSA', '.EC', '.SF')) for name in names), 'JAR signature present'
-        # An APK v2/v3 signing block sits immediately before the ZIP central directory.
-        eocd = data.rfind(b'PK\x05\x06')
-        assert eocd >= 0
-        central_offset = struct.unpack_from('<I', data, eocd + 16)[0]
-        assert data[max(0, central_offset - 16):central_offset] != b'APK Sig Block 42', 'APK signing block present'
-print(f'{args.apk}: valid APK; bootstrap/NIO/core/BC present; SHA-256 {hashlib.sha256(data).hexdigest()}')
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'release'))
+from payload import require
+from source import code, version
+
+ROOT = Path(__file__).resolve().parents[1]
+APP = 'org.totipo.android'
+ANDROID = '{http://schemas.android.com/apk/res/android}'
+
+
+def reviewed_metadata(root=ROOT):
+    raw = (root / 'VERSION').read_bytes()
+    name = raw.decode('ascii').removesuffix('\n')
+    version(name)
+    require(raw == (name + '\n').encode(), 'Malformed VERSION: canonical version and LF required')
+    return dict(application_id=APP, version_name=name,
+                version_code=code((root / 'VERSION_CODE').read_bytes()))
+
+
+def sdk_output(tool, *args):
+    sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
+    require(sdk, 'Pinned Android SDK required')
+    directory = 'cmdline-tools/22.0/bin' if tool == 'apkanalyzer' else 'build-tools/36.0.0'
+    return subprocess.check_output([str(Path(sdk) / directory / tool), *map(str, args)], text=True)
+
+
+def xml(text):
+    require('<!' not in text, 'Unsupported XML declaration')
+    root = ET.fromstring(text)
+    require(all(not (e.text or '').strip() and not (e.tail or '').strip() for e in root.iter()),
+            'Unexpected XML text')
+    return root
+
+
+def manifest(apk):
+    require(Path(apk).is_file(), 'Missing APK')
+    root = xml(sdk_output('apkanalyzer', 'manifest', 'print', apk))
+    require(root.tag == 'manifest', 'Missing manifest root')
+    return root
+
+
+def metadata(root):
+    require(root.get('package') == APP, 'APK applicationId differs')
+    raw = root.attrib[ANDROID + 'versionCode']
+    value = code((raw + '\n').encode('ascii'))
+    name = root.attrib[ANDROID + 'versionName']
+    require(bool(name), 'Missing versionName')
+    return dict(application_id=APP, version_code=value, version_name=name)
+
+
+def require_identity(root, expected):
+    actual = metadata(root)
+    for key in actual:
+        require(actual[key] == expected[key], f'APK {key} differs from reviewed source')
+    require(root.find('uses-sdk') is not None, 'Missing uses-sdk')
+    require(root.find('uses-sdk').attrib == {ANDROID + 'minSdkVersion': '26',
+            ANDROID + 'targetSdkVersion': '37'}, 'Unexpected SDK policy')
+    return actual
+
+
+def shape(element):
+    # Order is not Android policy; duplicate declarations remain visible in the tuple.
+    return element.tag, tuple(sorted(element.attrib.items())), tuple(sorted(map(shape, element)))
+
+
+def require_manifest(root, expected, debug, refs):
+    require_identity(root, expected)
+    app = root.find('application')
+    require(app is not None, 'Missing application')
+    # Android defaults: enabled=true, process=package, debuggable/testOnly=false.
+    # Accept explicit defaults, but never resource-valued booleans or a new process.
+    for node in [app, *app.findall('activity')]:
+        for key, default in (('enabled', 'true'), ('process', APP)):
+            if node.get(ANDROID + key) == default:
+                del node.attrib[ANDROID + key]
+    for key in ('testOnly', 'debuggable'):
+        if app.get(ANDROID + key) == 'false':
+            del app.attrib[ANDROID + key]
+    launcher = '''<intent-filter><action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/></intent-filter>'''
+    probes = ''
+    if debug:
+        for name, label, filters in (
+            ('DebugTotpFixtureActivity', 'Totipo disposable TOTP fixture', ''),
+            ('debug.StorageProbeActivity', 'Totipo disposable storage probe', launcher),
+            ('debug.LocalNioProbeActivity', 'Totipo local NIO qualification', ''),
+            ('debug.AuthPerfActivity', 'Totipo authentication diagnostics', '')):
+            probes += f'<activity android:name="{APP}.{name}" android:label="{label}" android:exported="true">{filters}</activity>'
+    flags = (f'android:debuggable="true" android:fullBackupContent="false" '
+             f'android:dataExtractionRules="{refs["xml/storage_probe_extraction_rules"]}"' if debug else '')
+    approved = xml(f'''<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="{APP}" android:versionName="{expected['version_name']}" android:versionCode="{expected['version_code']}"
+        android:compileSdkVersion="37" android:compileSdkVersionCodename="17"
+        platformBuildVersionCode="37" platformBuildVersionName="17">
+      <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37"/>
+      <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+      <application android:name="{APP}.TotipoApplication" android:allowBackup="false"
+          android:extractNativeLibs="false" android:theme="@ref/0x1030241"
+          android:label="{refs['string/app_name']}" android:icon="{refs['mipmap/ic_launcher']}"
+          android:roundIcon="{refs['mipmap/ic_launcher_round']}" {flags}>
+        <activity android:name="{APP}.MainActivity" android:exported="true">{launcher}</activity>
+        <activity android:name="{APP}.OtpAuthEnrollmentActivity" android:exported="true"
+            android:label="{refs['string/enrollment_label']}" android:excludeFromRecents="true">
+          <intent-filter><action android:name="android.intent.action.VIEW"/>
+            <category android:name="android.intent.category.DEFAULT"/>
+            <category android:name="android.intent.category.BROWSABLE"/>
+            <data android:scheme="otpauth" android:host="totp"/></intent-filter>
+          <intent-filter><action android:name="android.intent.action.SEND"/>
+            <category android:name="android.intent.category.DEFAULT"/>
+            <data android:mimeType="text/plain"/></intent-filter>
+        </activity>{probes}
+      </application></manifest>''')
+    require(shape(root) == shape(approved), 'Final manifest differs from reviewed policy')
+
+
+def require_resources(output, names, debug):
+    require(output.startswith('Binary APK\nPackage name=' + APP + ' id=7f\n'),
+            'Unsupported resource output')
+    blocks = re.findall(r'^    resource (0x[0-9a-f]+) (\S+)\n(.*?)(?=^    resource |^  type |\Z)',
+                        output, re.M | re.S)
+    require(blocks and len(blocks) == len({key for _, key, _ in blocks}) and
+            len(blocks) == len({rid for rid, _, _ in blocks}), 'Missing/duplicate resource records')
+    resources = {key: (rid, body) for rid, key, body in blocks}
+    essential = ['mipmap/ic_launcher', 'mipmap/ic_launcher_round',
+                 'drawable/ic_launcher_background', 'drawable/ic_launcher_foreground',
+                 'string/app_name', 'string/enrollment_label']
+    if debug:
+        essential.append('xml/storage_probe_extraction_rules')
+    xml_paths = {}
+    for key in essential:
+        require(key in resources, 'Missing essential resource: ' + key)
+        body = resources[key][1]
+        files = re.findall(r'^      \(([^)]*)\) \(file\) (res/\S+) type=(PNG|XML)$', body, re.M)
+        if key.startswith(('mipmap/', 'drawable/', 'xml/')):
+            qualifiers = ({'mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi', 'anydpi'}
+                          if key.startswith('mipmap/') else {''})
+            require(len(files) == len(qualifiers) and {q for q, _, _ in files} == qualifiers,
+                    'Missing/ambiguous resource configurations: ' + key)
+            require(all(path in names for _, path, _ in files), 'Missing packaged resource: ' + key)
+            xml_paths.update({key: path for _, path, kind in files if kind == 'XML'})
+        else:
+            label = 'Totipo' if key == 'string/app_name' else 'Add to Totipo'
+            require(body.strip() == f'() "{label}"', 'Wrong application label: ' + key)
+    return {key: '@ref/' + rid for key, (rid, _) in resources.items()}, xml_paths
+
+
+def verify(apk, debug=False, unsigned=False):
+    data = Path(apk).read_bytes()
+    with zipfile.ZipFile(apk) as archive:
+        require(archive.testzip() is None, 'Corrupt APK entry')
+        names = archive.namelist()
+        require(len(names) == len(set(names)), 'Duplicate ZIP entry')
+        require({'AndroidManifest.xml', 'resources.arsc', 'classes.dex'} <= set(names), 'Missing APK payload')
+        refs, xml_paths = require_resources(sdk_output('aapt2', 'dump', 'resources', apk), names, debug)
+        for key, path in xml_paths.items():
+            decoded = xml(sdk_output('apkanalyzer', 'resources', 'xml', '--file', path, apk))
+            if key.startswith('mipmap/'):
+                approved = xml(f'<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">'
+                    f'<background android:drawable="{refs["drawable/ic_launcher_background"]}"/>'
+                    f'<foreground android:drawable="{refs["drawable/ic_launcher_foreground"]}"/></adaptive-icon>')
+            else:
+                approved = xml('<data-extraction-rules><cloud-backup><exclude domain="sharedpref" path="."/>'
+                    '</cloud-backup><device-transfer><exclude domain="sharedpref" path="."/>'
+                    '</device-transfer></data-extraction-rules>')
+            require(shape(decoded) == shape(approved), 'Unexpected packaged XML resource: ' + key)
+        require_manifest(manifest(apk), reviewed_metadata(), debug, refs)
+        dex = b''.join(archive.read(n) for n in names if re.fullmatch(r'classes[0-9]*\.dex', n))
+        require(dex.startswith(b'dex\n'), 'Missing DEX')
+        # Small security exclusions; ordinary production-class presence belongs to tests.
+        forbidden = [b'Lorg/junit/', b'Lorg/totipo/qualification/', b'Lorg/totipo/ingresstest/',
+                     b'Lorg/totipo/safqualification/', b'Lorg/totipo/syncthingqualification/',
+                     b'Lcom/google/api/services/drive/', b'Lcom/google/android/apps/docs/',
+                     b'Lcom/nutomic/syncthingandroid/', b'Landroidx/work/', b'Landroidx/biometric/',
+                     b'Landroidx/documentfile/', b'Lcom/google/zxing/', b'Landroidx/camera/',
+                     b'Lcom/google/mlkit/', b'Lcom/google/android/gms/']
+        if not debug:
+            forbidden += [b'Lorg/totipo/android/debug/', b'DebugTotpFixture',
+                          b'DebugDisposableCreation', b'DebugVaultTiming', b'TotipoVaultTiming']
+        require(not any(value in dex for value in forbidden) and not
+                re.search(rb'Lorg/totipo/android/[A-Za-z0-9_/$]*(?:Test|Tests)(?:[$;])', dex),
+                'Debug/test material in APK')
+        if unsigned:
+            require(not any(n.upper().startswith('META-INF/') and n.upper().endswith(
+                ('.RSA', '.DSA', '.EC', '.SF')) for n in names), 'JAR signature present')
+            eocd = data.rfind(b'PK\x05\x06')
+            require(eocd >= 0 and eocd + 22 <= len(data), 'Missing ZIP end record')
+            central = struct.unpack_from('<I', data, eocd + 16)[0]
+            require(data[max(0, central - 16):central] != b'APK Sig Block 42', 'APK signing block present')
+    print(f'{apk}: final {"debug" if debug else "release"} APK policy PASS; SHA-256 {hashlib.sha256(data).hexdigest()}')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('apk', type=Path)
+    parser.add_argument('--unsigned', action='store_true')
+    variants = parser.add_mutually_exclusive_group(required=True)
+    variants.add_argument('--debug-probe', action='store_true', help='Require debug manifest policy')
+    variants.add_argument('--no-debug-probe', action='store_true', help='Require release manifest policy')
+    args = parser.parse_args()
+    require(not (args.debug_probe and args.unsigned), 'Conflicting APK boundaries')
+    verify(args.apk, args.debug_probe, args.unsigned)

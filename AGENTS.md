@@ -134,10 +134,14 @@ gradle --offline :app:dependencies --configuration releaseRuntimeClasspath :app:
 ```
 
 Review the current runtime graph and manifest boundaries. `check` already includes
-JVM tests, lint, `verifyMavenBoundary` for both variants and
-`verifyReleaseApkBoundary`; retain these existing checks. The external final set
+JVM tests, lint, `verifyMavenBoundary` for both variants and the locked build
+classpath. Full APK policy runs explicitly in the two host
+commands above and in Nix package installCheck, which verifies the installed
+release bytes; Gradle check does not run a duplicate APK verifier. The external final set
 explicitly verifies both strict-clean APKs, including packaged manifest permissions,
-services, ingress/backup, branding, DEX and release/debug exclusions. Do not verify
+complete components/exports/intent filters, backup and variant flags, identity/SDK,
+essential branding resources and release/debug exclusions. VERSION and VERSION_CODE
+must equal the reviewed source metadata. Do not verify
 intermediate APKs except to diagnose an APK-specific failure.
 
 ### Device qualification and Nix source freeze

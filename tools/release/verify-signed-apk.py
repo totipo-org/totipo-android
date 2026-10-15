@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from payload import require
+from payload import compare, require
 from source import fingerprint
 from release import load_provenance, bind_unsigned, require_metadata, unsigned_check
 
@@ -29,8 +29,9 @@ def verify(apk, expected, provenance, unsigned):
     require_metadata(apk, p)
     subprocess.run([str(sdk / 'zipalign'), '-c', '-P', '16', '4', str(apk)], check=True,
                    stdout=subprocess.DEVNULL)
-    subprocess.run(['python3', '-B', str(Path(__file__).resolve().parents[1] / 'verify-apk.py'),
-                    str(apk), '--no-debug-probe'], check=True)
+    # Complete payload equality preserves the independently checked unsigned
+    # manifest/resources/DEX policy; signed identity is also inspected directly.
+    compare(unsigned, apk)
     print(f'Verified one pinned signer, v2/v3, release boundaries: {apk}')
 
 

@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """No-secret source, public identity, bundle and publication operations."""
 import argparse
+import importlib.util
+from functools import cache
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
-from payload import compare, require
+from payload import require
 
 import source
 from source import discover, sha, version, identity, guard
 
 
-def sdk_output(*args):
-    """Run a repository-independent SDK observation."""
-    return subprocess.check_output(args, text=True).strip()
+@cache
+def apk_policy():
+    # Source-only Nix apps contain tools/release, and never inspect an APK.
+    spec = importlib.util.spec_from_file_location('apk_policy', Path(__file__).resolve().parents[1] / 'verify-apk.py')
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    return policy
 
 
 def unsigned_check(apk):
@@ -43,7 +49,7 @@ def validate_provenance(p):
     require(p['application_id'] == APPLICATION_ID, 'Provenance applicationId differs')
     require(type(p['version_code']) is int and 1 <= p['version_code'] <= 2100000000,
             'Invalid provenance versionCode')
-    require(bool(p['version_name']) and not any(ord(c) < 32 for c in p['version_name']),
+    require(p['version_name'] == p['version'],
             'Invalid provenance versionName')
     for field in ('unsigned_sha256', 'certificate_sha256'):
         require(re.fullmatch('[0-9a-f]{64}', p[field]), 'Invalid provenance ' + field)
@@ -68,15 +74,10 @@ def load_provenance(path):
 
 
 def apk_metadata(apk):
-    sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
-    badging = sdk_output(str(sdk / 'aapt2'), 'dump', 'badging', str(apk))
-    matches = re.findall(r"^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']+)'(?: |$)",
-                         badging, re.M)
-    require(len(matches) == 1, 'Expected exactly one APK package metadata record')
-    app, code, name = matches[0]
-    require(app == APPLICATION_ID, 'APK applicationId differs')
-    require(1 <= int(code) <= 2100000000, 'Invalid APK versionCode')
-    return dict(application_id=app, version_code=int(code), version_name=name)
+    # One native manifest representation and one reviewed source metadata parser.
+    policy = apk_policy()
+    root = policy.manifest(apk)
+    return policy.require_identity(root, policy.reviewed_metadata())
 
 
 def require_metadata(apk, p):
@@ -92,7 +93,7 @@ def bind_unsigned(apk, p):
 
 
 def qualified_provenance(apk, version, commit, cert, drv, output):
-    unsigned_check(apk)
+    # The authenticated Nix package installCheck already accepted the full policy.
     metadata = apk_metadata(apk)
     # VERSION intentionally supplies Android versionName in the Gradle build.
     require(metadata['version_name'] == version, 'Unsigned versionName differs from VERSION')
@@ -126,7 +127,6 @@ def bundle_check(repo, args):
     bind_unsigned(unsigned, p)
     require((args.bundle / 'unsigned-release.apk.sha256').read_text() ==
             p['unsigned_sha256'] + '  unsigned-release.apk\n', 'Unsigned checksum record differs')
-    unsigned_check(unsigned)
     return p
 
 
@@ -140,7 +140,6 @@ def finalize(repo, args):
     p = bundle_check(repo, args)
     apk = args.bundle / f'totipo-android-{args.version}.apk'
     verify_signed(repo, apk, args.bundle)
-    compare(args.bundle / 'unsigned-release.apk', apk)
     require(sha(args.bundle / 'unsigned-release.apk') == p['unsigned_sha256'], 'Unsigned input mutated')
     args.output.mkdir()
     shutil.copyfile(apk, args.output / apk.name)
@@ -203,7 +202,6 @@ def publish(repo, args):
     checksum = args.bundle / (apk.name + '.sha256')
     require(checksum.read_text() == sha(apk) + '  ' + apk.name + '\n', 'Signed checksum differs')
     verify_signed(repo, apk, args.bundle)
-    compare(args.bundle / 'unsigned-release.apk', apk)
     github_repo = os.environ['GITHUB_REPOSITORY']
     tag = p['tag']
     # Fail on existing release, including drafts. No overwrite/resume ambiguity.
@@ -224,8 +222,8 @@ def publish(repo, args):
     repo.run('gh', 'release', 'download', tag, '--repo', github_repo, '--dir', str(downloaded))
     for local in (apk, checksum, args.bundle / 'release-provenance.json'):
         require(sha(downloaded / local.name) == sha(local), 'Remote release bytes differ')
-    verify_signed(repo, downloaded / apk.name, args.bundle)
-    # Exact bytes imply the payload equivalence already proved in verify job.
+    # Hosted whole-file equality preserves the signature, metadata and payload
+    # acceptance just established in this publication job.
     identity(repo, args.version, args.commit)
     repo.run('gh', 'api', '--method', 'PATCH', f"repos/{github_repo}/releases/{record['id']}",
         '-F', 'draft=false')

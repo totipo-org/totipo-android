@@ -307,10 +307,49 @@ CI and optional device evidence are recorded separately in the M0 report.
 The package installs only
 `result/share/totipo-android/totipo-android-<VERSION>-unsigned.apk`.
 The debug APK is built and verified but not installed into the package output.
-Both APK checks validate ZIP integrity, manifest boundaries, canonical branding,
-product/controller and NIO/core/BC DEX presence, and test/standalone-class exclusion.
-Debug verification requires the existing diagnostic classes; release verification
-excludes them and requires absence of APK/JAR signing. No production signing secret, AAB or Play integration exists in the build. Protected release machinery
+Nix package installCheck is the authoritative full APK-policy boundary: one check
+per variant, with release checked at its installed output path. Gradle `check`
+does not invoke it again. After the strict host checkpoint, explicitly run:
+
+```sh
+python3 -B tools/verify-apk.py app/build/outputs/apk/debug/app-debug.apk --debug-probe
+python3 -B tools/verify-apk.py app/build/outputs/apk/release/app-release-unsigned.apk --unsigned --no-debug-probe
+```
+
+The verifier uses pinned SDK `apkanalyzer manifest print` and Python stdlib XML;
+AAPT2 supplies resource names/configurations. It rejects inspection failures,
+missing/duplicate/unknown declarations and unsupported output. Both variants must
+have application ID `org.totipo.android`, versionName equal to reviewed `VERSION`,
+versionCode equal to reviewed `VERSION_CODE`, min/target SDK 26/37 and compile SDK 37.
+It uses the existing canonical source metadata parsers; APK/provenance fields cannot
+supply their own expected version.
+
+The final manifest permits only the unqualified `USE_BIOMETRIC` request. Permission
+definitions, SDK-qualified variants and all other requests require policy review.
+Release contains exactly MainActivity (MAIN/LAUNCHER) and OtpAuthEnrollmentActivity
+(VIEW/BROWSABLE/DEFAULT `otpauth://totp`, SEND/DEFAULT `text/plain`), both enabled and
+exported. No aliases, services, receivers, providers, extra filters, process changes,
+provider authorities/grants or other manifest constructs are approved. Debug adds
+exactly the four existing exported fixture/storage/NIO/authentication probe activities;
+only the storage probe adds another MAIN/LAUNCHER filter. Unknown attributes also
+require review. Names here are Android manifest entry points, not a DEX class inventory.
+
+Both variants require `allowBackup=false`, the normal package process and an enabled
+application. Release debuggable/testOnly must be false (absence uses Android defaults).
+Debug requires debuggable=true and testOnly=false, plus its existing fullBackupContent
+and extraction-rule exclusions. Essential launcher resources, density configurations,
+adaptive layers and application labels remain checked. Source branding provenance
+remains maintenance evidence bound to Git review; final verification no longer
+rehashes source artwork or inventories ordinary production classes/retired APIs.
+ZIP integrity, DEX presence and small debug/test exclusions remain. These checks do
+not prove pixel equivalence, SAF grants, clipboard secrecy or installed device behavior.
+
+`allowBackup=false` is not universal proof against OEM device-to-device migration;
+[Android documents manufacturer-specific limits](https://developer.android.com/guide/topics/manifest/application-element#allowbackup).
+App-private no-backup storage and historical device evidence remain separate guarantees.
+Clipboard cleanup is best effort; manifest verification adds no device evidence.
+
+No production signing secret, AAB or Play integration exists in the build. Protected release machinery
 is documented in [Android releases](release/README.md); the public production signing identity is committed; protected GitHub environment
 provisioning is human-reported. Debug signing keys are local generated
 development state.
