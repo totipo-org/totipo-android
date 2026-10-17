@@ -6,6 +6,11 @@ out/
 .idea/
 *.iml
 
+# Generated Eclipse/JDTLS project state.
+.project
+.classpath
+.settings/
+
 local.properties
 
 result

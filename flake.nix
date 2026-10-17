@@ -5,6 +5,11 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
 
+    java-dev-tools = {
+      url = "github:ingon/java-dev-tools";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     llm-agents.url = "github:numtide/llm-agents.nix";
 
     jailed-agents = {
@@ -13,7 +18,7 @@
     };
   };
 
-  outputs = { nixpkgs, flake-utils, jailed-agents, ... }:
+  outputs = { nixpkgs, flake-utils, java-dev-tools, jailed-agents, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -36,6 +41,10 @@
         };
         jdk = pkgs.jdk17_headless;
         gradle = pkgs.gradle_9.override { java = jdk; };
+        javaEditor = java-dev-tools.lib.mkAndroidEditor {
+          inherit pkgs jdk gradle;
+          aapt2 = "${sdkRoot}/build-tools/36.0.0/aapt2";
+        };
         android = pkgs.androidenv.composeAndroidPackages {
           platformVersions = [ "37.0" ];
           buildToolsVersions = [ "36.0.0" ];
@@ -67,22 +76,27 @@
         releaseTestSource = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
-            ./tools/release ./tools/verify-apk.py
-            ./build.gradle.kts ./app/build.gradle.kts
-            ./release/signing ./.github/workflows/release.yml
+            ./tools/release
+            ./tools/verify-apk.py
+            ./build.gradle.kts
+            ./app/build.gradle.kts
+            ./release/signing
+            ./.github/workflows/release.yml
           ];
         };
         releaseCommands = [ "prepare-release" "release-tag" ];
-        releasePrograms = builtins.listToAttrs (map (name: {
-          inherit name;
-          value = pkgs.writeShellScriptBin name ''
-            export PATH=${pkgs.lib.makeBinPath [ pkgs.python3 pkgs.git pkgs.openssh jdk pkgs.coreutils ]}
-            export JAVA_HOME=${jdk}/lib/openjdk
-            export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-            exec python3 -B ${./tools/release}/release.py ${name} "$@"
-          '';
-        }) releaseCommands);
+        releasePrograms = builtins.listToAttrs (map
+          (name: {
+            inherit name;
+            value = pkgs.writeShellScriptBin name ''
+              export PATH=${pkgs.lib.makeBinPath [ pkgs.python3 pkgs.git pkgs.openssh jdk pkgs.coreutils ]}
+              export JAVA_HOME=${jdk}/lib/openjdk
+              export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+              export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+              exec python3 -B ${./tools/release}/release.py ${name} "$@"
+            '';
+          })
+          releaseCommands);
       in
       {
         formatter = pkgs.nixpkgs-fmt;
@@ -92,10 +106,11 @@
         };
         checks = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
           android = androidPackage;
-          release-tooling = pkgs.runCommand "release-tooling" {
-            nativeBuildInputs = [ pkgs.python3 pkgs.git jdk ];
-            JAVA_HOME = "${jdk}/lib/openjdk";
-          } ''
+          release-tooling = pkgs.runCommand "release-tooling"
+            {
+              nativeBuildInputs = [ pkgs.python3 pkgs.git jdk ];
+              JAVA_HOME = "${jdk}/lib/openjdk";
+            } ''
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
             cp -R ${releaseTestSource} source
@@ -104,9 +119,10 @@
             python3 -B -m unittest discover -s tools/release -p 'test_*.py'
             touch "$out"
           '';
-          release-apps = pkgs.runCommand "release-app-wrappers" {
-            nativeBuildInputs = [ pkgs.git pkgs.gnugrep ];
-          } ''
+          release-apps = pkgs.runCommand "release-app-wrappers"
+            {
+              nativeBuildInputs = [ pkgs.git pkgs.gnugrep ];
+            } ''
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME" "$TMPDIR/caller"
             cd "$TMPDIR/caller"
@@ -124,11 +140,13 @@
             touch "$out"
           '';
         };
-        apps = pkgs.lib.optionalAttrs (system == "x86_64-linux") ((builtins.mapAttrs (name: program: {
-          type = "app";
-          program = "${program}/bin/${name}";
-          meta.description = "Totipo Android ${name} in the caller's Git worktree";
-        }) releasePrograms) // {
+        apps = pkgs.lib.optionalAttrs (system == "x86_64-linux") ((builtins.mapAttrs
+          (name: program: {
+            type = "app";
+            program = "${program}/bin/${name}";
+            meta.description = "Totipo Android ${name} in the caller's Git worktree";
+          })
+          releasePrograms) // {
           update-package-deps = {
             type = "app";
             program = "${androidPackage.mitmCache.updateScript}";
@@ -139,8 +157,9 @@
         devShells.ci = pkgs.mkShell (androidEnv // {
           packages = androidPackages;
         });
-        devShells.default = pkgs.mkShell (androidEnv // {
-          packages = androidPackages ++ [
+        devShells.default = pkgs.mkShell (javaEditor.shellEnv // androidEnv // {
+          packages = androidPackages ++ javaEditor.packages ++ [
+            pkgs.helix
             (jailed-agents.lib.${system}.makeJailedCodex {
               fwdEnv = [ "JAVA_HOME" "ANDROID_HOME" "ANDROID_SDK_ROOT" "GRADLE_OPTS" ];
 

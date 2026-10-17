@@ -154,6 +154,40 @@ AAPT2 ELF binary does not start in this Nix environment. The package also passes
 this selection explicitly. AGP labels the option
 experimental; its warning remains visible. Build Tools version stays 36.0.0.
 
+### Helix
+
+The default development shell includes `hx` and the Android-aware `jdtls` source
+bridge from [java-dev-tools](https://github.com/ingon/java-dev-tools), using its
+[`mkAndroidEditor` integration](https://github.com/ingon/java-dev-tools/blob/d18e1767593b3ac16da6c76a8f36fed36ac4c807/INTEGRATION.md#android-instead-of-plain-java).
+The lightweight `ci` shell keeps its existing build tools.
+
+Reload direnv or re-enter `nix develop`, then start Helix from that shell:
+
+```sh
+hx --health java
+hx app/src/main/java/org/totipo/android/MainActivity.java
+```
+
+Helix's built-in Java configuration uses the shell's `jdtls` command. The toolkit
+owns Android startup settings, its Gradle model adapter and a workspace per
+checkout; no project-local `.helix` files or launcher override are needed.
+`JDTLS_WORKSPACE` selects a different workspace when needed.
+
+JDTLS runs on a private JDK 21 while `JAVA_HOME`, command-line Gradle and Android
+compilation retain JDK 17. Buildship discovers pinned Gradle 9.8.0 through
+`GRADLE_HOME` and uses this SDK's patched AAPT2. The editor model selects main/debug
+sources and their JVM tests, locked dependencies, SDK jars and generated debug R
+classes. IDE output stays under `app/build/eclipse`; release and device-test
+sources are outside this model. Normal builds do not load the editor adapter.
+
+Verify actual app/SDK/dependency navigation; `hx --health java` only establishes
+server discovery. Optional dependency source-archive downloads remain disabled
+until their checksums are reviewed under the existing strict verification policy.
+Binary dependencies still resolve and verify normally. Generated Eclipse/JDTLS
+state is ignored. To update the toolkit deliberately, the human runs
+`nix flake update java-dev-tools`, reviews the new revision and unchanged unrelated
+pins, then reloads the shell and repeats editor smoke and required qualification.
+
 ## Build and install
 
 Follow the [Qualification ladder](AGENTS.md#qualification-ladder) for interactive
