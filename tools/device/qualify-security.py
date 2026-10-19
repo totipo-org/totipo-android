@@ -5,7 +5,11 @@
 --prepare packages final strict-clean release DEX/resources, signs with a test-only key,
 and installs ONE isolated test package. It never replaces org.totipo.android.
 --phase lifecycle runs the existing narrow token lifecycle regression.
---phase first and --phase restart require human strong biometric interactions.
+--phase registry checks managed registry persistence and sequential Java create/open.
+--phase mv1-* runs the ordered cold-process password/UI/recovery/scoped-metadata
+checks on a fresh synthetic fixture in this isolated package; run all seven in order.
+--phase first and --phase restart are historical global-biometric phases, unavailable
+in the A-MV1 production UI until per-vault biometric support is implemented.
 --remove removes only the isolated disposable test package, including its Keystore keys.
 The private deadline override exists only in SecurityRegression, never release DEX.
 """
@@ -27,9 +31,11 @@ parser.add_argument('--serial', default='37311JEGR05916')
 parser.add_argument('--build-only', action='store_true')
 parser.add_argument('--prepare', action='store_true')
 parser.add_argument('--update-harness', action='store_true', help='Update only the isolated test package, preserving disposable restart evidence')
-parser.add_argument('--phase', choices=['lifecycle', 'first', 'restart'])
+parser.add_argument('--phase', choices=['registry', 'lifecycle', 'first', 'restart', 'mv1-first', 'mv1-restart', 'mv1-missing', 'mv1-corrupt', 'mv1-restore', 'mv1-legacy', 'mv1-finish'])
 parser.add_argument('--remove', action='store_true')
 args = parser.parse_args()
+if args.phase in ('first', 'restart'):
+    parser.error('A-MV1 production biometrics are disabled; historical global-credential phases require replacement in A-MV4')
 
 def run(command, **kwargs):
     kwargs.setdefault('check', True)
@@ -51,7 +57,7 @@ if args.build_only or args.prepare or args.update_harness:
     classes, dex = out / 'classes', out / 'dex'
     classes.mkdir(exist_ok=True)
     dex.mkdir(exist_ok=True)
-    names = ['TokenLifecycleRegression', 'SecurityRegression']
+    names = ['TokenLifecycleRegression', 'SecurityRegression', 'VaultRegistryRegression', 'VaultRegistryUiRegression']
     class_files = compile_java(tc, [root / 'tools/device' / (name + '.java') for name in names],
                                classes, [platform, app, *jars],
                                ['org/totipo/android/' + name for name in names])
@@ -64,6 +70,8 @@ if args.build_only or args.prepare or args.update_harness:
 <application android:name="org.totipo.android.TotipoApplication" android:label="Totipo disposable security tests" android:allowBackup="false" android:debuggable="false" android:testOnly="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
 <activity android:name="org.totipo.android.MainActivity" android:exported="true" />
 </application>
+<instrumentation android:name="org.totipo.android.VaultRegistryUiRegression" android:targetPackage="org.totipo.securityqualification" />
+<instrumentation android:name="org.totipo.android.VaultRegistryRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.SecurityRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.TokenLifecycleRegression" android:targetPackage="org.totipo.securityqualification" />
 </manifest>''')
@@ -88,12 +96,12 @@ if args.build_only or args.prepare or args.update_harness:
         (out / 'qualified-source.sha256').write_text(__import__('hashlib').sha256(source_apk.read_bytes()).hexdigest() + '\n')
 if args.phase:
     adb('shell', 'am', 'force-stop', package)
-    name = 'TokenLifecycleRegression' if args.phase == 'lifecycle' else 'SecurityRegression'
+    name = 'VaultRegistryUiRegression' if args.phase.startswith('mv1-') else {'registry': 'VaultRegistryRegression', 'lifecycle': 'TokenLifecycleRegression'}.get(args.phase, 'SecurityRegression')
     result = adb('shell', 'am', 'instrument', '-w', '-e', 'phase', args.phase, package + '/org.totipo.android.' + name,
                  capture_output=True, text=True)
     (out / (args.phase + '.log')).write_text(result.stdout + result.stderr)
     print(result.stdout, end='', flush=True)
-    expected = 'TOKEN LIFECYCLE PASS' if args.phase == 'lifecycle' else 'SECURITY_PASS'
+    expected = 'MV1_UI_PASS phase=' + args.phase if args.phase.startswith('mv1-') else {'registry': 'VAULT_REGISTRY_PASS', 'lifecycle': 'TOKEN LIFECYCLE PASS'}.get(args.phase, 'SECURITY_PASS')
     assert expected in result.stdout, 'Physical qualification failed; inspect the phase log'
 if args.remove:
     adb('uninstall', package)

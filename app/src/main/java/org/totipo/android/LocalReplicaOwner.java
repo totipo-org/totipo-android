@@ -2,68 +2,76 @@ package org.totipo.android;
 
 import android.content.Context;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Objects;
 
-/**
- * Process-wide ownership of noBackupFilesDir/totipo-vault, the canonical local canonical store.
- * Production code obtains this singleton using application context. The app must remain
- * single-process for root access: no independent process, provider, or sync software may
- * mutate this directory. A future multi-process design needs a different ownership gate.
- *
- * The foreground coordinator holds one exclusive lease for the lifetime of its coordinated
- * storage domain, session and bridge, including asynchronous observation and closure. That
- * domain serializes every SPI call and bridge batch through one fair gate, using one
- * NioStoreComposition coordinated delegate with NioDurability. Close the session view and
- * domain before releasing the lease; never retain the Path or a handle beyond it. Per-session
- * Totipo serialization alone is insufficient. This owner holds no credentials or session.
+/** Immutable selection-bound owner. A single Application Admission is held for the
+ * selected controller's entire lifetime, including locked periods and provider work.
+ * No switch/release API exists until full controller/provider retirement (A-MV2).
+ * A lease additionally excludes overlapping discovery/store/session access. Close the
+ * Java session, facade and coordinated domain before releasing it. Single process only.
  */
 public final class LocalReplicaOwner {
-    private static LocalReplicaOwner instance;
+    public static final class Admission {
+        private LocalReplicaOwner selected;
+        private Lease active;
+        public synchronized LocalReplicaOwner select(VaultRegistry registry, String id) throws IOException {
+            Objects.requireNonNull(registry);
+            if (selected != null) {
+                if (selected.registry == registry && selected.id.equals(id)) return selected;
+                throw new IllegalStateException("A controller is already selected; switching requires full retirement");
+            }
+            registry.select(id);
+            selected = new LocalReplicaOwner(registry, id, this);
+            return selected;
+        }
+    }
+    private final VaultRegistry registry;
+    private final String id;
     private final Path root;
-    private Lease active;
+    private final Admission admission;
 
-    public static synchronized LocalReplicaOwner from(Context context) {
-        if (instance == null) {
-            Context application = Objects.requireNonNull(context.getApplicationContext());
-            instance = new LocalReplicaOwner(application.getNoBackupFilesDir().toPath());
+    public static LocalReplicaOwner from(Context context) {
+        var application = (TotipoApplication) Objects.requireNonNull(context.getApplicationContext());
+        return Objects.requireNonNull(application.replicaOwner(), "No selected local vault");
+    }
+    private LocalReplicaOwner(VaultRegistry registry, String id, Admission admission) {
+        this.registry = registry; this.id = id; this.admission = admission; root = registry.root(id);
+    }
+    public String localId() { return id; }
+    public Lease acquire() throws IOException { return acquire(false); }
+    public Lease acquireForCreation() throws IOException { return acquire(true); }
+    private Lease acquire(boolean creation) throws IOException {
+        synchronized (admission) {
+            if (admission.selected != this || admission.active != null)
+                throw new IllegalStateException("Local canonical store already owned");
+            if (!registry.validateRoot(id).equals(root)) throw new IOException("Selection root changed");
+            if (creation) registry.beginCreation(id);
+            admission.active = new Lease();
+            return admission.active;
         }
-        return instance;
     }
-
-    // Package-private construction separates Android path lookup from JVM ownership tests.
-    LocalReplicaOwner(Path noBackupDirectory) {
-        root = Objects.requireNonNull(noBackupDirectory).resolve("totipo-vault");
-    }
-
-    /** Acquire on a worker thread. Busy callers must retry later, never bypass the owner. */
-    public synchronized Lease acquire() throws IOException {
-        if (active != null) throw new IllegalStateException("Local canonical store already owned");
-        Files.createDirectories(root);
-        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("Local canonical store root is not a private directory");
-        }
-        active = new Lease();
-        return active;
-    }
-
-    /** Exclusive root access; release only after all owned work and handles have closed. */
     public final class Lease implements AutoCloseable {
         private Lease() {}
-
-        public Path root() {
-            synchronized (LocalReplicaOwner.this) {
-                if (active != this) throw new IllegalStateException("Local canonical store lease closed");
-                return root;
+        private void held() {
+            if (admission.active != this) throw new IllegalStateException("Local canonical store lease closed");
+        }
+        public Path root() { synchronized (admission) { held(); return root; } }
+        public boolean permitsAbsentVault() throws IOException {
+            synchronized (admission) {
+                held(); var entry = registry.entry(id);
+                if (entry.state() != VaultRegistry.State.PENDING || entry.creationAttempted()) return false;
+                try (var children = java.nio.file.Files.list(registry.validateRoot(id))) {
+                    return children.findAny().isEmpty();
+                }
             }
         }
-
+        /** Only after authenticated Java open/create; no protocol identity is cached here. */
+        public void authenticated() throws IOException {
+            synchronized (admission) { held(); registry.established(id); }
+        }
         @Override public void close() {
-            synchronized (LocalReplicaOwner.this) {
-                if (active == this) active = null;
-            }
+            synchronized (admission) { if (admission.active == this) admission.active = null; }
         }
     }
 }

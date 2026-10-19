@@ -53,6 +53,8 @@ public final class SyncSourceGuardTest {
         assertFalse(ui.contains("ProviderTreeReader")); assertFalse(ui.contains("ProviderSnapshot"));
         assertTrue(ui.contains("ACTION_OPEN_DOCUMENT_TREE"));
         for (String flag : List.of("READ", "WRITE", "PERSISTABLE", "PREFIX")) assertTrue(ui.contains("FLAG_GRANT_" + flag + "_URI_PERMISSION"));
-        assertTrue(binding.contains("sync_binding_v1")); assertTrue(binding.contains("getPersistedUriPermissions"));
+        assertTrue(binding.contains("sync_binding_mv1_\" + localId"));
+        assertTrue(binding.contains("VaultRegistry.validateId(localId)"));
+        assertFalse(binding.contains("\"sync_binding_v1\"")); assertTrue(binding.contains("getPersistedUriPermissions"));
     }
 }

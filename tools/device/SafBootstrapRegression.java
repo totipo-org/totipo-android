@@ -8,6 +8,20 @@ import java.util.*;
 
 /** Standalone instrumentation: existing user-picked grant, isolated vault, production outbound path; existing fixture tree only. */
 public final class SafBootstrapRegression extends Instrumentation {
+    private Object fixtureOwner(ClassLoader loader, Path base) throws Exception {
+        Class<?> registryType = loader.loadClass("org.totipo.android.VaultRegistry");
+        Object registry = registryType.getConstructor(Path.class).newInstance(base.toRealPath());
+        Object entry = call(registry, "reserve", new Class<?>[]{String.class}, new Object[]{null});
+        Class<?> admissionType = loader.loadClass("org.totipo.android.LocalReplicaOwner$Admission");
+        return admissionType.getMethod("select", registryType, String.class).invoke(
+                admissionType.getConstructor().newInstance(), registry, call(entry, "id"));
+    }
+    private Path fixtureRoot(Object owner) throws Exception {
+        Object lease = call(owner, "acquire");
+        try { return (Path)call(lease, "root"); }
+        finally { call(lease, "close"); }
+    }
+
     private Object isolated;
     private Path directory;
     private Path writerDirectory;
@@ -124,7 +138,8 @@ public final class SafBootstrapRegression extends Instrumentation {
             check(call(call(call(original, "syncView"), "binding"), "status").toString().equals("READY"), "application_startup_ready");
             Class<?> ownerClass = loader.loadClass("org.totipo.android.LocalReplicaOwner");
             directory = Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "m3a-isolated-");
-            Path root = directory.resolve("totipo-vault"); Files.createDirectories(root);
+            Object owner = fixtureOwner(loader, directory);
+            Path root = fixtureRoot(owner);
             if (mode.equals("join")) {
                 // Durable empty-replica safety is checked before controller/session observation.
                 try (var entries = Files.list(root)) {
@@ -133,8 +148,7 @@ public final class SafBootstrapRegression extends Instrumentation {
                 check(!Files.exists(root.resolve("vault")) && !Files.exists(root.resolve("objects-v1")),
                         "join_local_vault_and_objects_absent_before_observation");
             }
-            var ownerConstructor = ownerClass.getDeclaredConstructor(Path.class); ownerConstructor.setAccessible(true);
-            Object owner = ownerConstructor.newInstance(directory);
+
             Class<?> controllerClass = loader.loadClass("org.totipo.android.AndroidVaultController");
             Class<?> dispatcherClass = loader.loadClass("org.totipo.android.AndroidVaultController$Dispatcher");
             Class<?> backendClass = loader.loadClass("org.totipo.android.AndroidVaultController$Backend");

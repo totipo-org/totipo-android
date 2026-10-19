@@ -123,9 +123,10 @@ public final class AndroidVaultControllerTest {
             Files.createDirectories(lease.root().resolve("objects-v1"));
             object = Files.write(lease.root().resolve("objects-v1").resolve("a".repeat(64)), orphan);
         }
-        start(); state(State.NO_LOCAL_VAULT); accept(() -> controller.create(password())); await(this::idle);
-        assertEquals(State.NO_LOCAL_VAULT, controller.snapshot().state());
-        assertEquals("Totipo found existing token data but no usable vault. A new vault was not created.", controller.snapshot().message());
+        start(); state(State.ERROR_LOCKED);
+        assertFalse(controller.create(password()));
+        assertEquals(0, real.creates); // Registry refuses uncertain roots before Java creation.
+        assertTrue(controller.snapshot().message().contains("recover storage"));
         assertFalse(Files.exists(localRoot().resolve("vault"))); assertArrayEquals(orphan, Files.readAllBytes(object));
         assertNull(real.session);
     }
@@ -256,7 +257,7 @@ public final class AndroidVaultControllerTest {
         try (var lease = owner.acquire()) { Files.write(lease.root().resolve("vault"), new byte[87]); }
         accept(() -> controller.create(password()));
         await(() -> controller.snapshot().error() == Error.CREATE_FAILED);
-        assertEquals(State.LOCKED, controller.snapshot().state()); assertEquals(1, real.creates); assertNull(real.session);
+        assertEquals(State.LOCKED, controller.snapshot().state()); assertEquals(0, real.creates); assertNull(real.session);
         try (var lease = owner.acquire()) { assertNotNull(lease.root()); }
     }
     @Test public void uncertainCreationNeverPublishesOpenAndDiscoversInstalledVault() throws Exception {

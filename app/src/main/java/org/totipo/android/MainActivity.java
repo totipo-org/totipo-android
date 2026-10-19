@@ -78,11 +78,13 @@ public final class MainActivity extends Activity {
         controller = ((TotipoApplication) getApplication()).vaultController();
         if (controller == null) {
             TextView unsupported = new TextView(this);
-            unsupported.setText(R.string.unsupported_runtime);
+            String diagnostic = ((TotipoApplication) getApplication()).startupDiagnostic();
+            if (diagnostic == null) unsupported.setText(R.string.unsupported_runtime);
+            else unsupported.setText(diagnostic);
             unsupported.setPadding(24, 80, 24, 24); setContentView(unsupported);
         } else {
             android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
-            biometric = new BiometricUnlock(controller, new AndroidBiometricCredentials(this),
+            biometric = new BiometricUnlock(controller, new PendingVaultBiometricCredentials(),
                     new FrameworkBiometricPrompt(this), (delay, action) -> {
                         handler.postDelayed(action, delay); return () -> handler.removeCallbacks(action);
                     });

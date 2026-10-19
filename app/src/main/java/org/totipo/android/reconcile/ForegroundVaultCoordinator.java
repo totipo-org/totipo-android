@@ -89,7 +89,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
             var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
             try {
                 OpenResult failure = vault.establish(credential);
-                if (failure == null) vault.transition(State.OPEN);
+                if (failure == null) { vault.lease.authenticated(); vault.transition(State.OPEN); }
                 return new Opening(vault, failure, null);
             } catch (Exception failure) {
                 vault.failClosed(failure);
@@ -123,6 +123,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                     : read instanceof org.totipo.spi.BoundedRead.Unavailable unavailable
                             && unavailable.reason() != org.totipo.spi.StoreFailure.UNSAFE_NAMESPACE
                             ? LocalStatus.UNAVAILABLE : LocalStatus.UNSAFE;
+            if (status == LocalStatus.ABSENT && !vault.lease.permitsAbsentVault()) status = LocalStatus.UNAVAILABLE;
             if (enrollment && status == LocalStatus.ABSENT) {
                 try (var bridge = vault.store.bridge()) { bridge.verifyEmptyEnrollment(); }
             }
@@ -138,7 +139,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     static Creation create(LocalReplicaOwner owner, char[] credential, Operations operations) throws IOException {
         Objects.requireNonNull(credential);
         try {
-            var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
+            var vault = new ForegroundVaultCoordinator(owner.acquireForCreation(), operations);
             try {
                 vault.store = operations.storage(vault.lease);
                 CreateVaultResult result = operations.create(vault.store, credential);
@@ -147,6 +148,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                     return new Creation(vault, result, null);
                 }
                 vault.session = created.session();
+                vault.lease.authenticated();
                 operations.observe(vault.session);
                 vault.transition(State.OPEN);
                 return new Creation(vault, null, null);
@@ -165,7 +167,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     static Opening join(LocalReplicaOwner owner, byte[] exact, char[] credential,
                         java.util.function.BooleanSupplier cancelled, Operations operations) throws IOException {
         var id = Totipo.vaultId(exact);
-        var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
+        var vault = new ForegroundVaultCoordinator(owner.acquireForCreation(), operations);
         try {
             vault.store = operations.storage(vault.lease);
             org.totipo.spi.VaultCreate outcome;
@@ -180,7 +182,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
             OpenResult failure = vault.establish(credential);
             if (failure == null && !id.equals(vault.session.vaultId()))
                 throw new IllegalStateException("Enrollment identity mismatch");
-            if (failure == null) vault.transition(State.OPEN);
+            if (failure == null) { vault.lease.authenticated(); vault.transition(State.OPEN); }
             return new Opening(vault, failure, null);
         } catch (Exception failure) {
             vault.failClosed(failure);

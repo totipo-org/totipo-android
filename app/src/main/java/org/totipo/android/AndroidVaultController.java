@@ -332,10 +332,11 @@ public final class AndroidVaultController {
                 case UNSAFE -> publish(State.ERROR_LOCKED, Error.LOCAL_STORAGE_UNSAFE,
                         "Local VAULT has an unsafe type or size. It was not treated as absent.", null);
                 case UNAVAILABLE -> publish(State.ERROR_LOCKED, Error.LOCAL_STORAGE_UNAVAILABLE,
-                        "Local vault storage is unavailable. Retry checking storage.", null);
+                        "Local vault data is unavailable or creation was interrupted. Preserve application data; retry the check or recover storage. No replacement was created.", null);
             }
         } catch (IOException | RuntimeException failure) {
-            publish(State.ERROR_LOCKED, Error.LOCAL_STORAGE_UNAVAILABLE, "Local vault storage is unavailable.", null);
+            publish(State.ERROR_LOCKED, Error.LOCAL_STORAGE_UNAVAILABLE, failure instanceof VaultRegistry.RecoveryRequired recovery
+                    ? recovery.diagnostic() : "Local vault storage is unavailable. Preserve application data and recover storage.", null);
         }
     }
     public synchronized boolean retryDiscovery() {
@@ -426,7 +427,8 @@ public final class AndroidVaultController {
                     Snapshot current = snapshot();
                     if (current.state() != State.FAILED_CLOSE) publish(current.state(),
                             create ? Error.CREATE_FAILED : Error.OPEN_FAILED,
-                            create ? "Vault creation failed. Check local storage and retry." : "Vault open failed. Check local storage and retry.", null);
+                            failure instanceof VaultRegistry.RecoveryRequired recovery ? recovery.diagnostic()
+                                    : create ? "Vault creation failed. Check local storage and retry." : "Vault open failed. Check local storage and retry.", null);
                 } finally {
                     Arrays.fill(credential, '\0');
                     synchronized (this) { if (candidate != null && enrollmentPassword != candidate) candidate.close(); }

@@ -119,8 +119,13 @@ public final class OtpAuthIngressRegression extends Instrumentation {
         Class<?> ownerClass = loader.loadClass("org.totipo.android.LocalReplicaOwner");
         Class<?> dispatcherClass = loader.loadClass("org.totipo.android.AndroidVaultController$Dispatcher");
         testDirectory = java.nio.file.Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "ingress-regression-");
-        var ownerConstructor = ownerClass.getDeclaredConstructor(java.nio.file.Path.class); ownerConstructor.setAccessible(true);
-        Object owner = ownerConstructor.newInstance(testDirectory);
+        Class<?> registryType = loader.loadClass("org.totipo.android.VaultRegistry");
+        Object registry = registryType.getConstructor(java.nio.file.Path.class).newInstance(testDirectory.toRealPath());
+        Object entry = registryType.getMethod("reserve", String.class).invoke(registry, new Object[]{null});
+        String localId = (String)entry.getClass().getMethod("id").invoke(entry);
+        Class<?> admissionType = loader.loadClass("org.totipo.android.LocalReplicaOwner$Admission");
+        Object owner = admissionType.getMethod("select", registryType, String.class)
+                .invoke(admissionType.getConstructor().newInstance(), registry, localId);
         android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
         Object dispatcher = java.lang.reflect.Proxy.newProxyInstance(loader, new Class<?>[]{dispatcherClass}, (proxy, method, args) -> {
             switch (method.getName()) {

@@ -71,21 +71,43 @@ public final class VaultEnrollmentTest {
             assertEquals(1,creates.get());assertEquals(0,opens.get());
         }
     }
-    @Test public void lateExistingExactCanOpenDifferentNeverOpensAndNeitherIsOverwritten() throws Exception {
+    @Test public void preexistingRootsRefuseJoinBeforeDataIsOverwritten() throws Exception {
         for(boolean same:new boolean[]{true,false}) {
             var owner=TestReplicaOwners.create(temporary.newFolder().toPath());byte[] present=exact.clone();if(!same)present[86]^=1;
             try(var lease=owner.acquire()){Files.write(lease.root().resolve("vault"),present);}
-            var result=ForegroundVaultCoordinator.join(owner,exact,password(),()->false);
-            try(var vault=result.vault()){assertEquals(same,result.failure()==null&&result.cause()==null);}
+            assertThrows(java.io.IOException.class, () -> ForegroundVaultCoordinator.join(owner,exact,password(),()->false));
             try(var lease=owner.acquire()){assertArrayEquals(present,Files.readAllBytes(lease.root().resolve("vault")));}
+        }
+    }
+    @Test public void lateExistingExactStillOpensAndDifferentBytesNeverOpenOrOverwrite() throws Exception {
+        for (boolean same : new boolean[]{true, false}) {
+            var owner = TestReplicaOwners.create(temporary.newFolder().toPath());
+            byte[] present = exact.clone(); if (!same) present[86] ^= 1;
+            var operations = new ForegroundVaultCoordinator.Operations() {
+                CoordinatedPrivateStore storage(LocalReplicaOwner.Lease lease) throws java.io.IOException {
+                    // Inject evidence after registry admission to retain the underlying
+                    // Java create-only/equality regression, without allowing uncertain roots.
+                    Files.write(lease.root().resolve("vault"), present);
+                    return super.storage(lease);
+                }
+            };
+            var result = ForegroundVaultCoordinator.join(owner, exact, password(), () -> false, operations);
+            try (var vault = result.vault()) { assertEquals(same, result.failure() == null && result.cause() == null); }
+            try (var lease = owner.acquire()) { assertArrayEquals(present, Files.readAllBytes(lease.root().resolve("vault"))); }
         }
     }
     @Test public void cancelledBeforeInstallAndOrphanEvidenceLeaveVaultAbsent() throws Exception {
         for(boolean orphan:new boolean[]{false,true}) {
             var owner=TestReplicaOwners.create(temporary.newFolder().toPath());
             try(var lease=owner.acquire()){if(orphan){Files.createDirectories(lease.root().resolve("objects-v1"));Files.write(lease.root().resolve("objects-v1").resolve("a".repeat(64)),new byte[]{1});}}
-            var result=ForegroundVaultCoordinator.join(owner,exact,password(),()->!orphan);
-            try(var vault=result.vault()){assertNotNull(result.cause());if(orphan)assertTrue(result.cause() instanceof ForegroundVaultCoordinator.LocalObjectEvidence);}
+            if (orphan) {
+                assertThrows(java.io.IOException.class, () -> ForegroundVaultCoordinator.join(owner,exact,password(),()->false));
+                try(var lease=owner.acquire()){assertArrayEquals(new byte[]{1}, Files.readAllBytes(lease.root().resolve("objects-v1").resolve("a".repeat(64))));}
+            } else {
+                var result=ForegroundVaultCoordinator.join(owner,exact,password(),()->true);
+                try(var vault=result.vault()){assertNotNull(result.cause());}
+                assertThrows(java.io.IOException.class, owner::acquireForCreation);
+            }
             try(var lease=owner.acquire()){assertFalse(Files.exists(lease.root().resolve("vault")));}
         }
     }

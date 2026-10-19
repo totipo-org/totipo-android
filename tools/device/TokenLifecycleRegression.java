@@ -20,6 +20,17 @@ import static org.totipo.android.provider.ProviderSnapshot.State.COMPLETE;
  * This qualifies product UI/controller + real Java, not SAF or Syncthing transport.
  * Updated for automatic publication; historical results remain in their original reports. */
 public final class TokenLifecycleRegression extends Instrumentation {
+    private static LocalReplicaOwner fixtureOwner(java.nio.file.Path base) throws Exception {
+        java.nio.file.Files.createDirectories(base);
+        var registry = new VaultRegistry(base.toRealPath());
+        if (registry.entries().isEmpty()) registry.reserve(null);
+        return new LocalReplicaOwner.Admission().select(registry, registry.entries().get(0).id());
+    }
+    private static java.nio.file.Path fixtureRoot(java.nio.file.Path base) throws Exception {
+        var registry = new VaultRegistry(base.toRealPath());
+        return registry.root(registry.entries().get(0).id());
+    }
+
     private AndroidVaultController controller;
     private MainActivity activity;
     private Path base;
@@ -82,7 +93,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
             base=Files.createTempDirectory(getTargetContext().getCacheDir().toPath(),"token-lifecycle-");
             var port=new FixturePort(Files.createDirectory(base.resolve("transport")));
             Handler main=new Handler(Looper.getMainLooper());
-            controller=new AndroidVaultController(new LocalReplicaOwner(base.resolve("local")),new AndroidVaultController.Dispatcher(){
+            controller=new AndroidVaultController(fixtureOwner(base.resolve("local")),new AndroidVaultController.Dispatcher(){
                 public void post(Runnable r){main.post(r);}
                 public Runnable after(long ms,Runnable r){main.postDelayed(r,ms);return ()->main.removeCallbacks(r);}
                 public void assertDispatchThread(){if(Looper.myLooper()!=Looper.getMainLooper())throw new AssertionError("UI thread");}
@@ -91,7 +102,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
                 public Instant wall(){return Instant.ofEpochSecond(59);}public long elapsedMillis(){return SystemClock.elapsedRealtime();}
             },null,new SyncFolderBinding(port));
             await(this::idle);command(()->controller.create(new char[0]));
-            Path root=base.resolve("local/totipo-vault");Files.write(port.root.resolve("vault"),vault().coordinator().snapshotVault());
+            Path root=fixtureRoot(base.resolve("local"));Files.write(port.root.resolve("vault"),vault().coordinator().snapshotVault());
             for(String account:List.of("edit@example.test","delete@example.test"))command(()->controller.addToken(
                 new AddTokenRequest("Totipo lifecycle public fixture",account,TotpAlgorithm.SHA1,6,30,"AEAQCAI".toCharArray())));
             await(()->controller.snapshot().view().tokens().size()==2);await(this::idle);

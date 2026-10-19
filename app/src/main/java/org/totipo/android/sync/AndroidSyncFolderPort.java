@@ -14,9 +14,10 @@ import org.totipo.android.sync.SyncFolderBinding.*;
 public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, ProviderObjectWriter.Port, ProviderVaultWriter.Port {
     private final ContentResolver resolver;
     private final SharedPreferences preferences;
-    public AndroidSyncFolderPort(Context context) {
+    public AndroidSyncFolderPort(Context context, String localId) {
+        org.totipo.android.VaultRegistry.validateId(localId);
         resolver = context.getContentResolver();
-        preferences = context.getSharedPreferences("sync_binding_v1", Context.MODE_PRIVATE);
+        preferences = context.getSharedPreferences("sync_binding_mv1_" + localId, Context.MODE_PRIVATE);
     }
     private AndroidProviderVaultPort bootstrap() { return new AndroidProviderVaultPort(resolver, this); }
     public org.totipo.android.provider.ProviderSnapshot.Document createVault(org.totipo.android.provider.ProviderSnapshot.Document root) throws Exception { return bootstrap().createVault(root); }

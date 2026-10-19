@@ -484,3 +484,38 @@ regenerating. An interrupted publication reservation is partial state and fails
 closed. Do not run concurrent migration/signing or modify identity files during use.
 Fresh provisioning is deliberately deferred; missing state always fails, and any
 future provisioning must be explicit after deliberate device reprovisioning.
+
+## A-MV1 local vault storage
+
+New installations use a local-only versioned registry in
+`noBackupFilesDir/totipo-local-v1/registry`. Every vault has a generated opaque
+local ID and its own `roots/<local-id>/store` beneath that directory. Local IDs
+are independent of protocol VaultIds; registry metadata never enters a protocol
+store or Sync folder. A durable pending reservation precedes allocation and a
+durable creation-attempt marker precedes Create/Join. Authentication promotes an
+entry to established. Uncertain attempts, missing established data, unsafe paths,
+and corrupt metadata require explicit recovery; the app never replaces them.
+Preserve the entire application data before attempting recovery. There is no
+in-app metadata repair or automatic cleanup.
+
+This version targets **fresh application data**. An old `totipo-vault` root,
+global Sync preferences/retry hints, or global biometric credential/key blocks
+startup with an incompatible-installation diagnostic. No legacy adoption or
+migration is supported, and no old files, grants or keys are changed. Before a
+manual application-data reset, use the previous application to preserve or
+synchronize every local vault and verify the other copy. Resetting permanently
+loses unsynchronized local vaults. The app never clears its own data.
+
+A-MV1 keeps one immutable selected controller for the process lifetime. The
+registry supports multiple entries, but a registry with multiple entries is
+preserved and requires the later selection UI; no switching or inactive-vault
+Sync is exposed. Sync preferences use the selected local ID; comprehensive
+per-entry grant/retry management is deferred to A-MV3. Production unlock is
+password-only until A-MV4 provides per-entry biometric records and keys. The
+existing biometric cryptography remains unchanged and global credentials are
+never reused. A-MV2 must retire all controller/provider work before changing
+selection; releasing a local session lease alone does not permit switching.
+
+The debug disposable-create probe is disabled while A-MV1 holds application
+selection. Use the isolated registry qualification harness for synthetic creation;
+a diagnostic must not admit a second session beside the selected controller.

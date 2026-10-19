@@ -15,6 +15,17 @@ import org.totipo.android.reconcile.ForegroundVaultCoordinator.ObservedToken;
 
 /** Isolated self-targeted instrumentation: synthetic rows only, no Totipo launch or vault access. */
 public final class RowRevealRegression extends android.app.Instrumentation {
+    private static LocalReplicaOwner fixtureOwner(java.nio.file.Path base) throws Exception {
+        java.nio.file.Files.createDirectories(base);
+        var registry = new VaultRegistry(base.toRealPath());
+        if (registry.entries().isEmpty()) registry.reserve(null);
+        return new LocalReplicaOwner.Admission().select(registry, registry.entries().get(0).id());
+    }
+    private static java.nio.file.Path fixtureRoot(java.nio.file.Path base) throws Exception {
+        var registry = new VaultRegistry(base.toRealPath());
+        return registry.root(registry.entries().get(0).id());
+    }
+
     private static int checks;
     private static final StringBuilder geometry = new StringBuilder();
     private static void check(boolean result, String label) {
@@ -254,7 +265,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             public Runnable after(long delay, Runnable action) { tick[0] = action; return () -> { if (tick[0] == action) tick[0] = null; }; }
         };
         var directory = java.nio.file.Files.createTempDirectory(context.getCacheDir().toPath(), "reveal-controller-");
-        var controller = new AndroidVaultController(new LocalReplicaOwner(directory), dispatcher, new AndroidVaultController.Backend() {
+        var controller = new AndroidVaultController(fixtureOwner(directory), dispatcher, new AndroidVaultController.Backend() {
             org.totipo.android.reconcile.ForegroundVaultCoordinator.TotpResult generateTotp(
                     org.totipo.android.reconcile.ForegroundVaultCoordinator vault, TokenId id, Instant time, ObservedToken expected) {
                 generations[0]++;
@@ -506,7 +517,8 @@ public final class RowRevealRegression extends android.app.Instrumentation {
     private static void delayedSyncScreen(Context context) throws Exception {
         var queue = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
         var directory = java.nio.file.Files.createTempDirectory(context.getCacheDir().toPath(), "sync-layout-");
-        var port = new LayoutPort(directory.resolve("totipo-vault"));
+        var owner = fixtureOwner(directory);
+        var port = new LayoutPort(fixtureRoot(directory));
         var binding = new org.totipo.android.sync.SyncFolderBinding(port);
         var dispatcher = new AndroidVaultController.Dispatcher() {
             public void post(Runnable action) { queue.add(action); }
@@ -514,7 +526,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             public void assertWorkerThread() { if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) throw new AssertionError("Sync worker"); }
             public Runnable after(long delay, Runnable action) { return () -> {}; }
         };
-        var controller = new AndroidVaultController(new LocalReplicaOwner(directory), dispatcher,
+        var controller = new AndroidVaultController(owner, dispatcher,
                 new AndroidVaultController.Backend(), new TotpPresentation.Time() {
                     public Instant wall() { return Instant.ofEpochSecond(31); }
                     public long elapsedMillis() { return 0; }

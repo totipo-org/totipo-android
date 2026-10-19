@@ -77,6 +77,9 @@ public final class AuthPerfSafetyTest {
         }
 
     }
+    @Test public void disposableCreationCannotBypassApplicationSelection() {
+        assertThrows(IllegalStateException.class, () -> org.totipo.android.DebugDisposableCreation.run(null));
+    }
     @Test public void loggingUsesFixedLabelsAndNumericResultsWithDevicePropertiesOnly() throws Exception {
         String activity = Files.readString(Path.of("src/debug/java/org/totipo/android/debug/AuthPerfActivity.java"));
         String timing = Files.readString(Path.of("src/debug/java/org/totipo/android/reconcile/DebugVaultTiming.java"));

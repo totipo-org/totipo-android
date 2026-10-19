@@ -8,6 +8,20 @@ import java.util.*;
 
 /** Standalone instrumentation: existing user-picked grant, isolated vault, production outbound path; existing fixture tree only. */
 public final class SafOutboundRegression extends Instrumentation {
+    private Object fixtureOwner(ClassLoader loader, Path base) throws Exception {
+        Class<?> registryType = loader.loadClass("org.totipo.android.VaultRegistry");
+        Object registry = registryType.getConstructor(Path.class).newInstance(base.toRealPath());
+        Object entry = call(registry, "reserve", new Class<?>[]{String.class}, new Object[]{null});
+        Class<?> admissionType = loader.loadClass("org.totipo.android.LocalReplicaOwner$Admission");
+        return admissionType.getMethod("select", registryType, String.class).invoke(
+                admissionType.getConstructor().newInstance(), registry, call(entry, "id"));
+    }
+    private Path fixtureRoot(Object owner) throws Exception {
+        Object lease = call(owner, "acquire");
+        try { return (Path)call(lease, "root"); }
+        finally { call(lease, "close"); }
+    }
+
     private Object isolated;
     private Path directory;
     private Path writerDirectory;
@@ -127,7 +141,8 @@ public final class SafOutboundRegression extends Instrumentation {
             check(call(call(call(original, "syncView"), "binding"), "status").toString().equals("READY"), "application_startup_ready");
             Class<?> ownerClass = loader.loadClass("org.totipo.android.LocalReplicaOwner");
             directory = Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "m3a-isolated-");
-            Path root = directory.resolve("totipo-vault"); Files.createDirectories(root);
+            Object owner = fixtureOwner(loader, directory);
+            Path root = fixtureRoot(owner);
             byte[] canonicalVault;
             try (var input = getContext().getAssets().open("vault")) { canonicalVault = input.readAllBytes(); }
             Files.write(root.resolve("vault"), canonicalVault);
@@ -140,8 +155,7 @@ public final class SafOutboundRegression extends Instrumentation {
                         && Arrays.equals(canonicalVault, Files.readAllBytes(root.resolve("vault"))),
                         "isolated_replica_empty_before_observation");
             }
-            var ownerConstructor = ownerClass.getDeclaredConstructor(Path.class); ownerConstructor.setAccessible(true);
-            Object owner = ownerConstructor.newInstance(directory);
+
             Class<?> controllerClass = loader.loadClass("org.totipo.android.AndroidVaultController");
             Class<?> dispatcherClass = loader.loadClass("org.totipo.android.AndroidVaultController$Dispatcher");
             Class<?> backendClass = loader.loadClass("org.totipo.android.AndroidVaultController$Backend");
@@ -228,12 +242,13 @@ public final class SafOutboundRegression extends Instrumentation {
             reader = isolated;
             Object readerSession = session;
             writerDirectory = Files.createTempDirectory(getTargetContext().getCacheDir().toPath(), "m3b-writer-");
-            Path writerRoot = writerDirectory.resolve("totipo-vault"); Files.createDirectories(writerRoot.resolve("objects-v1"));
+            Object writerOwner = fixtureOwner(loader, writerDirectory);
+            Path writerRoot = fixtureRoot(writerOwner); Files.createDirectories(writerRoot.resolve("objects-v1"));
             Files.write(writerRoot.resolve("vault"), canonicalVault);
             try (var files = Files.list(root.resolve("objects-v1"))) {
                 for (Path path : files.toList()) Files.copy(path, writerRoot.resolve("objects-v1").resolve(path.getFileName()));
             }
-            Object writerOwner = ownerConstructor.newInstance(writerDirectory);
+
             Object writerBinding = bindingClass.getConstructor(portType).newInstance(port);
             isolated = constructor.newInstance(writerOwner, dispatcher, backendConstructor.newInstance(), time, null, writerBinding);
             waitIdle(); command("unlock", new Class<?>[]{char[].class}, new char[0]); waitIdle(); waitTokens(baselineTokens);
