@@ -11,11 +11,48 @@ import org.totipo.android.provider.ProviderTreeReader;
 import org.totipo.android.sync.SyncFolderBinding.*;
 
 /** Platform-only SAF adapter. Writes are restricted to newly created immutable documents. */
-public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, ProviderObjectWriter.Port, ProviderVaultWriter.Port {
+public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, ProviderObjectWriter.Port, ProviderVaultWriter.Port, SyncGrantOwnership.Metadata {
     private final ContentResolver resolver;
     private final SharedPreferences preferences;
+    private final String localId;
+    private final SyncGrantOwnership ownership;
+    private boolean uncertain;
+    public static SyncGrantOwnership ownership(Context context, org.totipo.android.VaultRegistry registry) {
+        ContentResolver resolver = context.getContentResolver();
+        return new SyncGrantOwnership(() -> {
+            try {
+                var result = new java.util.LinkedHashMap<String, SyncGrantOwnership.Metadata>();
+                for (var entry : registry.bindingEntries())
+                    result.put(entry.id(), new AndroidSyncFolderPort(context, entry.id(), null));
+                return result;
+            } catch (java.io.IOException failure) { throw new IllegalStateException("Registry needs recovery"); }
+        }, new SyncGrantOwnership.Platform() {
+            public boolean sameFolder(String first, String second) {
+                try {
+                    Uri a = Uri.parse(first), b = Uri.parse(second);
+                    return java.util.Objects.equals(a.getAuthority(), b.getAuthority())
+                            && DocumentsContract.getTreeDocumentId(a).equals(DocumentsContract.getTreeDocumentId(b));
+                } catch (RuntimeException malformed) { return first.equals(second); }
+            }
+            public boolean independent(String uri) {
+                // Android offers no general proof of independence for SAF aliases or
+                // overlapping trees. Retain while any different platform grant exists.
+                return resolver.getPersistedUriPermissions().stream().allMatch(g -> g.getUri().toString().equals(uri));
+            }
+            public void release(String uri) {
+                for (var grant : resolver.getPersistedUriPermissions()) if (grant.getUri().toString().equals(uri))
+                    resolver.releasePersistableUriPermission(grant.getUri(), flags(grant.isReadPermission(), grant.isWritePermission()));
+                if (resolver.getPersistedUriPermissions().stream().anyMatch(g -> g.getUri().toString().equals(uri)))
+                    throw new IllegalStateException("Permission release remains unconfirmed");
+            }
+        });
+    }
     public AndroidSyncFolderPort(Context context, String localId) {
+        this(context, localId, ((org.totipo.android.TotipoApplication) context.getApplicationContext()).syncGrantOwnership());
+    }
+    private AndroidSyncFolderPort(Context context, String localId, SyncGrantOwnership ownership) {
         org.totipo.android.VaultRegistry.validateId(localId);
+        this.localId = localId; this.ownership = ownership;
         resolver = context.getContentResolver();
         preferences = context.getSharedPreferences("sync_binding_mv1_" + localId, Context.MODE_PRIVATE);
     }
@@ -25,10 +62,54 @@ public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, Prov
     public org.totipo.android.provider.ProviderSnapshot.Document vaultMetadata(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultMetadata(created); }
     public java.io.OutputStream vaultOutput(org.totipo.android.provider.ProviderSnapshot.Document created) throws Exception { return bootstrap().vaultOutput(created); }
     public org.totipo.android.provider.ProviderSnapshot.Bytes vaultReadBack(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultReadBack(created); }
-    public boolean pendingPublication() { return preferences.getBoolean("pending_publication", false); }
-    public void pendingPublication(boolean pending) { preferences.edit().putBoolean("pending_publication", pending).commit(); }
+    public boolean pendingPublication() {
+        return preferences.getBoolean("binding_recovery", false)
+                ? preferences.getBoolean("recovery_pending", false) : preferences.getBoolean("pending_publication", false);
+    }
+    public void pendingPublication(boolean pending) {
+        if (!preferences.edit().putBoolean("pending_publication", pending).commit())
+            throw new IllegalStateException("Retry hint could not be saved");
+    }
+    public Object configurationLock() { return ownership == null ? this : ownership; }
+    public SyncGrantOwnership.Use retain(String uri) {
+        if (ownership == null) throw new IllegalStateException("Permission owner unavailable");
+        return ownership.admit(localId, uri);
+    }
+    public void selectionAllowed(String uri) {
+        if (ownership == null) throw new IllegalStateException("Permission owner unavailable");
+        ownership.checkSelection(localId, uri);
+    }
+    public boolean uncertain() {
+        try { return uncertain || preferences.getBoolean("binding_recovery", false); }
+        catch (RuntimeException malformed) { return true; }
+    }
+    public java.util.Set<String> retained() {
+        return new java.util.HashSet<>(preferences.getStringSet("retained_grants", java.util.Set.of()));
+    }
+    public boolean retained(java.util.Set<String> uris) {
+        return preferences.edit().putStringSet("retained_grants", new java.util.HashSet<>(uris)).commit();
+    }
+    public String configurationNotice() {
+        try {
+            if (uncertain()) return "Folder configuration needs recovery. Choose the intended folder again or retry Disconnect. Permissions retained.";
+            var unused = retained();
+            Stored current = load(); if (current != null) unused.remove(current.uri());
+            return unused.isEmpty() ? "" : "Unused folder permissions may be retained for safety. No external data was removed.";
+        } catch (RuntimeException malformed) {
+            return "Folder configuration needs recovery. Permissions retained.";
+        }
+    }
+    private static boolean committed(SharedPreferences.Editor edit) {
+        try { return edit.commit(); }
+        catch (RuntimeException unavailable) { return false; }
+    }
     public Stored load() {
         try {
+            if (preferences.getBoolean("binding_recovery", false)) {
+                if (!preferences.getBoolean("recovery_configured", false)) return new Stored("", false, false);
+                return new Stored(preferences.getString("recovery_uri", ""),
+                        preferences.getBoolean("recovery_read", false), preferences.getBoolean("recovery_write", false));
+            }
             if (!preferences.contains("tree_uri")) return null;
             if (preferences.getInt("schema", 0) != 1) return new Stored("", false, false);
             return new Stored(preferences.getString("tree_uri", ""),
@@ -36,10 +117,37 @@ public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, Prov
         } catch (RuntimeException malformed) { return new Stored("", false, false); }
     }
     public boolean save(Stored value) {
-        var edit = preferences.edit().remove("schema").remove("tree_uri").remove("read").remove("write");
-        if (value != null) edit.putInt("schema", 1).putString("tree_uri", value.uri())
-                .putBoolean("read", value.readable()).putBoolean("write", value.writable());
-        return edit.commit();
+        synchronized (configurationLock()) {
+            Stored old = load();
+            // Secure the cleanup record BEFORE retiring a historical/recovered
+            // binding too, even when this process did not originally take its grant.
+            if (ownership != null && old != null && validTree(old.uri())) {
+                try { ownership.remember(this, old.uri()); }
+                catch (RuntimeException unavailable) { return false; }
+            }
+            var journal = preferences.edit().putBoolean("binding_recovery", true)
+                    .putBoolean("recovery_configured", old != null)
+                    .putBoolean("recovery_pending", pendingPublication())
+                    .putString("recovery_uri", old == null ? "" : old.uri())
+                    .putBoolean("recovery_read", old != null && old.readable())
+                    .putBoolean("recovery_write", old != null && old.writable());
+            if (!committed(journal)) { uncertain = true; return false; }
+            var edit = preferences.edit().remove("schema").remove("tree_uri").remove("read").remove("write");
+            if (value != null) edit.putInt("schema", 1).putString("tree_uri", value.uri())
+                    .putBoolean("read", value.readable()).putBoolean("write", value.writable());
+            else edit.putBoolean("pending_publication", false);
+            edit.putBoolean("binding_recovery", false);
+            if (!committed(edit)) {
+                // SharedPreferences changes memory even when disk persistence fails.
+                // Restore the recovery marker in memory/disk; keep the original URI
+                // and all acquired grants until an explicit successful configuration.
+                uncertain = true;
+                committed(preferences.edit().putBoolean("binding_recovery", true));
+                return false;
+            }
+            uncertain = false;
+            return true;
+        }
     }
     public boolean validTree(String value) {
         try {
@@ -61,10 +169,19 @@ public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, Prov
                 | (write ? Intent.FLAG_GRANT_WRITE_URI_PERMISSION : 0);
     }
     public void take(String uri, boolean read, boolean write) {
-        resolver.takePersistableUriPermission(Uri.parse(uri), flags(read, write));
+        synchronized (configurationLock()) {
+            if (ownership == null) throw new IllegalStateException("Permission owner unavailable");
+            ownership.remember(this, uri);
+            resolver.takePersistableUriPermission(Uri.parse(uri), flags(read, write));
+        }
     }
     public void release(String uri, boolean read, boolean write) {
-        if (read || write) resolver.releasePersistableUriPermission(Uri.parse(uri), flags(read, write));
+        if (!read && !write) return;
+        synchronized (configurationLock()) {
+            if (ownership == null) return; // Metadata-only inspection never revokes.
+            ownership.remember(this, uri);
+            ownership.cleanup();
+        }
     }
     public void probe(String value) {
         Uri uri = Uri.parse(value);

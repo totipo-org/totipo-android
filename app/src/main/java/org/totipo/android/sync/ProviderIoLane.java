@@ -24,12 +24,20 @@ public final class ProviderIoLane implements AutoCloseable {
     private int handoffs;
     private Runnable drained;
 
-    private void execute(Runnable action) {
+    private void execute(SyncFolderBinding.Port transport, SyncFolderBinding.Request request,
+                         Runnable action, Runnable refused) {
         synchronized (this) {
             if (retiring) throw new java.util.concurrent.RejectedExecutionException("Provider retired");
             executor.execute(() -> {
                 synchronized (ProviderIoLane.this) { if (retiring) return; }
-                action.run(); // Entered work finishes without interruption, even after retire().
+                // Configuration validation can read registry/preferences. Keep it on
+                // the provider worker, outside controller/main monitors. A queued
+                // request whose binding retired never enters the provider at all.
+                SyncGrantOwnership.Use use;
+                try { use = transport.retain(request.uri()); }
+                catch (RuntimeException unavailable) { refused.run(); return; }
+                try { action.run(); }
+                finally { use.close(); } // Actual return, including stream cleanup.
             });
         }
     }
@@ -79,7 +87,7 @@ public final class ProviderIoLane implements AutoCloseable {
     }
     public void submit(SyncFolderBinding.Port transport, SyncFolderBinding.Request request,
                        boolean importing, Consumer<Result> delivery) {
-        execute(() -> {
+        execute(transport, request, () -> {
             Scan scan = null;
             boolean accessible = false;
             try {
@@ -91,26 +99,26 @@ public final class ProviderIoLane implements AutoCloseable {
                 accessible = false;
             }
             deliver(delivery, new Result(request, importing, accessible, scan));
-        });
+        }, () -> deliver(delivery, new Result(request, importing, false, null)));
     }
     public void publish(SyncFolderBinding.Port transport, SyncFolderBinding.Request request,
                         org.totipo.android.provider.ProviderSnapshot.Document target,
                         java.util.List<DetachedImmutableObject> missing,
                         java.util.function.BooleanSupplier cancelled,
                         Consumer<ProviderObjectWriter.Result> delivery) {
-        execute(() -> {
+        execute(transport, request, () -> {
             var result = ProviderObjectWriter.publish(transport, request.uri(), target, missing, cancelled);
             deliver(delivery, result);
-        });
+        }, () -> deliver(delivery, new ProviderObjectWriter.Result(java.util.List.of(), true, false, false, null)));
     }
     public void initialize(SyncFolderBinding.Port transport, SyncFolderBinding.Request request,
                            byte[] exact, java.util.function.BooleanSupplier cancelled,
                            Consumer<ProviderVaultWriter.Result> delivery) {
         byte[] owned = exact.clone();
-        execute(() -> {
+        execute(transport, request, () -> {
             var result = ProviderVaultWriter.initialize(transport, request.uri(), owned, cancelled);
             deliver(delivery, result);
-        });
+        }, () -> deliver(delivery, new ProviderVaultWriter.Result(ProviderVaultWriter.Status.BLOCKED, null)));
     }
     @Override public void close() { retire(() -> {}); }
 }

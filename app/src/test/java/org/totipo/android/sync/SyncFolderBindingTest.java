@@ -44,6 +44,12 @@ public final class SyncFolderBindingTest {
         }
         return binding.view();
     }
+    @Test public void equalGenerationsAndUrisFromDifferentActivationsNeverMatch() {
+        var a = new SyncFolderBinding(new MemoryPort()); var b = new SyncFolderBinding(new MemoryPort());
+        a.restore(); b.restore();
+        assertEquals(a.request().generation(), b.request().generation());
+        assertTrue(a.current(a.request())); assertFalse(b.current(a.request()));
+    }
     @Test public void absentAndMalformedConfigurationNeverProbe() {
         var p = new MemoryPort(); var b = new SyncFolderBinding(p);
         assertEquals(Status.NOT_CONFIGURED, b.restore().status());

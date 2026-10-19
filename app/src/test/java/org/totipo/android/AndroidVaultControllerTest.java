@@ -1262,6 +1262,70 @@ public final class AndroidVaultControllerTest {
     @Test public void timeoutRetiresDeleteAndRejectsLateConfirmation() throws Exception { timeoutPendingChange(TokenChange.Kind.DELETE); }
     @Test public void timeoutRetiresResolveAndRejectsLateConfirmation() throws Exception { timeoutPendingChange(TokenChange.Kind.RESOLVE); }
 
+    @Test public void localOnlyAuthoringNeverTouchesProviderOrCreatesTransportHintAndReopens() throws Exception {
+        var port = new org.totipo.android.sync.SyncFolderBindingTest.MemoryPort();
+        port.onProbe = () -> { throw new AssertionError("Local-only provider probe"); };
+        port.onScan = () -> { throw new AssertionError("Local-only provider scan"); };
+        var binding = new org.totipo.android.sync.SyncFolderBinding(port);
+        controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
+            public java.time.Instant wall() { return java.time.Instant.ofEpochSecond(59); }
+            public long elapsedMillis() { return 0; }
+        }, null, binding);
+        automaticSync = true; state(State.NO_LOCAL_VAULT);
+        accept(() -> controller.create(password())); state(State.OPEN);
+        add(enrollment("local", "only", org.totipo.TotpAlgorithm.SHA1, 6, 30, rfcSecret()), AddTokenOutcome.Status.ADDED);
+        await(() -> controller.snapshot().view().tokens().size() == 1); await(this::providerDone);
+        finishChange(controller.beginTokenChange(lifecycleRow().id(), TokenChange.Kind.EDIT), "local", "edited", 0);
+        await(() -> lifecycleRow().alternatives().get(0).account().equals("edited")); await(this::providerDone);
+        assertEquals("Local only", controller.dailySyncStatus()); assertFalse(port.pending);
+        controller.foregroundChanged(false); controller.foregroundChanged(true); await(this::idle);
+        assertFalse(controller.sync()); assertEquals(0, port.probes); assertEquals(0, port.scans);
+        lock(); accept(() -> controller.unlock(password())); state(State.OPEN);
+        await(() -> controller.snapshot().view() != null && controller.snapshot().view().tokens().size() == 1);
+        assertEquals("edited", lifecycleRow().alternatives().get(0).account());
+        lock(); restartProcessAdmission();
+        controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
+            public java.time.Instant wall() { return java.time.Instant.ofEpochSecond(59); }
+            public long elapsedMillis() { return 0; }
+        }, null, new org.totipo.android.sync.SyncFolderBinding(port));
+        state(State.LOCKED); accept(() -> controller.unlock(password())); state(State.OPEN);
+        await(() -> controller.snapshot().view() != null && controller.snapshot().view().tokens().size() == 1); await(this::idle);
+        finishChange(controller.beginTokenChange(lifecycleRow().id(), TokenChange.Kind.DELETE), null, null, 0);
+        await(() -> lifecycleRow().alternatives().get(0).status() == org.totipo.TokenStatus.TOMBSTONED); await(this::providerDone);
+        assertEquals("Local only", controller.dailySyncStatus()); assertFalse(port.pending);
+        assertEquals(0, port.takes); assertEquals(0, port.probes); assertEquals(0, port.scans);
+    }
+    @Test public void disconnectClearsTransportHintAndLocalOnlyResolveDoesNotRecreateIt() throws Exception {
+        var port = outboundFixture(1); await(this::providerDone); conflictBranch(port, false);
+        accept(() -> controller.disconnectSyncFolder()); await(this::providerDone);
+        assertFalse(port.pending); int scans = port.scans, takes = port.takes;
+        automaticSync = true;
+        finishChange(controller.beginTokenChange(lifecycleRow().id(), TokenChange.Kind.RESOLVE), null, null, 0);
+        await(() -> !lifecycleRow().conflict()); await(this::providerDone);
+        assertFalse(port.pending); assertEquals("Local only", controller.dailySyncStatus());
+        assertEquals(scans, port.scans); assertEquals(takes, port.takes);
+    }
+    @Test public void bindingAfterLocalOnlySavesUsesFreshEvidenceDespiteAbsentRetryHint() throws Exception {
+        var port = outboundFixture(1); await(this::providerDone);
+        accept(() -> controller.disconnectSyncFolder()); await(this::providerDone); automaticSync = true;
+        finishChange(controller.beginTokenChange(lifecycleRow().id(), TokenChange.Kind.EDIT), "local", "unbound edit", 0);
+        await(this::providerDone); assertFalse(port.pending);
+        int scans = port.scans;
+        accept(() -> controller.chooseSyncFolder(false, org.totipo.android.sync.PublicationPort.TREE.locator(), 3));
+        await(this::providerDone); assertFalse(port.pending);
+        accept(() -> controller.sync()); await(this::providerDone);
+        assertTrue(port.scans > scans); assertEquals(2, port.objects.size()); assertEquals("", controller.dailySyncStatus());
+    }
+    @Test public void revokedBindingStaysConfiguredAndLocalChangesRetainRetryHint() throws Exception {
+        var port = dailyFixture();
+        port.permissions.clear(); accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+        assertEquals("Access needed. Choose folder again.", controller.dailySyncStatus());
+        assertNotNull(controller.initialTreeUri());
+        finishChange(controller.beginTokenChange(lifecycleRow().id(), TokenChange.Kind.EDIT), "local", "revoked", 0);
+        await(this::providerDone); assertTrue(port.pending); assertEquals("Changes not synced", controller.dailySyncStatus());
+        assertNotNull(port.stored);
+    }
+
     private org.totipo.android.sync.PublicationPort dailyFixture() throws Exception {
         var port = outboundFixture(1); await(this::providerDone);
         assertTrue(controller.sync()); await(this::providerDone);

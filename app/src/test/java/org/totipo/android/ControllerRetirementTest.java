@@ -73,6 +73,48 @@ public final class ControllerRetirementTest {
             selection.retire(); if (controller.retirement() == Retirement.CLOSE_FAILED) controller.retryRetirement(); finish();
         }
     }
+    @Test public void entryBoundPortsSurviveSwitchRestartAndOldCompletionCannotRetargetB() throws Exception {
+        var portA = new SyncFolderBindingTest.MemoryPort(); var portB = new SyncFolderBindingTest.MemoryPort();
+        String uriA = "content://fixture/tree/a", uriB = "content://fixture/tree/b";
+        portA.stored = new SyncFolderBinding.Stored(uriA, true, true); portA.pending = true;
+        portB.stored = new SyncFolderBinding.Stored(uriB, true, false); portB.pending = false;
+        portA.permissions.put(uriA, new SyncFolderBinding.Grants(true, true));
+        portB.permissions.put(uriB, new SyncFolderBinding.Grants(true, false));
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        portA.onProbe = () -> gate(entered, release);
+        var bindingA = new SyncFolderBinding(portA);
+        select(a, new Backend(), bindingA);
+        assertTrue(entered.await(10, TimeUnit.SECONDS)); state(State.NO_LOCAL_VAULT);
+        var old = controller; var oldRequest = bindingA.request();
+        await(() -> controller.create("A password".toCharArray())); state(State.OPEN);
+        try {
+            selection.retire(); await(() -> old.retirement() == Retirement.WAITING_PROVIDER); unavailableB();
+            assertEquals(uriA, old.initialTreeUri()); assertEquals(uriB, portB.stored.uri()); assertFalse(portB.pending);
+        } finally { release.countDown(); }
+        finish(); int probesA = portA.probes;
+        var bindingB = new SyncFolderBinding(portB);
+        select(b, new Backend(), bindingB); state(State.NO_LOCAL_VAULT);
+        await(() -> controller.syncView().binding().status() == SyncFolderBinding.Status.READY);
+        assertEquals(oldRequest.generation(), bindingB.request().generation());
+        assertFalse(bindingB.current(oldRequest));
+        assertEquals(uriB, controller.initialTreeUri()); assertFalse(portB.pending); assertTrue(portA.pending);
+        assertFalse(old.sync()); assertFalse(old.disconnectSyncFolder()); assertEquals(probesA, portA.probes);
+        await(() -> controller.disconnectSyncFolder());
+        await(() -> controller.initialTreeUri() == null);
+        assertEquals(uriA, portA.stored.uri()); assertTrue(portA.pending); assertFalse(portB.pending);
+        selection.retire(); finish(); portA.onProbe = () -> {};
+        // A fresh registry/port/controller activation is the same persisted entry,
+        // independently authenticated; no late A callback can have rewritten B.
+        registry = new VaultRegistry(temporary.getRoot().toPath().resolve(registryPath()));
+        select(a, new Backend(), new SyncFolderBinding(portA)); state(State.LOCKED);
+        await(() -> controller.unlock("A password".toCharArray())); state(State.OPEN);
+        assertEquals(uriA, controller.initialTreeUri()); assertNull(portB.stored);
+    }
+    private String registryPath() throws Exception {
+        try (var paths = Files.list(temporary.getRoot().toPath())) {
+            return paths.filter(p -> Files.exists(p.resolve("totipo-local-v1"))).findFirst().orElseThrow().getFileName().toString();
+        }
+    }
     @Test public void lockedRetirementNeverRediscoversAndOldOwnerCannotAcquire() throws Exception {
         AtomicInteger discoveries = new AtomicInteger();
         select(a, new Backend() {

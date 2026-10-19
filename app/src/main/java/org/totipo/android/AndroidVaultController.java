@@ -214,7 +214,7 @@ public final class AndroidVaultController {
         presentation = new TotpPresentation(time, (delay, action) -> dispatcher.after(delay,
                 () -> { synchronized (this) { action.run(); } }), marshalled, this::presentationChanged);
         submit(State.STARTING, "Checking local vault…", () -> {
-            if (syncBinding != null) { syncBinding.restore(); pendingPublication = syncBinding.pendingPublication(); updateBinding(null); startProvider(false); }
+            if (syncBinding != null) { syncBinding.restore(); pendingPublication = syncBinding.initialUri() != null && syncBinding.pendingPublication(); updateBinding(null); startProvider(false); }
             discover();
         });
     }
@@ -813,6 +813,7 @@ public final class AndroidVaultController {
         if (returned) requestAutomaticSync();
     }
     private synchronized void localMutationSaved() {
+        if (syncBinding == null || initialTreeUri == null) return;
         setPendingPublication(true);
         syncStatus = "Changes not synced";
         requestAutomaticSync();
@@ -829,7 +830,9 @@ public final class AndroidVaultController {
             if (!publicationHintDirty) return;
             publicationHintDirty = false; pending = pendingPublication;
         }
-        if (syncBinding != null) syncBinding.pendingPublication(pending);
+        if (syncBinding != null && !syncBinding.pendingPublication(pending)) {
+            synchronized (this) { publicationHintDirty = true; }
+        }
     }
     private synchronized void requestAutomaticSync() {
         if (retiring || shuttingDown || syncBinding == null || initialTreeUri == null) return;
@@ -867,7 +870,10 @@ public final class AndroidVaultController {
     public synchronized String dailySyncStatus() {
         if (unifiedSync) return "Syncing…";
         if (!syncStatus.isEmpty()) return syncStatus;
+        if (initialTreeUri == null) return "Local only";
         if (pendingPublication) return "Changes not synced";
+        if (syncView.binding().status() == SyncFolderBinding.Status.ACCESS_LOST) return "Access needed. Choose folder again.";
+        if (syncView.binding().status() == SyncFolderBinding.Status.UNAVAILABLE) return "Sync folder unavailable";
         if (snapshot.view() != null && snapshot.view().tokens().stream().anyMatch(t -> t.conflict()))
             return "Conflict needs attention";
         return "";
@@ -964,13 +970,15 @@ public final class AndroidVaultController {
         initialTreeUri = syncBinding.initialUri();
         bindingGeneration = syncBinding.request().generation();
         String detail = message == null ? switch (binding.status()) {
-            case NOT_CONFIGURED -> "Not configured";
+            case NOT_CONFIGURED -> "Local only";
             case CHECKING -> "Checking sync folder…";
             case READY -> binding.writable() ? "Connected" : "Folder is read-only for Totipo.";
             case ACCESS_LOST -> "Access needed. Choose folder again.";
             case UNAVAILABLE -> "Sync folder unavailable. Retry access.";
         } : message;
         if (importIntegrityAttention && !detail.contains("Integrity problem")) detail += " Integrity problem. Token changes need attention.";
+        String notice = syncBinding.configurationNotice();
+        if (!notice.isEmpty()) detail += " " + notice;
         syncView = new SyncView(binding, detail);
     }
     private boolean folderOperation(Runnable operation) {
@@ -997,8 +1005,15 @@ public final class AndroidVaultController {
     }
     public synchronized boolean disconnectSyncFolder() {
         if (canManageSyncFolder()) cancelOutbound();
-        return folderOperation(() -> { cancelOutbound(); updateBinding(syncBinding.disconnect() ? null
-                : "Folder configuration could not be cleared. Try again."); });
+        return folderOperation(() -> {
+            cancelOutbound();
+            boolean disconnected = syncBinding.disconnect();
+            if (disconnected) {
+                synchronized (this) { setPendingPublication(false); syncPending = false; syncStatus = ""; lastSyncResult = "Local only"; }
+                persistPublicationHint();
+            }
+            updateBinding(disconnected ? null : "Folder configuration could not be cleared. Try again.");
+        });
     }
     public synchronized boolean checkSyncFolder() {
         if (providerActive) return false;

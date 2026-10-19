@@ -12,6 +12,10 @@ public final class SyncFolderBinding {
     public record View(Status status, boolean readable, boolean writable) {}
     public interface Port {
         Stored load();
+        default Object configurationLock() { return this; }
+        default SyncGrantOwnership.Use retain(String uri) { return () -> {}; }
+        default String configurationNotice() { return ""; }
+        default void selectionAllowed(String uri) {}
         default boolean pendingPublication() { return false; }
         default void pendingPublication(boolean pending) {}
         boolean save(Stored value);
@@ -23,9 +27,11 @@ public final class SyncFolderBinding {
         Scan scan(String uri);
     }
     private final Port port;
-    public record Request(long generation, String uri) {
+    public record Request(long generation, String uri, Object owner) {
+        public Request(long generation, String uri) { this(generation, uri, null); }
         @Override public String toString() { return "Request[private configuration]"; }
     }
+    private final Object requestOwner = new Object();
     private long generation;
     private Stored remembered;
     private View view = new View(Status.NOT_CONFIGURED, false, false);
@@ -34,9 +40,11 @@ public final class SyncFolderBinding {
     public synchronized boolean pendingPublication() {
         try { return port.pendingPublication(); } catch (RuntimeException unavailable) { return true; }
     }
-    public synchronized void pendingPublication(boolean pending) {
-        try { port.pendingPublication(pending); } catch (RuntimeException unavailable) { /* Local vault remains authoritative. */ }
+    public synchronized boolean pendingPublication(boolean pending) {
+        try { port.pendingPublication(pending); return true; }
+        catch (RuntimeException unavailable) { return false; } // Hint only; local save remains complete.
     }
+    public synchronized String configurationNotice() { return port.configurationNotice(); }
     public synchronized View view() { return view; }
     public synchronized String initialUri() { return remembered == null ? null : remembered.uri(); }
     public synchronized View restore() {
@@ -59,9 +67,9 @@ public final class SyncFolderBinding {
         if (!next.equals(view)) generation++;
         return view = next;
     }
-    public synchronized Request request() { return new Request(generation, initialUri()); }
+    public synchronized Request request() { return new Request(generation, initialUri(), requestOwner); }
     public synchronized boolean current(Request request) {
-        return request.generation() == generation && java.util.Objects.equals(request.uri(), initialUri());
+        return request.owner() == requestOwner && request.generation() == generation && java.util.Objects.equals(request.uri(), initialUri());
     }
     public synchronized Port transport() { return port; }
     public synchronized void accessibility(Request request, boolean available) {
@@ -71,10 +79,14 @@ public final class SyncFolderBinding {
     public synchronized void unavailable(Request request) { accessibility(request, false); }
     /** Cancellation preserves the old binding. Failed replacement never commits a new active root. */
     public synchronized boolean choose(boolean cancelled, String uri, boolean read, boolean write) {
+        synchronized (port.configurationLock()) { return chooseLocked(cancelled, uri, read, write); }
+    }
+    private boolean chooseLocked(boolean cancelled, String uri, boolean read, boolean write) {
         if (cancelled) return true;
         if (uri == null || !read || !port.validTree(uri)) return false;
         Grants before = null;
         try {
+            port.selectionAllowed(uri);
             before = port.grants(uri);
             port.take(uri, read, write);
             Grants persisted = port.grants(uri);
@@ -97,6 +109,9 @@ public final class SyncFolderBinding {
         }
     }
     public synchronized boolean disconnect() {
+        synchronized (port.configurationLock()) { return disconnectLocked(); }
+    }
+    private boolean disconnectLocked() {
         try { if (!port.save(null)) return false; }
         catch (RuntimeException failure) { return false; }
         Stored previous = remembered;

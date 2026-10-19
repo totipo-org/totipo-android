@@ -115,6 +115,15 @@ public final class VaultRegistry {
         directory(home); directory(roots);
     }
     public synchronized List<Entry> entries() { return entries; }
+    /** Complete, freshly validated metadata inventory for app-wide SAF decisions. */
+    public synchronized List<Entry> bindingEntries() throws IOException {
+        healthy();
+        if (exists(next)) throw new RecoveryRequired("Interrupted registry write. Permission cleanup deferred.");
+        if (!Arrays.equals(committed, readMetadata(metadata)))
+            throw new RecoveryRequired("Registry changed. Permission cleanup deferred.");
+        validateInventory();
+        return entries;
+    }
     public synchronized String lastSelected() { return lastSelected; }
     synchronized Entry entry(String id) throws IOException {
         healthy(); validateId(id);

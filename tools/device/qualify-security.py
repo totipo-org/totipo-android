@@ -4,6 +4,9 @@
 --build-only compiles the harness without packaging/installing an app.
 --prepare packages final strict-clean release DEX/resources, signs with a test-only key,
 and installs ONE isolated test package. It never replaces org.totipo.android.
+--phase mv3-first and mv3-restart exercise local-only operations, per-entry SAF
+configuration, grants, retirement and cold-process restoration; only newly allocated
+external fixture folders are used and retained for review.
 --phase retirement exercises A -> B through the Application authority with a blocked
 provider lane, rotation, callback/picker isolation and independent passwords.
 --phase lifecycle runs the existing narrow token lifecycle regression.
@@ -33,7 +36,7 @@ parser.add_argument('--serial', default='37311JEGR05916')
 parser.add_argument('--build-only', action='store_true')
 parser.add_argument('--prepare', action='store_true')
 parser.add_argument('--update-harness', action='store_true', help='Update only the isolated test package, preserving disposable restart evidence')
-parser.add_argument('--phase', choices=['retirement', 'registry', 'lifecycle', 'first', 'restart', 'mv1-first', 'mv1-restart', 'mv1-missing', 'mv1-corrupt', 'mv1-restore', 'mv1-legacy', 'mv1-finish'])
+parser.add_argument('--phase', choices=['retirement', 'registry', 'lifecycle', 'first', 'restart', 'mv1-first', 'mv1-restart', 'mv1-missing', 'mv1-corrupt', 'mv1-restore', 'mv1-legacy', 'mv1-finish', 'mv3-first', 'mv3-restart'])
 parser.add_argument('--remove', action='store_true')
 args = parser.parse_args()
 if args.phase in ('first', 'restart'):
@@ -59,7 +62,7 @@ if args.build_only or args.prepare or args.update_harness:
     classes, dex = out / 'classes', out / 'dex'
     classes.mkdir(exist_ok=True)
     dex.mkdir(exist_ok=True)
-    names = ['TokenLifecycleRegression', 'SecurityRegression', 'VaultRegistryRegression', 'VaultRegistryUiRegression', 'ControllerRetirementRegression']
+    names = ['TokenLifecycleRegression', 'SecurityRegression', 'VaultRegistryRegression', 'VaultRegistryUiRegression', 'ControllerRetirementRegression', 'PerVaultSyncRegression']
     class_files = compile_java(tc, [root / 'tools/device' / (name + '.java') for name in names],
                                classes, [platform, app, *jars],
                                ['org/totipo/android/' + name for name in names])
@@ -71,8 +74,10 @@ if args.build_only or args.prepare or args.update_harness:
 <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 <application android:name="org.totipo.android.TotipoApplication" android:label="Totipo disposable security tests" android:allowBackup="false" android:debuggable="false" android:testOnly="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
 <activity android:name="org.totipo.android.MainActivity" android:exported="true" />
+<activity android:name="org.totipo.android.PerVaultSyncRegression$GrantActivity" android:exported="false" />
 <activity android:name="org.totipo.android.OtpAuthEnrollmentActivity" android:exported="false" />
 </application>
+<instrumentation android:name="org.totipo.android.PerVaultSyncRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.ControllerRetirementRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.VaultRegistryUiRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.VaultRegistryRegression" android:targetPackage="org.totipo.securityqualification" />
@@ -96,16 +101,38 @@ if args.build_only or args.prepare or args.update_harness:
         existing = adb('shell', 'pm', 'path', package, capture_output=True, text=True, check=False)
         assert existing.returncode in (0, 1), 'Unable to inspect installed test package'
         assert bool(existing.stdout.strip()) == args.update_harness, 'Use --prepare for a new isolated package or --update-harness for a physical harness correction'
+        if args.prepare and (out / 'mv3-fixture.json').exists():
+            import time
+            (out / 'mv3-fixture.json').rename(out / ('mv3-fixture-' + str(time.time_ns()) + '.json'))
         adb('install', *(['-r'] if args.update_harness else []), '-t', '--no-incremental', signed)
         (out / 'qualified-source.sha256').write_text(__import__('hashlib').sha256(source_apk.read_bytes()).hexdigest() + '\n')
 if args.phase:
     adb('shell', 'am', 'force-stop', package)
-    name = 'VaultRegistryUiRegression' if args.phase.startswith('mv1-') else {'retirement': 'ControllerRetirementRegression', 'registry': 'VaultRegistryRegression', 'lifecycle': 'TokenLifecycleRegression'}.get(args.phase, 'SecurityRegression')
-    result = adb('shell', 'am', 'instrument', '-w', '-e', 'phase', args.phase, package + '/org.totipo.android.' + name,
+    extra = []
+    if args.phase.startswith('mv3-'):
+        import json
+        import uuid
+        receipt = out / 'mv3-fixture.json'
+        if args.phase == 'mv3-first':
+            assert not receipt.exists(), 'Preserve existing fixture receipt; use a separate fresh disposable preparation'
+            fixture_id = uuid.uuid4().hex
+            fixture = 'Documents/Totipo-AMV3-' + fixture_id
+            folders = [fixture + '/A-' + fixture_id, fixture + '/B-' + fixture_id]
+            for folder in folders:
+                adb('shell', 'mkdir', '-p', '/sdcard/' + folder)
+            receipt.write_text(json.dumps({'folders': folders, 'serial': args.serial}) + '\n')
+        evidence = json.loads(receipt.read_text())
+        assert evidence['serial'] == args.serial
+        from urllib.parse import quote
+        for key, folder in zip(('folder_a', 'folder_b'), evidence['folders']):
+            extra.extend(['-e', key, 'content://com.android.externalstorage.documents/tree/' + quote('primary:' + folder, safe='')])
+        print('Disposable external folders retained for review: ' + ', '.join(evidence['folders']), flush=True)
+    name = 'PerVaultSyncRegression' if args.phase.startswith('mv3-') else 'VaultRegistryUiRegression' if args.phase.startswith('mv1-') else {'retirement': 'ControllerRetirementRegression', 'registry': 'VaultRegistryRegression', 'lifecycle': 'TokenLifecycleRegression'}.get(args.phase, 'SecurityRegression')
+    result = adb('shell', 'am', 'instrument', '-w', '-e', 'phase', args.phase, *extra, package + '/org.totipo.android.' + name,
                  capture_output=True, text=True)
     (out / (args.phase + '.log')).write_text(result.stdout + result.stderr)
     print(result.stdout, end='', flush=True)
-    expected = 'MV1_UI_PASS phase=' + args.phase if args.phase.startswith('mv1-') else {'retirement': 'CONTROLLER_RETIREMENT_PASS', 'registry': 'VAULT_REGISTRY_PASS', 'lifecycle': 'TOKEN LIFECYCLE PASS'}.get(args.phase, 'SECURITY_PASS')
+    expected = 'PER_VAULT_SYNC_PASS phase=' + args.phase if args.phase.startswith('mv3-') else 'MV1_UI_PASS phase=' + args.phase if args.phase.startswith('mv1-') else {'retirement': 'CONTROLLER_RETIREMENT_PASS', 'registry': 'VAULT_REGISTRY_PASS', 'lifecycle': 'TOKEN LIFECYCLE PASS'}.get(args.phase, 'SECURITY_PASS')
     assert expected in result.stdout, 'Physical qualification failed; inspect the phase log'
 if args.remove:
     adb('uninstall', package)

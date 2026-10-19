@@ -8,6 +8,12 @@ app-private local vault in no-backup storage. After setup, the main screen conta
 behavior. Diagnostics shows public vault/provider/build information, never passwords,
 setup secrets, root keys or raw exception dumps.
 
+Vaults work fully **local only**. Create, password unlock, Add, Edit, Delete, Resolve,
+local observation, Lock/reopen and restart use the coordinated private canonical
+store without a provider, SAF grant, network or Syncthing. The neutral **Local only**
+status does not mark successful local saves as unsynced or create transport retry hints.
+Synchronization is optional and belongs independently to each local registry entry.
+
 Once a shared folder is bound, Totipo automatically attempts **Sync** after successful
 unlock/open, after a meaningful return from the background, and after successful
 **Add**, **Edit**, **Delete** or **Resolve**. Rotation and repeated active callbacks do
@@ -22,8 +28,8 @@ Java remains the merge/conflict authority. Real concurrent edits remain conflict
 Resolve requires an explicit complete Alternative, including Deleted where present.
 There is no automatic winner or field combination.
 
-Local authoring succeeds independently of the subsequent Sync attempt. An unavailable
-provider leaves the valid local change committed and shows **Changes not synced**.
+Local authoring succeeds independently of the subsequent Sync attempt. For a configured
+binding, an unavailable provider leaves the valid local change committed and shows **Changes not synced**.
 A persisted local retry hint survives restart; immutable local evidence is the source
 of publication decisions. A later foreground event, mutation or manual Sync retries.
 Requests coalesce to one active Sync plus one pending request; failures never start a
@@ -47,31 +53,14 @@ and retire its in-memory vault/session keys. Touch/key interaction resets a mono
 alone does not immediately lock, but background time counts. Foreground re-entry checks
 expiration before presenting vault content. Rotation does not reset the deadline.
 
-Optional **biometric unlock on this device** is available with API 30+ framework strong
-biometrics. The vault password remains canonical and always works. Select **Enable
-biometric unlock on this device** during password unlock; after the password succeeds,
-a strong biometric crypto prompt protects a device-local encrypted reusable password
-copy with a non-exportable AndroidKeyStore AES-GCM key. Every decryption requires a fresh
-strong biometric operation; device PIN, pattern, device password and weak biometrics are
-not accepted. The password fallback remains visible. Cancelled/failed enrollment leaves
-the normally opened vault available and stores no credential. Enrollment and prompts
-expire after 60 seconds or Activity interruption. **Disable biometric unlock** in overflow
-removes both credential and Keystore key without locking or changing the vault/password.
-
-The credential is in app-private no-backup storage, authenticated and bound to the exact
-VaultId. Enrollment changes, key invalidation, or corruption may require password unlock
-and re-enrollment. After process death the app starts locked; biometric reopening uses
-the ordinary password-open path and normal automatic Sync.
-
-Biometric convenience deliberately adds device-local attack surface: it stores a
-device-encrypted reusable representation of the vault password. The authentication-gated
-Keystore key cannot be exported, but successful biometric authorization lets Totipo
-transiently recover the password required by the existing Java API. This is a usability
-tradeoff, not a claim of security equivalence to the vault password. Plaintext is never
-persisted, passwords are never converted to Java Strings, and transient mutable buffers
-are wiped in finally blocks. Operation-owned mutable buffers are cleared on completion
-as best effort rather than guaranteed JVM erasure. Empty-password create/unlock/Join
-requires explicit confirmation.
+Production biometric unlock remains disabled until **A-MV4** supplies per-entry
+credentials and keys. Password unlock is the supported path. The retained biometric
+implementation and its historical threat model are documented in the
+[biometric qualification report](review/ANDROID_BIOMETRIC_INACTIVITY_LOCK_REPORT.md);
+its enrollment controls are unavailable in this intermediate multi-vault version.
+Passwords remain mutable caller-owned buffers and are wiped on completion as best
+effort rather than guaranteed JVM erasure. Empty-password Create/unlock/Join requires
+explicit confirmation.
 
 Production consumes released Java NIO/core 0.2.0 and Bouncy Castle 1.86 directly
 from Maven Central, targeting Totipo Vault Format v1/r19. One app-private local canonical
@@ -526,8 +515,7 @@ recreation; process death drops it and rejects the outstanding result.
 The
 registry supports multiple entries, but a registry with multiple entries is
 preserved and requires the later selection UI; no switching or inactive-vault
-Sync is exposed. Sync preferences use the selected local ID; comprehensive
-per-entry grant/retry management is deferred to A-MV3. Production unlock is
+Sync is exposed. Production unlock is
 password-only until A-MV4 provides per-entry biometric records and keys. The
 existing biometric cryptography remains unchanged and global credentials are
 never reused. Complete A → B retirement is exercised through the Application's
@@ -538,3 +526,49 @@ is exposed; A-MV3/4/5 must complete those boundaries before general switching.
 The debug disposable-create probe remains disabled while the Application holds
 selection. Use the isolated registry qualification harness for synthetic creation;
 a diagnostic must not admit a second session beside the selected controller.
+
+
+## A-MV3 optional per-vault Sync
+
+Each immutable controller receives its entry's `AndroidSyncFolderPort`. The existing
+`sync_binding_mv1_<local-id>` namespace owns URI, remembered read/write metadata,
+retry hint and binding-update recovery/permission-cleanup records. The registry
+contains no second copy. Binding generations, request ownership, session generations,
+Sync status and last result belong to that activation; callbacks never look up a
+replacement controller. Inactive entries are inspected only for configuration metadata.
+
+**Manage sync folder → Choose folder** attaches synchronization to an existing local
+vault without changing its cryptographic identity. Use **Initialize sync folder** only
+for an intended new provider replica; ordinary Sync requires matching provider VAULT
+and performs fresh import, Java observation and publication assessment regardless of
+retry hints. A different or ambiguous provider VAULT blocks publication. **Join** still
+authenticates and enrolls the provider's exact VAULT; choosing a folder cannot replace Join.
+
+**Disconnect** durably removes only that entry's binding and transport hint, preserving
+all private and provider data. It cancels future work logically; an entered provider call
+retains its grant until it actually returns. Local-only status follows the durable
+configuration change. Rebinding performs a fresh complete Sync assessment. Failed or
+interrupted configuration writes preserve the previous binding in recovery metadata;
+choose the intended folder again or retry Disconnect. No successful disconnection is
+reported for a failed preference write.
+
+A remembered URI with missing/revoked SAF permission stays configured and shows
+**Access needed. Choose folder again.** It is distinct from intentional local-only mode.
+Local saves remain available after a failed transport attempt and retain their scoped
+retry hint. The existing bounded active-Sync admission policy remains unchanged.
+
+The Application serializes binding changes with SAF authority admission and cleanup.
+Cleanup freshly validates the entire registry and examines every scoped binding,
+recovery record and admitted provider use without constructing inactive controllers.
+Obvious same-folder references, including equivalent decoded tree identifiers, are
+refused during folder selection. Historical duplicate references still retain access.
+Grant release is deliberately conservative: any remembered binding, active use,
+uncertain inventory/write or different persisted platform grant prevents revocation.
+Textually different SAF trees are not assumed independent. Cleanup records remain
+visible in folder management when release fails or is deferred. Some unused grants
+may therefore remain until explicit recovery; no broad startup cleanup is performed.
+
+A-MV2's complete retirement and single-active-session guarantees remain in force.
+A-MV4 per-vault biometrics and A-MV5 public multi-entry navigation remain unavailable.
+See the [A-MV3 report](review/A_MV3_PER_VAULT_SYNC_REPORT.md) for qualification evidence
+and conservative cleanup limitations.

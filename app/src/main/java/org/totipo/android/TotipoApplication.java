@@ -12,6 +12,8 @@ import java.time.Instant;
 public final class TotipoApplication extends Application {
     private final VaultSelection selection = new VaultSelection();
     private VaultRegistry registry;
+    private org.totipo.android.sync.SyncGrantOwnership syncGrants;
+    public org.totipo.android.sync.SyncGrantOwnership syncGrantOwnership() { return syncGrants; }
     private String startupDiagnostic;
     private int started;
     LocalReplicaOwner replicaOwner() { return selection.owner(); }
@@ -32,6 +34,7 @@ public final class TotipoApplication extends Application {
                 if (keys.containsAlias(BiometricRecord.ALIAS))
                     throw new VaultRegistry.RecoveryRequired(VaultRegistry.LEGACY_DIAGNOSTIC);
                 registry = new VaultRegistry(privateBase);
+                syncGrants = org.totipo.android.sync.AndroidSyncFolderPort.ownership(this, registry);
                 // A-MV1 exposes only one selected controller. No implicit switch or new vault
                 // when remembered storage is missing, corrupt or ambiguous.
                 if (registry.entries().isEmpty()) registry.reserve(null);
