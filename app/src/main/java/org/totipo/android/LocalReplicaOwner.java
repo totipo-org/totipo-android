@@ -7,7 +7,7 @@ import java.util.Objects;
 
 /** Immutable selection-bound owner. A single Application Admission is held for the
  * selected controller's entire lifetime, including locked periods and provider work.
- * No switch/release API exists until full controller/provider retirement (A-MV2).
+ * Selection release requires complete controller/provider retirement.
  * A lease additionally excludes overlapping discovery/store/session access. Close the
  * Java session, facade and coordinated domain before releasing it. Single process only.
  */
@@ -24,6 +24,26 @@ public final class LocalReplicaOwner {
             registry.select(id);
             selected = new LocalReplicaOwner(registry, id, this);
             return selected;
+        }
+    }
+    private boolean sealed;
+    void seal() { synchronized (admission) { sealed = true; } }
+    private AndroidVaultController controller;
+    private final String activation = java.util.UUID.randomUUID().toString();
+    String activationId() { return activation; }
+    void bindController(AndroidVaultController value) {
+        synchronized (admission) {
+            if (admission.selected != this || controller != null) throw new IllegalStateException("Controller ownership already bound");
+            controller = value;
+        }
+    }
+    boolean releaseRetired(AndroidVaultController value) {
+        synchronized (admission) {
+            if (controller != value || !value.retirementReady()
+                    || admission.selected != this || admission.active != null)
+                return false;
+            admission.selected = null;
+            return true;
         }
     }
     private final VaultRegistry registry;
@@ -43,7 +63,7 @@ public final class LocalReplicaOwner {
     public Lease acquireForCreation() throws IOException { return acquire(true); }
     private Lease acquire(boolean creation) throws IOException {
         synchronized (admission) {
-            if (admission.selected != this || admission.active != null)
+            if (sealed || admission.selected != this || admission.active != null)
                 throw new IllegalStateException("Local canonical store already owned");
             if (!registry.validateRoot(id).equals(root)) throw new IOException("Selection root changed");
             if (creation) registry.beginCreation(id);

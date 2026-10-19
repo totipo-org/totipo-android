@@ -4,16 +4,16 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.totipo.*;
 import org.totipo.android.LocalReplicaOwner;
 
 /** Explicit debug-only one-shot fixture request. Uses public Java authorship, never encoding. */
 public final class DebugTotpFixture {
-    private static final AtomicBoolean ARMED = new AtomicBoolean();
+    private static final AtomicReference<String> ARMED = new AtomicReference<>();
     private DebugTotpFixture() {}
-    public static void arm() { ARMED.set(true); }
-    public static boolean takeRequest() { return ARMED.getAndSet(false); }
+    public static void arm(String activation) { ARMED.set(java.util.Objects.requireNonNull(activation)); }
+    public static boolean takeRequest(String activation) { return activation.equals(ARMED.getAndSet(null)); }
     public static ForegroundVaultCoordinator.Opening open(LocalReplicaOwner owner, char[] credential) throws IOException {
         return ForegroundVaultCoordinator.open(owner, credential, new Seed());
     }

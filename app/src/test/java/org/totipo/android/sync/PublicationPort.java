@@ -56,7 +56,7 @@ public final class PublicationPort extends SyncFolderBindingTest.MemoryPort impl
     public int creates, outputs;
     public String fault = "";
     public int failAt = 1;
-    public Runnable onCreate = () -> {}, onWrite = () -> {};
+    public Runnable onCreate = () -> {}, onWrite = () -> {}, onReadBack = () -> {};
     public State coverage = State.COMPLETE;
     public PublicationPort() {
         stored = new SyncFolderBinding.Stored(TREE.locator(), true, true);
@@ -102,7 +102,7 @@ public final class PublicationPort extends SyncFolderBindingTest.MemoryPort impl
         };
     }
     public Bytes readBack(Document created) {
-        assertLane();
+        assertLane(); onReadBack.run();
         byte[] bytes = objects.get(created.displayName()).clone();
         if (fault("different")) bytes[0] ^= 1;
         return new Bytes("read", created, 1024, fault("unavailable") ? ByteState.UNAVAILABLE : ByteState.PRESENT, bytes, Issue.NONE);

@@ -25,6 +25,11 @@ public final class OtpAuthEnrollmentActivity extends Activity {
         super.onResume();
         if (controller != null) { controller.checkInactivity(); changed(controller.snapshot()); }
     }
+    private final java.util.function.Consumer<VaultSelection.Snapshot> selectionObserver = selection -> {
+        if (controller != null && (selection == null || selection.controller() != controller || !controller.selectedAuthority())) {
+            discard(); submitted = false; message(R.string.enrollment_expired);
+        }
+    };
     private boolean submitted;
     private final AndroidVaultController.Listener listener = this::changed;
     private LinearLayout content;
@@ -105,6 +110,7 @@ public final class OtpAuthEnrollmentActivity extends Activity {
         }
     }
     private void changed(AndroidVaultController.Snapshot state) {
+        if (!controller.selectedAuthority()) { discard(); submitted = false; message(R.string.enrollment_expired); return; }
         if (submitted) {
             if (state.state() == AndroidVaultController.State.BUSY) return;
             submitted = false;
@@ -161,9 +167,10 @@ public final class OtpAuthEnrollmentActivity extends Activity {
         button.setOnClickListener(view -> action.run()); content.addView(button);
     }
     @Override protected void onStart() {
-        super.onStart(); if (controller != null) controller.attach(listener);
+        super.onStart(); ((TotipoApplication) getApplication()).selection().observe(selectionObserver); if (controller != null) controller.attach(listener);
     }
     @Override protected void onStop() {
+        ((TotipoApplication) getApplication()).selection().detach(selectionObserver);
         if (controller != null) controller.detach(listener);
         // No background draft retention. Returning requires scanning/sharing again.
         if (draft != null) { discard(); message(R.string.enrollment_expired); }

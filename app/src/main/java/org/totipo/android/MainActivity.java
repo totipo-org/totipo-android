@@ -27,6 +27,18 @@ import org.totipo.android.AndroidVaultController.State;
 /** Presentation only: application controller commands and detached snapshots. */
 public final class MainActivity extends Activity {
     private AndroidVaultController controller;
+    private String pickerActivation;
+    private String boundActivation;
+    private boolean replacing;
+    private final java.util.function.Consumer<VaultSelection.Snapshot> selectionObserver = value -> {
+        String activation = value == null ? null : value.activationId();
+        if (!java.util.Objects.equals(boundActivation, activation)) {
+            clearPasswords(); clearSecret(); clearCodeWidgets(); dismissTokenChange();
+            if (this.biometric != null) this.biometric.close();
+            if (controller != null) controller.detach(this.listener);
+            if (!replacing) { replacing = true; recreate(); }
+        } else if (controller != null && !controller.selectedAuthority()) render(controller.snapshot());
+    };
     private BiometricUnlock biometric;
     private android.widget.CheckBox enableBiometric;
     private boolean resumed, biometricOffered;
@@ -47,7 +59,7 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() { resumed = false; super.onPause(); }
 
     private final AndroidVaultController.Listener listener = new AndroidVaultController.Listener() {
-        public void changed(Snapshot state) { render(state); }
+        public void changed(Snapshot state) { if (!replacing) render(state); }
         public void revealChanged(Snapshot state) {
             if (tokens != null) tokens.updateRevealPresentation(state.revealedCode(), state.remainingSeconds());
         }
@@ -76,10 +88,15 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         controller = ((TotipoApplication) getApplication()).vaultController();
+        boundActivation = controller == null ? null : controller.activationId();
+        // Retain only the picker activation across configuration recreation. Process
+        // death loses this capability and rejects the outstanding result.
+        Object retained = getLastNonConfigurationInstance();
+        pickerActivation = retained instanceof String activation ? activation : null;
         if (controller == null) {
             TextView unsupported = new TextView(this);
             String diagnostic = ((TotipoApplication) getApplication()).startupDiagnostic();
-            if (diagnostic == null) unsupported.setText(R.string.unsupported_runtime);
+            if (diagnostic == null) unsupported.setText(Build.VERSION.SDK_INT < 30 ? getString(R.string.unsupported_runtime) : "No vault selected");
             else unsupported.setText(diagnostic);
             unsupported.setPadding(24, 80, 24, 24); setContentView(unsupported);
         } else {
@@ -88,7 +105,7 @@ public final class MainActivity extends Activity {
                     new FrameworkBiometricPrompt(this), (delay, action) -> {
                         handler.postDelayed(action, delay); return () -> handler.removeCallbacks(action);
                     });
-            biometric.changed = () -> handler.post(() -> { if (resumed) render(controller.snapshot()); });
+            biometric.changed = () -> handler.post(() -> { if (resumed && !replacing) render(controller.snapshot()); });
             controller.checkInactivity();
             if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
@@ -97,13 +114,14 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onStart() {
         super.onStart();
-        if (controller != null) { controller.checkInactivity(); render(controller.snapshot()); controller.attach(listener); }
+        ((TotipoApplication) getApplication()).selection().observe(selectionObserver);
+        if (!replacing && controller != null) { controller.checkInactivity(); render(controller.snapshot()); controller.attach(listener); }
     }
-    @Override protected void onStop() { biometricOffered = false; if (biometric != null) biometric.close(); if (controller != null) controller.cancelBiometricEnrollment(); clearPasswords(); clearSecret(); dismissTokenChange(); if (controller != null) controller.detach(listener); super.onStop(); }
+    @Override protected void onStop() { ((TotipoApplication) getApplication()).selection().detach(selectionObserver); biometricOffered = false; if (biometric != null) biometric.close(); if (controller != null) controller.cancelBiometricEnrollment(); clearPasswords(); clearSecret(); dismissTokenChange(); if (controller != null) controller.detach(listener); super.onStop(); }
     // No session closure on Activity stop/destruction. No credential Bundle or saved widget state.
     private void render(Snapshot state) {
         if (state.state() == State.OPEN) biometricOffered = false;
-        if (state.state() == State.LOCKING || state.state() == State.FAILED_CLOSE) {
+        if (state.state() == State.LOCKING || state.state() == State.FAILED_CLOSE || state.state() == State.RETIRING || state.state() == State.RETIRED) {
             if (biometric != null) biometric.close(); dismissTokenChange(); managing = false;
         }
         String bio = biometric.available() + ":" + biometric.configured();
@@ -149,7 +167,8 @@ public final class MainActivity extends Activity {
             action.setEnabled(state.state() == State.NO_LOCAL_VAULT || state.state() == State.LOCKED
                     || state.state() == State.ERROR_LOCKED || state.state() == State.FAILED_CLOSE || state.state() == State.ERROR_OPEN);
             if (next.equals("status")) {
-                action.setText(state.state() == State.ERROR_LOCKED ? "Retry storage check" : "Retry Lock");
+                action.setText(state.state() == State.ERROR_LOCKED ? "Retry storage check"
+                        : controller.retirement() == AndroidVaultController.Retirement.CLOSE_FAILED ? "Retry closure" : "Retry Lock");
                 action.setVisibility(state.state() == State.ERROR_LOCKED || state.state() == State.FAILED_CLOSE
                         || state.state() == State.ERROR_OPEN ? View.VISIBLE : View.GONE);
             }
@@ -403,12 +422,16 @@ public final class MainActivity extends Activity {
                 | android.content.Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
         String previous = controller.initialTreeUri();
         if (previous != null) picker.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, android.net.Uri.parse(previous));
+        pickerActivation = controller.activationId();
         try { startActivityForResult(picker, SYNC_TREE_REQUEST); }
         catch (android.content.ActivityNotFoundException unavailable) { status.setText("Folder picker unavailable."); }
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
-        if (request == SYNC_TREE_REQUEST && controller != null) controller.chooseSyncFolder(
+        String origin = pickerActivation;
+        if (request == SYNC_TREE_REQUEST) pickerActivation = null;
+        if (request == SYNC_TREE_REQUEST && controller != null && controller.selectedAuthority()
+                && controller.activationId().equals(origin) && !replacing) controller.chooseSyncFolder(
                 result != RESULT_OK, data == null || data.getData() == null ? null : data.getData().toString(),
                 data == null ? 0 : data.getFlags());
     }
@@ -506,5 +529,6 @@ public final class MainActivity extends Activity {
     private void clearCodeWidgets() {
         if (tokens != null) tokens.clearWidgets();
     }
+    @Override public Object onRetainNonConfigurationInstance() { return pickerActivation; }
     @Override protected void onDestroy() { clearPasswords(); clearCodeWidgets(); super.onDestroy(); }
 }

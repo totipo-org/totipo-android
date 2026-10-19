@@ -38,12 +38,17 @@ public final class AuthPerfActivity extends Activity {
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         String action = getIntent().getStringExtra("probe");
+        var origin = ((org.totipo.android.TotipoApplication)getApplication()).selection().snapshot();
+        LocalReplicaOwner readOwner = origin == null ? null : LocalReplicaOwner.from(this);
         new Thread(() -> {
             try {
                 // Only standard non-sensitive device properties; no identifiers or paths.
                 Log.i(TAG, "device model=" + Build.MODEL + " api=" + Build.VERSION.SDK_INT
                         + " android=" + Build.VERSION.RELEASE + " abi=" + Build.SUPPORTED_ABIS[0]);
-                if ("read".equals(action)) DebugVaultTiming.readVault(LocalReplicaOwner.from(this));
+                if ("read".equals(action)) {
+                    if (readOwner == null || !origin.controller().selectedAuthority()) throw new IllegalStateException("Selection retired");
+                    DebugVaultTiming.readVault(readOwner);
+                }
                 else if ("create".equals(action)) DebugDisposableCreation.run(this);
                 else if ("matrix".equals(action)) matrix(new AuthPerfBenchmark());
                 else if (action == null || "production".equals(action)) production(new AuthPerfBenchmark());

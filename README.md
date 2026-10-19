@@ -422,7 +422,7 @@ No bootstrap runs on startup, unlock, folder selection or access restoration.
 Historical M3D reports and checkpoints record the earlier explicit Import/Publish UX
 and remain unchanged. The daily-driver milestone's current validation and outstanding
 human gates are recorded in [the daily-driver UX report](review/ANDROID_DAILY_DRIVER_UX_REPORT.md).
-There is no background sync, Syncthing integration, biometric unlock, inactivity lock timer,
+There is no background sync, Syncthing integration, biometric unlock,
 field-by-field conflict combination, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
 and universal Android filesystem/runtime or interoperability qualification are not claimed.
 JVM/build evidence complements the isolated physical-device qualification recorded in the report.
@@ -506,16 +506,35 @@ manual application-data reset, use the previous application to preserve or
 synchronize every local vault and verify the other copy. Resetting permanently
 loses unsynchronized local vaults. The app never clears its own data.
 
-A-MV1 keeps one immutable selected controller for the process lifetime. The
+A-MV2 keeps one Application selection authority and an immutable activation/root
+binding for each controller. Ordinary Lock closes secrets/session and retains that
+selection, including the existing 15-minute inactivity and background policy.
+Internal complete retirement permanently rejects new commands, clears sensitive
+presentation, finishes admitted local work, closes the Java session/facade/store
+and lease, and drains entered provider work and completion handoffs before releasing
+selection. Only then can the next controller be constructed. A failed close retains
+the existing resources for explicit retry. A blocked provider retains selection in
+a neutral waiting state even after the local session closes; arbitrary SAF/Binder
+I/O cannot be proved cancelled by interruption, Future cancellation, executor
+shutdown or a timeout. Process restart may be required. Application shutdown remains
+best effort and never releases selection on the strength of executor shutdown.
+
+Activities observe selection and recreate their presentation for a new activation;
+old controller, observer, enrollment and picker callbacks retain their originating
+activation. Only the non-secret picker activation is retained in memory across configuration
+recreation; process death drops it and rejects the outstanding result.
+The
 registry supports multiple entries, but a registry with multiple entries is
 preserved and requires the later selection UI; no switching or inactive-vault
 Sync is exposed. Sync preferences use the selected local ID; comprehensive
 per-entry grant/retry management is deferred to A-MV3. Production unlock is
 password-only until A-MV4 provides per-entry biometric records and keys. The
 existing biometric cryptography remains unchanged and global credentials are
-never reused. A-MV2 must retire all controller/provider work before changing
-selection; releasing a local session lease alone does not permit switching.
+never reused. Complete A → B retirement is exercised through the Application's
+internal lifecycle authority by controlled qualification. No production Change Vault
+entry point, selection screen, inactive-vault Sync or per-entry biometric management
+is exposed; A-MV3/4/5 must complete those boundaries before general switching.
 
-The debug disposable-create probe is disabled while A-MV1 holds application
+The debug disposable-create probe remains disabled while the Application holds
 selection. Use the isolated registry qualification harness for synthetic creation;
 a diagnostic must not admit a second session beside the selected controller.

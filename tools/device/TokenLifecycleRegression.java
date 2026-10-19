@@ -15,26 +15,16 @@ import org.totipo.android.sync.*;
 import org.totipo.android.provider.ProviderSnapshot.*;
 import static org.totipo.android.provider.ProviderSnapshot.State.COMPLETE;
 
-/** Standalone physical qualification. Only cache-isolated public vaults and file-backed
+/** Standalone physical qualification. Only disposable-package public vaults and file-backed
  * transport are touched; original app owner, SAF grant and M3D evidence are retained.
  * This qualifies product UI/controller + real Java, not SAF or Syncthing transport.
- * Updated for automatic publication; historical results remain in their original reports. */
+ * Uses the actual Application selection authority; only its fixture transport/clock
+ * factory differs from startup. Historical results remain in their original reports. */
 public final class TokenLifecycleRegression extends Instrumentation {
-    private static LocalReplicaOwner fixtureOwner(java.nio.file.Path base) throws Exception {
-        java.nio.file.Files.createDirectories(base);
-        var registry = new VaultRegistry(base.toRealPath());
-        if (registry.entries().isEmpty()) registry.reserve(null);
-        return new LocalReplicaOwner.Admission().select(registry, registry.entries().get(0).id());
-    }
-    private static java.nio.file.Path fixtureRoot(java.nio.file.Path base) throws Exception {
-        var registry = new VaultRegistry(base.toRealPath());
-        return registry.root(registry.entries().get(0).id());
-    }
-
     private AndroidVaultController controller;
     private MainActivity activity;
     private Path base;
-    private Object original;
+    private TotipoApplication application;
     private int checks;
     private String step = "setup";
     private Object field(Object value, String name) throws Exception {
@@ -90,26 +80,31 @@ public final class TokenLifecycleRegression extends Instrumentation {
     @Override public void onCreate(Bundle args){super.onCreate(args);start();}
     @Override public void onStart(){Bundle output=new Bundle();int status=0;
         try {
+            check(getTargetContext().getPackageName().equals("org.totipo.securityqualification"),"isolated_package");
+            check(!getTargetContext().getSystemService(KeyguardManager.class).isKeyguardLocked(),"device_unlocked");
+            application=(TotipoApplication)getTargetContext().getApplicationContext();
+            runOnMainSync(()->application.selection().retire());
+            await(()->application.selection().snapshot()==null);
+            var registry=(VaultRegistry)field(application,"registry");
+            String localId=registry.entries().get(0).id();
             base=Files.createTempDirectory(getTargetContext().getCacheDir().toPath(),"token-lifecycle-");
             var port=new FixturePort(Files.createDirectory(base.resolve("transport")));
             Handler main=new Handler(Looper.getMainLooper());
-            controller=new AndroidVaultController(fixtureOwner(base.resolve("local")),new AndroidVaultController.Dispatcher(){
+            runOnMainSync(()->{try { controller=application.selection().select(registry,localId,owner->new AndroidVaultController(owner,new AndroidVaultController.Dispatcher(){
                 public void post(Runnable r){main.post(r);}
                 public Runnable after(long ms,Runnable r){main.postDelayed(r,ms);return ()->main.removeCallbacks(r);}
                 public void assertDispatchThread(){if(Looper.myLooper()!=Looper.getMainLooper())throw new AssertionError("UI thread");}
                 public void assertWorkerThread(){if(Looper.myLooper()==Looper.getMainLooper())throw new AssertionError("worker thread");}
             },new AndroidVaultController.Backend(),new TotpPresentation.Time(){
                 public Instant wall(){return Instant.ofEpochSecond(59);}public long elapsedMillis(){return SystemClock.elapsedRealtime();}
-            },null,new SyncFolderBinding(port));
+            },null,new SyncFolderBinding(port))).controller(); } catch(Exception failure) { throw new AssertionError(failure); }});
             await(this::idle);command(()->controller.create(new char[0]));
-            Path root=fixtureRoot(base.resolve("local"));Files.write(port.root.resolve("vault"),vault().coordinator().snapshotVault());
+            Files.write(port.root.resolve("vault"),vault().coordinator().snapshotVault());
             for(String account:List.of("edit@example.test","delete@example.test"))command(()->controller.addToken(
                 new AddTokenRequest("Totipo lifecycle public fixture",account,TotpAlgorithm.SHA1,6,30,"AEAQCAI".toCharArray())));
             await(()->controller.snapshot().view().tokens().size()==2);await(this::idle);
             var tokens=controller.snapshot().view().tokens();TokenId edit=tokens.stream().filter(t->t.alternatives().get(0).account().startsWith("edit")).findFirst().orElseThrow().id();
             TokenId delete=tokens.stream().filter(t->!t.id().equals(edit)).findFirst().orElseThrow().id();
-            Object application=getTargetContext().getApplicationContext();var appField=TotipoApplication.class.getDeclaredField("vaultController");appField.setAccessible(true);
-            original=appField.get(application);runOnMainSync(()->{try{appField.set(application,controller);}catch(Exception e){throw new AssertionError(e);}});
             activity=(MainActivity)startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
             runOnMainSync(()->activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));waitForIdleSync();
             await(()->activity.hasWindowFocus());check(activity.hasWindowFocus(),"unlocked_foreground_activity");
@@ -154,13 +149,12 @@ public final class TokenLifecycleRegression extends Instrumentation {
             runOnMainSync(()->{var list=dialog().getListView();list.performItemClick(list.getChildAt(choice),choice,list.getAdapter().getItemId(choice));});positive();
             await(()->!row(edit).conflict());waitForIdleSync();check(row(edit).alternatives().get(0).account().equals("remote@example.test"),"chosen_value_rendered");
             check(vault().session()==session,"resolve_same_session");verifyAutomaticPublication(port,before);
-            runOnMainSync(()->activity.finish());waitForIdleSync();command(()->controller.lock());controller.shutdown();
-            appField.set(application,original);original=null;
+            runOnMainSync(()->activity.finish());waitForIdleSync();command(()->controller.lock());
+            runOnMainSync(()->application.selection().retire());await(()->application.selection().snapshot()==null);
             output.putString("stream","TOKEN LIFECYCLE PASS checks="+checks+"; physical UI/controller + released Java; isolated file transport\n");status=-1;
         }catch(Throwable failure){if(controller!=null)output.putString("controller_state",controller.snapshot().state().toString());output.putString("location",Arrays.toString(Arrays.copyOf(failure.getStackTrace(),Math.min(4,failure.getStackTrace().length))));output.putString("stream","TOKEN LIFECYCLE FAIL step="+step+" type="+failure.getClass().getSimpleName()+" location="+Arrays.toString(Arrays.copyOf(failure.getStackTrace(),Math.min(3,failure.getStackTrace().length)))+" state="+(controller==null?"none":controller.snapshot().state())+"\n");}
         finally{
-            try{if(activity!=null)runOnMainSync(()->activity.finish());if(controller!=null){runOnMainSync(()->controller.lock());await(this::idle);controller.shutdown();}
-                if(original!=null){var f=TotipoApplication.class.getDeclaredField("vaultController");f.setAccessible(true);f.set(getTargetContext().getApplicationContext(),original);}
+            try{if(activity!=null)runOnMainSync(()->activity.finish());if(application!=null){runOnMainSync(()->application.selection().retire());await(()->application.selection().snapshot()==null);}
                 if(base!=null)try(var files=Files.walk(base)){for(Path path:files.sorted(Comparator.reverseOrder()).toList())Files.delete(path);}
             }catch(Throwable cleanup){status=0;output.putString("cleanup","FAIL");}
         }finish(status,output);

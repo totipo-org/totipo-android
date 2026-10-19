@@ -105,6 +105,14 @@ public final class AndroidVaultControllerTest {
         });
     }
     private void state(State next) throws Exception { await(() -> controller.snapshot().state() == next); }
+    private void restartProcessAdmission() throws Exception {
+        Path base = localRoot().getParent().getParent().getParent().getParent();
+        controller.shutdown();
+        var field = AndroidVaultController.class.getDeclaredField("worker"); field.setAccessible(true);
+        assertTrue(((ThreadPoolExecutor)field.get(controller)).awaitTermination(10, TimeUnit.SECONDS));
+        pump();
+        owner = TestReplicaOwners.create(base);
+    }
     private char[] password() { return "M1J disposable".toCharArray(); }
     private void create() throws Exception {
         start(); state(State.NO_LOCAL_VAULT);
@@ -150,6 +158,7 @@ public final class AndroidVaultControllerTest {
         try (var lease = owner.acquire(); var files = Files.list(lease.root())) {
             assertEquals(1, files.filter(p -> p.getFileName().toString().equals("vault")).count());
         }
+        restartProcessAdmission();
         start(); state(State.LOCKED); assertEquals(0, real.opens); // fresh process analogue; no auto-auth
         char[] wrong = "wrong".toCharArray(); accept(() -> controller.unlock(wrong));
         await(() -> controller.snapshot().error() == Error.AUTHENTICATION_FAILED);
@@ -1415,7 +1424,7 @@ public final class AndroidVaultControllerTest {
         var port = dailyFixture(); port.offline = true;
         finishChange(controller.beginTokenChange(lifecycleRow().id(), TokenChange.Kind.EDIT), "edited", "retained", 0);
         await(this::providerDone); assertTrue(port.pending);
-        automaticSync = false; lock(); controller.shutdown();
+        automaticSync = false; lock(); restartProcessAdmission();
         controller = new AndroidVaultController(owner, dispatcher, new RealBackend(), new TotpPresentation.Time() {
             public java.time.Instant wall() { return java.time.Instant.now(); }
             public long elapsedMillis() { return 0; }

@@ -24,14 +24,17 @@ public final class DebugTotpFixtureActivity extends Activity {
         TextView status = new TextView(this); panel.addView(status);
         try { checkAdapter(); status.setText("Adapter checks passed. Use a disposable vault only. Lock before arming."); }
         catch (RuntimeException | AssertionError failed) { status.setText("Adapter checks failed."); }
+        var application = (TotipoApplication)getApplication();
+        var origin = application.selection().snapshot();
         Button seed = new Button(this); seed.setText("Arm public RFC test fixture for next unlock/create");
         seed.setOnClickListener(ignored -> {
-            var controller = ((TotipoApplication) getApplication()).vaultController();
-            if (controller == null || (controller.snapshot().state() != AndroidVaultController.State.LOCKED
+            var controller = origin == null ? null : origin.controller();
+            if (controller == null || application.selection().snapshot() != origin || !controller.selectedAuthority()
+                    || (controller.snapshot().state() != AndroidVaultController.State.LOCKED
                     && controller.snapshot().state() != AndroidVaultController.State.NO_LOCAL_VAULT)) {
                 status.setText("Lock the disposable vault first."); return;
             }
-            DebugTotpFixture.arm();
+            DebugTotpFixture.arm(origin.activationId());
             startActivity(new Intent(this, MainActivity.class)); finish();
         });
         panel.addView(seed); setContentView(panel);

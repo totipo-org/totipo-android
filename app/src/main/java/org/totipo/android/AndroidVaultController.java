@@ -25,7 +25,7 @@ import org.totipo.android.reconcile.ForegroundVaultCoordinator.View;
  * Manual and inactivity Lock retire the same owned session. */
 public final class AndroidVaultController {
     public enum State { STARTING, NO_LOCAL_VAULT, LOCKED, UNLOCKING, CREATING, OPEN,
-        BUSY, ERROR_LOCKED, LOCKING, FAILED_CLOSE, ERROR_OPEN }
+        BUSY, ERROR_LOCKED, LOCKING, FAILED_CLOSE, ERROR_OPEN, RETIRING, RETIRED }
     public enum Error { NONE, AUTHENTICATION_FAILED, LOCAL_VAULT_ABSENT, LOCAL_STORAGE_UNAVAILABLE,
         LOCAL_STORAGE_UNSAFE, OPEN_FAILED, CREATE_FAILED, OBSERVATION_DIAGNOSTICS, CLOSE_FAILED, BUSY }
     public record Snapshot(State state, Error error, String message, View view,
@@ -91,6 +91,17 @@ public final class AndroidVaultController {
     private final InactivityLock inactivity;
     private volatile boolean lockRequested;
     private boolean shuttingDown;
+    public enum Retirement { NOT_REQUESTED, WAITING_WORK, CLOSE_FAILED, WAITING_PROVIDER, SUCCESS, SHUTDOWN }
+    private volatile boolean retiring;
+    private Retirement retirement = Retirement.NOT_REQUESTED;
+    private boolean retirementClosed, providerDrained, retirementFinishing;
+    private volatile boolean workerRetired;
+    private final Set<java.util.function.Consumer<Retirement>> retirementListeners = new LinkedHashSet<>();
+    public String activationId() { return owner.activationId(); }
+    public String localId() { return owner.localId(); }
+    public synchronized Retirement retirement() { return retirement; }
+    public synchronized boolean selectedAuthority() { return !retiring && !shuttingDown; }
+
     private PasswordBuffer enrollmentPassword;
     private Runnable enrollmentExpiry;
     public record Enrollment(String vaultId, PasswordBuffer password) {}
@@ -98,13 +109,22 @@ public final class AndroidVaultController {
     private boolean revealing;
     private Runnable revealTask;
     private boolean clearingPresentation;
+    private volatile Thread vaultWorkerThread;
+    private Runnable deferredProviderFinish;
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(1), action -> {
-                Thread thread = new Thread(action, "Totipo-vault"); thread.setDaemon(true); return thread;
+                Thread thread = new Thread(action, "Totipo-vault"); vaultWorkerThread = thread; thread.setDaemon(true); return thread;
             }, new ThreadPoolExecutor.AbortPolicy()) {
                 @Override protected void afterExecute(Runnable task, Throwable failure) {
                     super.afterExecute(task, failure);
+                    drainProviderFinish();
+                    persistPublicationHint();
                     retireRequestedLock();
+                    progressRetirement();
+                }
+                @Override protected void terminated() {
+                    workerRetired = true; // No controller monitor while executor holds its termination lock.
+                    dispatcher.post(() -> completeRetirement());
                 }
             };
     private final Set<Listener> listeners = new LinkedHashSet<>();
@@ -177,6 +197,7 @@ public final class AndroidVaultController {
     AndroidVaultController(LocalReplicaOwner owner, Dispatcher dispatcher, Backend backend,
                            TotpPresentation.Time time, TotpPresentation.Clipboard clipboard,
                            SyncFolderBinding binding) {
+        owner.bindController(this);
         this.syncBinding = binding;
         this.owner = owner; this.dispatcher = dispatcher; this.backend = backend;
         this.time = time;
@@ -219,7 +240,8 @@ public final class AndroidVaultController {
     private void publish(State state, Error error, String message, View view) {
         ArrayList<Listener> targets;
         synchronized (this) {
-            if (lockRequested && state != State.LOCKING && state != State.FAILED_CLOSE) return;
+            if (retiring && state != State.RETIRING && state != State.RETIRED && state != State.FAILED_CLOSE) return;
+            if (!retiring && lockRequested && state != State.LOCKING && state != State.FAILED_CLOSE) return;
             clearPresentation();
             snapshot = new Snapshot(state, error, message, view, null, 0, addOutcome);
             targets = new ArrayList<>(listeners);
@@ -298,7 +320,7 @@ public final class AndroidVaultController {
         return submit(state, message, operation, () -> {});
     }
     private synchronized boolean submit(State state, String message, Runnable operation, Runnable cancelled) {
-        if (shuttingDown || lockRequested || operating || pendingChange != null) return false;
+        if (retiring || shuttingDown || lockRequested || operating || pendingChange != null) return false;
         retireQueuedReveal();
         operating = true;
         Snapshot before = snapshot;
@@ -307,11 +329,14 @@ public final class AndroidVaultController {
             worker.execute(() -> {
                 dispatcher.assertWorkerThread();
                 try { discardCancelledJoin(); if (lockRequested) cancelled.run(); else operation.run(); }
-                finally { synchronized (this) {
-                    discardCancelledJoin(); operating = false; scheduleView(); queueSyncDrain();
-                    // Admission-dependent controls must also observe worker completion.
-                    for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
-                } }
+                finally {
+                    persistPublicationHint();
+                    synchronized (this) {
+                        discardCancelledJoin(); operating = false; scheduleView(); queueSyncDrain();
+                        // Admission-dependent controls must also observe worker completion.
+                        for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+                    }
+                }
             });
             return true;
         } catch (RejectedExecutionException rejected) {
@@ -321,6 +346,7 @@ public final class AndroidVaultController {
         }
     }
     private void discover() {
+        if (retiring) return;
         try {
             var result = backend.discover(owner);
             if (result.vault().lifecycle() != ForegroundVaultCoordinator.State.CLOSED) {
@@ -451,8 +477,11 @@ public final class AndroidVaultController {
         synchronized (this) { if (lockRequested) return; }
         ForegroundVaultCoordinator current = vault;
         synchronized (this) { addOutcome = null; changeResult = null; }
-        synchronized (this) { vaultId = org.totipo.Totipo.vaultId(current.snapshotVault()).hex(); }
-        synchronized (this) { observationOwner = current; }
+        String openedId = org.totipo.Totipo.vaultId(current.snapshotVault()).hex();
+        synchronized (this) {
+            if (lockRequested) return;
+            vaultId = openedId; observationOwner = current;
+        }
         observation = current.observe(() -> signal(current, false), () -> signal(current, true));
         synchronized (this) { if (lockRequested) return; inactivity.opened(); }
         render("Vault open");
@@ -461,12 +490,12 @@ public final class AndroidVaultController {
     private synchronized void signal(ForegroundVaultCoordinator source, boolean failed) {
         // Cancellation cannot retract an application callback already past FC's check.
         // Compare ownership in the same critical section as every signal mutation.
-        if (source != observationOwner || shuttingDown) return;
+        if (source != observationOwner || shuttingDown || retiring) return;
         clearPresentation(); presentationChanged();
         dirty = true; observationFailed |= failed; scheduleView();
     }
     private synchronized void scheduleView() {
-        if (!dirty || operating || revealing || viewQueued || unifiedSync) return;
+        if (retiring || shuttingDown || !dirty || operating || revealing || viewQueued || unifiedSync) return;
         viewQueued = true;
         try {
             worker.execute(() -> {
@@ -540,7 +569,9 @@ public final class AndroidVaultController {
     private byte[] preparedJoinCandidate; // Detached non-secret bytes; never a cached mutation authorization.
     private SyncFolderBinding.Request preparedJoinBinding;
     public synchronized boolean hasJoinCandidate() {
-        return preparedJoinCandidate != null && preparedJoinBinding != null && syncBinding.current(preparedJoinBinding);
+        return preparedJoinCandidate != null && preparedJoinBinding != null
+                && preparedJoinBinding.generation() == bindingGeneration
+                && java.util.Objects.equals(preparedJoinBinding.uri(), initialTreeUri);
     }
     /** Collect and structurally identify before the UI asks for a credential. */
     public synchronized boolean prepareJoin() {
@@ -638,7 +669,7 @@ public final class AndroidVaultController {
                     catch (IllegalStateException stale) { rechecked = null; }
                     if (!Arrays.equals(exact, rechecked)) { finishJoin(cancelled, "Sync folder changed. Try again."); return; }
                     synchronized (this) {
-                        if (!joinCurrent(request, generation, cancelled) || operating) { finishJoin(cancelled, null); return; }
+                        if (!localRequestCurrent(request, generation, cancelled, true) || operating) { finishJoin(cancelled, null); return; }
                         operating = true;
                     }
                     try {
@@ -672,14 +703,12 @@ public final class AndroidVaultController {
         try { worker.execute(() -> { if (joinCredential != null) { joinCredential.clear(); joinCredential = null; } }); }
         catch (RejectedExecutionException closed) { }
     }
-    private synchronized boolean joinCurrent(SyncFolderBinding.Request request, long generation,
-                                              java.util.concurrent.atomic.AtomicBoolean cancelled) {
-        return !cancelled.get() && generation == sessionGeneration && syncBinding.current(request)
-                && snapshot.state() == State.NO_LOCAL_VAULT && vault == null
-                && syncBinding.transport().grants(request.uri()).read();
+    private boolean joinCurrent(SyncFolderBinding.Request request, long generation,
+                                java.util.concurrent.atomic.AtomicBoolean cancelled) {
+        return providerRequestCurrent(request, generation, cancelled, true, false);
     }
     private void joinDispatch(java.util.concurrent.atomic.AtomicBoolean cancelled, Runnable action) {
-        try { worker.execute(() -> {
+        try { providerIo.dispatch(worker, () -> {
             dispatcher.assertWorkerThread();
             try { action.run(); }
             catch (RuntimeException failure) { finishJoin(cancelled, "Local enrollment was not affirmed. Check local storage."); }
@@ -773,7 +802,7 @@ public final class AndroidVaultController {
     }
     private volatile boolean unifiedSync;
     private boolean syncPending, syncDrainQueued, foreground;
-    private boolean pendingPublication;
+    private boolean pendingPublication, publicationHintDirty;
     private String syncStatus = "", lastSyncResult = "Not attempted", vaultId = "Locked";
     /** Application-level foreground transitions, including enrollment Activities; rotation is coalesced. */
     public synchronized void foregroundChanged(boolean active) {
@@ -790,21 +819,31 @@ public final class AndroidVaultController {
     }
     private void setPendingPublication(boolean pending) {
         pendingPublication = pending;
+        publicationHintDirty = true;
+    }
+    /** Preferences can block too. Persist on the admitted worker outside the controller
+     * monitor, before closure/termination; immutable local evidence remains authoritative. */
+    private void persistPublicationHint() {
+        boolean pending;
+        synchronized (this) {
+            if (!publicationHintDirty) return;
+            publicationHintDirty = false; pending = pendingPublication;
+        }
         if (syncBinding != null) syncBinding.pendingPublication(pending);
     }
     private synchronized void requestAutomaticSync() {
-        if (syncBinding == null || syncBinding.initialUri() == null) return;
+        if (retiring || shuttingDown || syncBinding == null || initialTreeUri == null) return;
         syncPending = true;
         queueSyncDrain();
     }
     private synchronized void queueSyncDrain() {
-        if (!syncPending || syncDrainQueued) return;
+        if (retiring || shuttingDown || !syncPending || syncDrainQueued) return;
         syncDrainQueued = true;
         dispatcher.post(() -> {
             synchronized (this) {
                 syncDrainQueued = false;
                 if (!syncPending || operating || viewQueued || providerActive || pendingChange != null) return;
-                if (snapshot.state() != State.OPEN || syncBinding == null || syncBinding.initialUri() == null) {
+                if (snapshot.state() != State.OPEN || syncBinding == null || initialTreeUri == null) {
                     syncPending = false; return;
                 }
                 syncPending = false;
@@ -813,12 +852,13 @@ public final class AndroidVaultController {
         });
     }
     public synchronized boolean canSync() {
-        return snapshot.state() == State.OPEN && syncBinding != null && syncBinding.initialUri() != null
+        return snapshot.state() == State.OPEN && syncBinding != null && initialTreeUri != null
                 && !operating && pendingChange == null && !providerActive;
     }
     /** One active operation plus one pending request. Failed attempts never schedule their own retry. */
     public synchronized boolean sync() {
         dispatcher.assertDispatchThread();
+        if (retiring || shuttingDown) return false;
         if (unifiedSync) { syncPending = true; return true; }
         if (!canSync()) return false;
         syncPending = false;
@@ -882,8 +922,9 @@ public final class AndroidVaultController {
                 if (!vault.observeForSync(cancelled::get)) {
                     finishOutbound(cancelled, "Observation incomplete"); return;
                 }
+                if (!syncObservationCurrent(request, session, cancelled)) { finishOutbound(cancelled, null); return; }
                 synchronized (this) {
-                    if (!syncObservationCurrent(request, session, cancelled)) { finishOutbound(cancelled, null); return; }
+                    if (!localRequestCurrent(request, session, cancelled, false)) { finishOutbound(cancelled, null); return; }
                     render("Vault open");
                     if (!syncBinding.view().writable()) { finishOutbound(cancelled, "Folder is read-only for Totipo."); return; }
                 }
@@ -907,12 +948,18 @@ public final class AndroidVaultController {
     public synchronized SyncView syncView() { return syncView; }
     /** Private picker hint only; never rendered in product status. */
     public synchronized String initialTreeUri() { return initialTreeUri; }
-    public synchronized boolean canManageSyncFolder() { return syncBinding != null && !operating && pendingChange == null; }
+    public synchronized boolean canManageSyncFolder() { return !retiring && !shuttingDown && syncBinding != null && !operating && pendingChange == null; }
     public synchronized boolean canImportProviderChanges() {
         return canManageSyncFolder() && !providerActive && snapshot.state() == State.OPEN
                 && syncView.binding().status() == SyncFolderBinding.Status.READY;
     }
     private synchronized void updateBinding(String message) {
+        if (Thread.currentThread() != vaultWorkerThread) {
+            // Admission/UI paths use only detached cached metadata. A worker may be
+            // blocked inside the binding's platform grant/preferences operations.
+            if (message != null) syncView = new SyncView(syncView.binding(), message);
+            return;
+        }
         var binding = syncBinding.view();
         initialTreeUri = syncBinding.initialUri();
         bindingGeneration = syncBinding.request().generation();
@@ -989,8 +1036,8 @@ public final class AndroidVaultController {
                                  SyncFolderBinding.Request observed) {
         SyncFolderBinding.Request request = observed;
         try {
+            if (request == null) { syncBinding.check(); request = syncBinding.request(); }
             synchronized (this) {
-                if (request == null) { syncBinding.check(); request = syncBinding.request(); }
                 outboundIdentity = request;
                 if (cancelled.get() || session != sessionGeneration || vault == null
                         || !syncBinding.view().writable() || !syncBinding.view().readable()) {
@@ -1001,8 +1048,9 @@ public final class AndroidVaultController {
             var identity = request;
             providerIo.submit(syncBinding.transport(), identity, true, preflight ->
                 outboundDispatch(cancelled, () -> {
+                    if (!outboundCurrent(identity, session, cancelled)) { finishOutbound(cancelled, null); return; }
                     synchronized (this) {
-                        if (!outboundCurrent(identity, session, cancelled)) { finishOutbound(cancelled, null); return; }
+                        if (!localRequestCurrent(identity, session, cancelled, false)) { finishOutbound(cancelled, null); return; }
                         syncBinding.accessibility(identity, preflight.accessible());
                     }
                     if (!preflight.accessible() || preflight.scan() == null) {
@@ -1017,9 +1065,7 @@ public final class AndroidVaultController {
                     }
                     providerIo.publish(syncBinding.transport(), identity, plan.target(), plan.missing(), cancelled::get,
                         result -> outboundDispatch(cancelled, () -> {
-                            synchronized (this) {
-                                if (!outboundCurrent(identity, session, cancelled)) { finishOutbound(cancelled, null); return; }
-                            }
+                            if (!outboundCurrent(identity, session, cancelled)) { finishOutbound(cancelled, null); return; }
                             finishOutbound(cancelled, vault.outboundConfirmation(plan, result));
                         }));
                 }));
@@ -1028,28 +1074,36 @@ public final class AndroidVaultController {
                     ? "Local publication capacity exceeded; nothing published." : "Local publication source invalid; nothing published.");
         }
     }
-    private synchronized boolean syncObservationCurrent(SyncFolderBinding.Request request, long session,
-                                                         java.util.concurrent.atomic.AtomicBoolean cancelled) {
-        if (cancelled.get() || session != sessionGeneration || !syncBinding.current(request)
-                || snapshot.state() != State.OPEN || vault == null) return false;
-        if (!syncBinding.transport().grants(request.uri()).read()) {
-            syncBinding.check(); cancelled.set(true); return false;
-        }
-        return true;
+    private synchronized boolean localRequestCurrent(SyncFolderBinding.Request request, long session,
+            java.util.concurrent.atomic.AtomicBoolean cancelled, boolean joining) {
+        return !retiring && !shuttingDown && !cancelled.get() && session == sessionGeneration
+                && syncBinding.current(request) && (joining
+                    ? snapshot.state() == State.NO_LOCAL_VAULT && vault == null
+                    : snapshot.state() == State.OPEN && vault != null);
     }
-    private synchronized boolean outboundCurrent(SyncFolderBinding.Request request, long session,
-                                                 java.util.concurrent.atomic.AtomicBoolean cancelled) {
-        if (cancelled.get() || session != sessionGeneration || !syncBinding.current(request)
-                || snapshot.state() != State.OPEN || vault == null) return false;
+    /** Platform grant queries may enter Binder. Never hold the controller monitor
+     * while querying them; recheck the same activation/session after the call returns. */
+    private boolean providerRequestCurrent(SyncFolderBinding.Request request, long session,
+            java.util.concurrent.atomic.AtomicBoolean cancelled, boolean joining, boolean writing) {
+        dispatcher.assertWorkerThread();
+        if (!localRequestCurrent(request, session, cancelled, joining)) return false;
         var grants = syncBinding.transport().grants(request.uri());
-        if (!grants.read() || !grants.write()) {
+        if (!grants.read() || writing && !grants.write()) {
             syncBinding.check(); cancelled.set(true); return false;
         }
-        return true;
+        return localRequestCurrent(request, session, cancelled, joining);
+    }
+    private boolean syncObservationCurrent(SyncFolderBinding.Request request, long session,
+            java.util.concurrent.atomic.AtomicBoolean cancelled) {
+        return providerRequestCurrent(request, session, cancelled, false, false);
+    }
+    private boolean outboundCurrent(SyncFolderBinding.Request request, long session,
+            java.util.concurrent.atomic.AtomicBoolean cancelled) {
+        return providerRequestCurrent(request, session, cancelled, false, true);
     }
     private void outboundDispatch(java.util.concurrent.atomic.AtomicBoolean cancelled, Runnable action) {
         try {
-            worker.execute(() -> {
+            providerIo.dispatch(worker, () -> {
                 dispatcher.assertWorkerThread();
                 try { action.run(); }
                 catch (org.totipo.android.provider.ProviderVaultIdentity.Blocked blocked) { finishOutbound(cancelled, blocked.status().message()); }
@@ -1057,36 +1111,57 @@ public final class AndroidVaultController {
             });
         } catch (RejectedExecutionException busy) { finishOutbound(cancelled, null); }
     }
-    private synchronized void finishOutbound(java.util.concurrent.atomic.AtomicBoolean cancelled, String message) {
-        if (outboundCancelled != cancelled) return;
-        if (unifiedSync) {
-            boolean success = !cancelled.get() && ("Local changes published".equals(message)
-                    || "No local changes to publish".equals(message));
-            if (success) setPendingPublication(false);
-            syncStatus = success ? "" : cancelled.get() ? (pendingPublication ? "Changes not synced" : "")
-                    : productSyncError(message);
-            lastSyncResult = success ? "Verified against bound shared folder" : syncStatus;
-            unifiedSync = false;
+    private void finishOutbound(java.util.concurrent.atomic.AtomicBoolean cancelled, String message) {
+        boolean completingUnified;
+        synchronized (this) {
+            if (retiring || shuttingDown || outboundCancelled != cancelled) return;
+            if (Thread.currentThread() != vaultWorkerThread) {
+                // A rejected completion cannot touch binding state from provider/main
+                // while the vault worker may hold its monitor inside platform I/O.
+                deferredProviderFinish = () -> finishOutbound(cancelled, message);
+                try { worker.execute(() -> {}); }
+                catch (RejectedExecutionException occupied) { /* afterExecute drains it */ }
+                return;
+            }
+            completingUnified = unifiedSync;
+            if (completingUnified) {
+                boolean success = !cancelled.get() && ("Local changes published".equals(message)
+                        || "No local changes to publish".equals(message));
+                if (success) setPendingPublication(false);
+                syncStatus = success ? "" : cancelled.get() ? (pendingPublication ? "Changes not synced" : "")
+                        : productSyncError(message);
+                lastSyncResult = success ? "Verified against bound shared folder" : syncStatus;
+            }
         }
-        providerActive = false;
-        outboundCancelled = null;
-        if (!cancelled.get() && outboundIdentity != null && syncBinding.current(outboundIdentity)
-                && syncBinding.view().status() == SyncFolderBinding.Status.CHECKING)
-            syncBinding.accessibility(outboundIdentity, true); // Prior READY retained after local-only failure.
-        outboundIdentity = null;
-        updateBinding(cancelled.get() ? null : message);
-        // Binding replacement may have been waiting for the occupied provider lane.
-        if (syncBinding.view().status() == SyncFolderBinding.Status.CHECKING) startProvider(false);
-        scheduleView(); notifySync(); queueSyncDrain();
+        persistPublicationHint(); // No controller monitor, and providerActive still owns completion.
+        synchronized (this) {
+            if (retiring || shuttingDown || outboundCancelled != cancelled) return;
+            if (completingUnified) unifiedSync = false;
+            providerActive = false;
+            outboundCancelled = null;
+            if (!cancelled.get() && outboundIdentity != null && syncBinding.current(outboundIdentity)
+                    && syncBinding.view().status() == SyncFolderBinding.Status.CHECKING)
+                syncBinding.accessibility(outboundIdentity, true);
+            outboundIdentity = null;
+            updateBinding(cancelled.get() ? null : message);
+            if (syncBinding.view().status() == SyncFolderBinding.Status.CHECKING) startProvider(false);
+            scheduleView(); notifySync(); queueSyncDrain();
+        }
+    }
+    private void drainProviderFinish() {
+        Runnable finish;
+        synchronized (this) { finish = deferredProviderFinish; deferredProviderFinish = null; }
+        discardCancelledJoin();
+        if (finish != null) finish.run();
     }
     private synchronized boolean startProvider(boolean importing) {
-        if (providerActive || syncBinding.view().status() != SyncFolderBinding.Status.CHECKING) return false;
+        if (retiring || shuttingDown || providerActive || syncBinding.view().status() != SyncFolderBinding.Status.CHECKING) return false;
         var request = syncBinding.request();
         long session = sessionGeneration;
         providerActive = true;
         try {
             providerIo.submit(syncBinding.transport(), request, importing,
-                    result -> dispatcher.post(() -> providerReturned(result, session)));
+                    result -> providerIo.dispatch(dispatcher::post, () -> providerReturned(result, session)));
             return true;
         } catch (RejectedExecutionException rejected) {
             providerActive = false;
@@ -1098,9 +1173,10 @@ public final class AndroidVaultController {
         // The callback only admits detached transport data. All binding/session work runs on vault worker.
         // A result arriving during an incompatible command is discarded, never retained for unlock.
         try {
-            worker.execute(() -> {
+            providerIo.dispatch(worker, () -> {
                 dispatcher.assertWorkerThread();
                 synchronized (this) {
+                    if (retiring || shuttingDown) return;
                     providerActive = false;
                     queueSyncDrain();
                     if (!syncBinding.current(result.request())) {
@@ -1109,8 +1185,11 @@ public final class AndroidVaultController {
                         for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
                         return;
                     }
-                    // Persisted grants are local/platform metadata; recheck permission loss during IPC.
-                    syncBinding.check();
+                }
+                // Platform metadata may block in Binder. No controller monitor is held.
+                syncBinding.check();
+                synchronized (this) {
+                    if (retiring || shuttingDown) return;
                     if (!syncBinding.current(result.request())) {
                         updateBinding(null);
                         for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
@@ -1168,6 +1247,11 @@ public final class AndroidVaultController {
     public synchronized void shutdown() {
         if (shuttingDown) return;
         shuttingDown = true;
+        if (retiring) {
+            retirement = Retirement.SHUTDOWN; notifyRetirement();
+            // Shutdown never releases selection, even if termination follows.
+            providerIo.close(); wakeRetirement(); worker.shutdown(); return;
+        }
         requestLock();
         pendingChange = null; syncPending = false;
         cancelOutbound();
@@ -1196,11 +1280,99 @@ public final class AndroidVaultController {
         return admitted + (ignored ? " Invalid or unavailable candidates ignored." : "");
     }
     public synchronized boolean lock() {
+        if (retiring) { if (retirement == Retirement.CLOSE_FAILED) retryRetirement(); return true; }
         State state = snapshot.state();
         if (lockRequested) return true;
         if (state != State.OPEN && state != State.BUSY && state != State.ERROR_OPEN && state != State.FAILED_CLOSE) return false;
         requestLock();
         return true;
+    }
+    /** Permanently revoke this activation. Admission closes synchronously; admitted
+     * crypto/storage work finishes on the existing worker. Completion is asynchronous. */
+    public synchronized Retirement retire(java.util.function.Consumer<Retirement> listener) {
+        dispatcher.assertDispatchThread();
+        if (listener != null) retirementListeners.add(listener);
+        if (shuttingDown) { retirement = Retirement.SHUTDOWN; notifyRetirement(); return retirement; }
+        if (retiring) { notifyRetirement(); return retirement; }
+        retiring = true;
+        retirement = Retirement.WAITING_WORK;
+        inactivity.stop(); cancelBiometricEnrollment();
+        lockRequested = true; syncPending = false; pendingChange = null;
+        preparedJoinCandidate = null; addOutcome = null; changeResult = null;
+        cancelOutbound(); sessionGeneration++;
+        publish(State.RETIRING, Error.NONE, "Closing vault…", null);
+        notifyRetirement();
+        providerIo.retire(() -> dispatcher.post(() -> {
+            synchronized (AndroidVaultController.this) { providerDrained = true; }
+            wakeRetirement();
+        }));
+        retireQueuedReveal();
+        wakeRetirement();
+        return retirement;
+    }
+    public synchronized void retryRetirement() {
+        dispatcher.assertDispatchThread();
+        if (retirement != Retirement.CLOSE_FAILED || shuttingDown) return;
+        retirement = Retirement.WAITING_WORK;
+        publish(State.RETIRING, Error.NONE, "Closing vault…", null);
+        if (workerRetired) completeRetirement(); else wakeRetirement();
+    }
+    private void wakeRetirement() {
+        synchronized (this) {
+            if (!retiring || retirementFinishing) return;
+            try { worker.execute(() -> {}); }
+            catch (RejectedExecutionException occupied) { /* afterExecute retries */ }
+        }
+    }
+    private void progressRetirement() {
+        synchronized (this) {
+            if (!retiring || operating || retirementFinishing
+                    || retirement == Retirement.CLOSE_FAILED) return;
+            operating = true;
+        }
+        try {
+            if (joinCredential != null) { joinCredential.clear(); joinCredential = null; }
+            if (!retirementClosed) {
+                owner.seal();
+                if (!closeOwned()) {
+                    synchronized (this) { retirement = shuttingDown ? Retirement.SHUTDOWN : Retirement.CLOSE_FAILED; notifyRetirement(); }
+                    return;
+                }
+                retirementClosed = true;
+            }
+            synchronized (this) {
+                if (shuttingDown) return;
+                if (!providerDrained) {
+                    retirement = Retirement.WAITING_PROVIDER;
+                    publish(State.RETIRING, Error.NONE,
+                            "Waiting for storage provider to finish. Vault is closed. If the provider remains stuck, restart the application process.", null);
+                    notifyRetirement(); return;
+                }
+                retirementFinishing = true;
+                worker.shutdown(); // terminated() is the final worker boundary, not this return.
+            }
+        } finally { synchronized (this) { operating = false; } }
+    }
+    synchronized boolean retirementReady() {
+        return retiring && !shuttingDown && workerRetired && retirementFinishing && retirementClosed && providerDrained;
+    }
+    private synchronized void completeRetirement() {
+        dispatcher.assertDispatchThread();
+        if (!retirementReady()) return;
+        if (!owner.releaseRetired(this)) {
+            retirement = Retirement.CLOSE_FAILED;
+            publish(State.FAILED_CLOSE, Error.CLOSE_FAILED, "Storage ownership remains held. Retry closure after the outstanding owner finishes, or restart the application process.", null);
+            notifyRetirement(); return;
+        }
+        retirement = Retirement.SUCCESS;
+        publish(State.RETIRED, Error.NONE, "No vault selected", null);
+        notifyRetirement();
+        listeners.clear(); retirementListeners.clear();
+    }
+    private void notifyRetirement() {
+        // Like presentation snapshots, queued notifications report the latest result.
+        // Shutdown may invalidate a success awaiting its Application handoff.
+        for (var listener : new ArrayList<>(retirementListeners)) dispatcher.post(() -> listener.accept(retirement()));
     }
     private void requestLock() {
         if (lockRequested) return;
@@ -1218,7 +1390,7 @@ public final class AndroidVaultController {
         }
     }
     private void retireRequestedLock() {
-        synchronized (this) { if (!lockRequested || operating) return; operating = true; }
+        synchronized (this) { if (retiring || !lockRequested || operating) return; operating = true; }
         try {
             boolean closed = closeOwned();
             synchronized (this) { lockRequested = false; }
@@ -1235,6 +1407,7 @@ public final class AndroidVaultController {
     }
     private void failedClose() {
         publish(State.FAILED_CLOSE, Error.CLOSE_FAILED,
-                "Vault closure failed; ownership is retained. Retry Lock.", null);
+                retiring ? "Vault closure failed; selection ownership is retained. Retry closure."
+                        : "Vault closure failed; ownership is retained. Retry Lock.", null);
     }
 }
