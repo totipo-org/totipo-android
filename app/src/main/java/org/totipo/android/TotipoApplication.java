@@ -31,7 +31,7 @@ public final class TotipoApplication extends Application {
                 java.nio.file.Path privateBase = noBackup.getParentFile().getCanonicalFile().toPath().resolve(noBackup.getName());
                 java.security.KeyStore keys = java.security.KeyStore.getInstance("AndroidKeyStore");
                 keys.load(null);
-                if (keys.containsAlias(BiometricRecord.ALIAS))
+                if (keys.containsAlias(BiometricRecord.LEGACY_ALIAS))
                     throw new VaultRegistry.RecoveryRequired(VaultRegistry.LEGACY_DIAGNOSTIC);
                 registry = new VaultRegistry(privateBase);
                 syncGrants = org.totipo.android.sync.AndroidSyncFolderPort.ownership(this, registry);
@@ -94,6 +94,28 @@ public final class TotipoApplication extends Application {
             controller.foregroundChanged(started > 0);
             return controller;
         });
+    }
+    String selectedVaultLabel(AndroidVaultController controller) {
+        var selected = selection.snapshot();
+        if (selected != null && selected.controller() == controller) try {
+            String label = registry.entry(selected.localId()).label();
+            if (label != null) return label;
+        } catch (java.io.IOException unavailable) { /* presentation only */ }
+        return "Selected vault";
+    }
+    BiometricCredentials biometricCredentials(AndroidVaultController controller) throws java.io.IOException {
+        var selected = selection.snapshot();
+        if (selected == null || selected.controller() != controller || !controller.selectedAuthority())
+            throw new IllegalStateException("Biometric activation retired");
+        return new AndroidBiometricCredentials(this, registry, selected.localId());
+    }
+    /** A-MV5 hook. No session/store deletion, and never usable while that entry is selected. */
+    void cleanupRetiredEntryBiometrics(String id) throws Exception {
+        synchronized (selection) {
+            selection.requireRetiredEntry(id);
+            registry.entry(id);
+            new AndroidBiometricCredentials(this, registry, id).delete();
+        }
     }
     public AndroidVaultController vaultController() { var value = selection.snapshot(); return value == null ? null : value.controller(); }
 }

@@ -40,8 +40,24 @@ public final class ControllerRetirementRegression extends Instrumentation {
         var copied = new AtomicBoolean();
         await(() -> {
             runOnMainSync(() -> {
-                if (controller.snapshot().revealedCode() != null && controller.copyShownCode()) copied.set(true);
-                else controller.showCode(controller.snapshot().view().tokens().get(0).id());
+                // Android denies clipboard reads during the focus gap after recreation.
+                // Prove a real platform copy owned by this controller before testing cleanup.
+                if (!activity.get().hasWindowFocus()) return;
+                if (controller.snapshot().revealedCode() != null && controller.copyShownCode()) {
+                    var clipboard = getTargetContext().getSystemService(android.content.ClipboardManager.class);
+                    var clip = clipboard.getPrimaryClip();
+                    var ownership = field(field(controller, "presentation"), "ownership");
+                    if (clip != null && clip.getItemCount() == 1 && ownership != null) {
+                        var extras = clip.getDescription().getExtras();
+                        copied.set(extras != null && PlatformCodeClipboard.matches(
+                                (String)field(ownership, "marker"), (String)field(ownership, "text"),
+                                extras.getString(PlatformCodeClipboard.OWNER), clip.getItemAt(0).getText(),
+                                clip.getDescription().getMimeTypeCount() == 1
+                                        && clip.getDescription().hasMimeType(android.content.ClipDescription.MIMETYPE_TEXT_PLAIN)
+                                        && clip.getItemAt(0).getUri() == null && clip.getItemAt(0).getIntent() == null
+                                        && clip.getItemAt(0).getHtmlText() == null));
+                    }
+                } else controller.showCode(controller.snapshot().view().tokens().get(0).id());
             });
             return copied.get();
         });

@@ -56,7 +56,12 @@ public final class MainActivity extends Activity {
         super.onResume(); resumed = true;
         if (controller != null) { controller.checkInactivity(); render(controller.snapshot()); offerBiometric(); }
     }
-    @Override protected void onPause() { resumed = false; super.onPause(); }
+    @Override protected void onPause() {
+        resumed = false;
+        if (biometric != null) biometric.close();
+        if (controller != null) controller.cancelBiometricEnrollment();
+        super.onPause();
+    }
 
     private final AndroidVaultController.Listener listener = new AndroidVaultController.Listener() {
         public void changed(Snapshot state) { if (!replacing) render(state); }
@@ -101,8 +106,11 @@ public final class MainActivity extends Activity {
             unsupported.setPadding(24, 80, 24, 24); setContentView(unsupported);
         } else {
             android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
-            biometric = new BiometricUnlock(controller, new PendingVaultBiometricCredentials(),
-                    new FrameworkBiometricPrompt(this), (delay, action) -> {
+            BiometricCredentials credentials;
+            try { credentials = ((TotipoApplication) getApplication()).biometricCredentials(controller); }
+            catch (java.io.IOException | IllegalStateException unavailable) { credentials = new UnavailableVaultBiometricCredentials(controller.localId()); }
+            biometric = new BiometricUnlock(controller, credentials,
+                    new FrameworkBiometricPrompt(this, ((TotipoApplication) getApplication()).selectedVaultLabel(controller)), (delay, action) -> {
                         handler.postDelayed(action, delay); return () -> handler.removeCallbacks(action);
                     });
             biometric.changed = () -> handler.post(() -> { if (resumed && !replacing) render(controller.snapshot()); });
@@ -146,6 +154,8 @@ public final class MainActivity extends Activity {
         if (managing && (state.state() == State.OPEN || state.state() == State.LOCKED || state.state() == State.NO_LOCAL_VAULT)) next = "manage";
         if (!next.equals(surface)) build(next);
         String message = next.equals("open") ? mainStatus(state) : state.message();
+        if (!biometric.message().isEmpty() && (next.equals("unlock") || next.equals("open")))
+            message = message.isEmpty() ? biometric.message() : message + "\n" + biometric.message();
         if (!TextUtils.equals(status.getText(), message)) status.setText(message);
         status.setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
         var sync = controller.syncView();
@@ -236,9 +246,9 @@ public final class MainActivity extends Activity {
             if (next.equals("join")) button("Cancel Join", () -> { controller.cancelJoin(); clearPasswords(); joining = false; build("create"); render(controller.snapshot()); });
             if (next.equals("unlock") && biometric.available()) {
                 if (biometric.configured()) button("Use biometrics", () -> { biometricOffered = true; biometric.unlock(); });
-                else {
+                {
                     enableBiometric = new android.widget.CheckBox(this);
-                    enableBiometric.setText("Enable biometric unlock on this device");
+                    enableBiometric.setText(biometric.configured() ? "Replace biometric unlock for this vault" : "Enable biometric unlock for this vault");
                     enableBiometric.setSaveEnabled(false); content.addView(enableBiometric);
                 }
             }
@@ -346,7 +356,7 @@ public final class MainActivity extends Activity {
             new AlertDialog.Builder(this).setTitle("Diagnostics").setMessage(controller.diagnostics())
                     .setPositiveButton("Close", null).show(); return true;
         });
-        if (controller.snapshot().state() == State.OPEN && biometric.configured())
+        if (controller.snapshot().state() == State.OPEN)
             menu.getMenu().add("Disable biometric unlock").setOnMenuItemClickListener(item -> {
                 if (!biometric.disable()) status.setText("Biometric unlock could not be disabled. Try again."); return true;
             });

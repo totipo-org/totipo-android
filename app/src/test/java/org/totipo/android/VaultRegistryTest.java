@@ -262,10 +262,11 @@ public final class VaultRegistryTest {
         assertThrows(IOException.class, this::registry);
         writeChecksummedPayload(Arrays.copyOf(payload, payload.length + 1)); assertThrows(IOException.class, this::registry);
     }
-    @Test public void intermediateBiometricsNeverTouchesGlobalCredentials() {
-        var credentials = new PendingVaultBiometricCredentials();
+    @Test public void unavailableBiometricStorageNeverTouchesGlobalCredentialsOrClaimsCleanup() {
+        var credentials = new UnavailableVaultBiometricCredentials("0".repeat(32));
         assertFalse(credentials.available()); assertFalse(credentials.configured());
         assertThrows(IllegalStateException.class, credentials::unlock);
-        assertThrows(IllegalStateException.class, () -> credentials.enrollment("id")); credentials.delete();
+        assertThrows(IllegalStateException.class, () -> credentials.enrollment("id"));
+        assertThrows(IllegalStateException.class, credentials::delete);
     }
 }

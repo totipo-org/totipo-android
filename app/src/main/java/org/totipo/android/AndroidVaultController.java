@@ -103,8 +103,39 @@ public final class AndroidVaultController {
     public synchronized boolean selectedAuthority() { return !retiring && !shuttingDown; }
 
     private PasswordBuffer enrollmentPassword;
+    private ForegroundVaultCoordinator enrollmentOwner;
+    private org.totipo.VaultId enrollmentVaultIdentity;
     private Runnable enrollmentExpiry;
-    public record Enrollment(String vaultId, PasswordBuffer password) {}
+    private long enrollmentEpoch;
+    public record Enrollment(String localId, String activationId, long session, String vaultId, PasswordBuffer password) {}
+    private long biometricEpoch;
+    static final class BiometricRequest {
+        final AndroidVaultController origin;
+        final long epoch;
+        private BiometricRequest(AndroidVaultController origin, long epoch) { this.origin = origin; this.epoch = epoch; }
+    }
+    synchronized BiometricRequest beginBiometricUnlock() {
+        if (!selectedAuthority() || lockRequested || snapshot.state() != State.LOCKED || operating) return null;
+        return new BiometricRequest(this, ++biometricEpoch);
+    }
+    synchronized boolean biometricCurrent(BiometricRequest request) {
+        return request != null && request.origin == this && request.epoch == biometricEpoch
+                && selectedAuthority() && !lockRequested;
+    }
+    synchronized void cancelBiometricUnlock(BiometricRequest request) {
+        if (request != null && request.origin == this && request.epoch == biometricEpoch) biometricEpoch++;
+    }
+    @FunctionalInterface interface CredentialWrite { void run() throws Exception; }
+    /** Linearizes durable enrollment against Lock/retirement; no Java provider calls. */
+    synchronized boolean completeBiometricEnrollment(Enrollment enrollment, CredentialWrite write) throws Exception {
+        if (!selectedAuthority() || lockRequested || snapshot.state() != State.OPEN
+                || !localId().equals(enrollment.localId()) || !activationId().equals(enrollment.activationId())
+                || sessionGeneration != enrollment.session() || enrollmentPassword != enrollment.password()
+                || vault == null || enrollmentOwner != vault || enrollmentVaultIdentity == null
+                || !enrollmentVaultIdentity.hex().equals(enrollment.vaultId())) return false;
+        write.run();
+        return true;
+    }
     private long presentationEpoch;
     private boolean revealing;
     private Runnable revealTask;
@@ -372,27 +403,32 @@ public final class AndroidVaultController {
     public synchronized boolean unlock(char[] credential) { return authenticate(credential, false); }
     public synchronized boolean create(char[] credential) { return authenticate(credential, true); }
     public synchronized boolean unlockAndEnroll(char[] credential, java.util.function.Consumer<Enrollment> ready) {
-        return authenticate(credential, false, null, ready, () -> {});
+        return authenticate(credential, false, null, ready, () -> {}, null);
     }
-    public synchronized boolean unlockBiometric(char[] credential, String expectedVaultId, Runnable invalid) {
-        return authenticate(credential, false, expectedVaultId, null, invalid);
+    synchronized boolean unlockBiometric(BiometricRequest request, char[] credential, String expectedVaultId, Runnable invalid) {
+        if (!biometricCurrent(request) || expectedVaultId == null || !expectedVaultId.matches("[0-9a-f]{64}")) {
+            Arrays.fill(credential, '\0'); return false;
+        }
+        return authenticate(credential, false, expectedVaultId, null, invalid, request);
     }
     public synchronized void cancelBiometricEnrollment() {
+        enrollmentEpoch++;
         if (enrollmentPassword != null) enrollmentPassword.close();
-        enrollmentPassword = null;
+        enrollmentPassword = null; enrollmentOwner = null; enrollmentVaultIdentity = null;
         if (enrollmentExpiry != null) enrollmentExpiry.run();
         enrollmentExpiry = null;
     }
     private boolean authenticate(char[] credential, boolean create) {
-        return authenticate(credential, create, null, null, () -> {});
+        return authenticate(credential, create, null, null, () -> {}, null);
     }
     private boolean authenticate(char[] credential, boolean create, String expectedVaultId,
-                                 java.util.function.Consumer<Enrollment> ready, Runnable invalid) {
+                                 java.util.function.Consumer<Enrollment> ready, Runnable invalid, BiometricRequest biometricRequest) {
         boolean admitted = false;
         try {
             State expected = create ? State.NO_LOCAL_VAULT : State.LOCKED;
             if (snapshot.state() != expected) return false;
             cancelOutbound();
+            long enrollmentRequest = enrollmentEpoch;
             admitted = submit(create ? State.CREATING : State.UNLOCKING,
                     create ? "Creating vault…" : "Unlocking vault…", () -> {
                 // The existing coordinator consumes/wipes the open input. Only explicit
@@ -417,12 +453,17 @@ public final class AndroidVaultController {
                                 if (closeOwned()) discover();
                                 return;
                             }
-                            opened();
+                            if (!opened(biometricRequest)) { if (closeOwned()) discover(); return; }
                             if (ready != null) synchronized (this) {
-                                if (lockRequested) return;
+                                if (lockRequested || retiring || shuttingDown || enrollmentRequest != enrollmentEpoch) return;
                                 cancelBiometricEnrollment();
                                 var password = candidate;
                                 enrollmentPassword = password;
+                                enrollmentOwner = vault;
+                                // VaultId is immutable for this exact authenticated session.
+                                // Capture on the worker; completion must not call the coordinator
+                                // on main while Sync uses its transient IMPORTING state.
+                                enrollmentVaultIdentity = vault.sessionVaultId();
                                 long generation = sessionGeneration;
                                 enrollmentExpiry = dispatcher.after(60_000, this::cancelBiometricEnrollment);
                                 dispatcher.post(() -> {
@@ -430,7 +471,7 @@ public final class AndroidVaultController {
                                         if (enrollmentPassword != password || generation != sessionGeneration
                                                 || snapshot.state() != State.OPEN) { password.close(); return; }
                                     }
-                                    ready.accept(new Enrollment(id, password));
+                                    ready.accept(new Enrollment(localId(), activationId(), generation, id, password));
                                 });
                             }
                             return;
@@ -473,19 +514,24 @@ public final class AndroidVaultController {
             default -> "Vault open failed. Check local storage and retry.";
         };
     }
-    private void opened() {
-        synchronized (this) { if (lockRequested) return; }
+    private void opened() { opened(null); }
+    private boolean opened(BiometricRequest biometricRequest) {
+        synchronized (this) { if (lockRequested || retiring || shuttingDown) return false; }
         ForegroundVaultCoordinator current = vault;
-        synchronized (this) { addOutcome = null; changeResult = null; }
+        // Preserve the existing canonical snapshot check outside the controller monitor.
         String openedId = org.totipo.Totipo.vaultId(current.snapshotVault()).hex();
         synchronized (this) {
-            if (lockRequested) return;
+            if (lockRequested || retiring || shuttingDown
+                    || (biometricRequest != null && !biometricCurrent(biometricRequest))) return false;
+            addOutcome = null; changeResult = null;
             vaultId = openedId; observationOwner = current;
+            // These are local subscription/descriptive reads, never provider/store I/O.
+            observation = current.observe(() -> signal(current, false), () -> signal(current, true));
+            inactivity.opened();
+            render("Vault open");
+            requestAutomaticSync();
+            return true;
         }
-        observation = current.observe(() -> signal(current, false), () -> signal(current, true));
-        synchronized (this) { if (lockRequested) return; inactivity.opened(); }
-        render("Vault open");
-        synchronized (this) { requestAutomaticSync(); }
     }
     private synchronized void signal(ForegroundVaultCoordinator source, boolean failed) {
         // Cancellation cannot retract an application callback already past FC's check.
@@ -807,7 +853,7 @@ public final class AndroidVaultController {
     /** Application-level foreground transitions, including enrollment Activities; rotation is coalesced. */
     public synchronized void foregroundChanged(boolean active) {
         dispatcher.assertDispatchThread();
-        if (active) inactivity.check(); else cancelBiometricEnrollment();
+        if (active) inactivity.check(); else { biometricEpoch++; cancelBiometricEnrollment(); }
         boolean returned = active && !foreground;
         foreground = active;
         if (returned) requestAutomaticSync();
@@ -1311,7 +1357,7 @@ public final class AndroidVaultController {
         if (retiring) { notifyRetirement(); return retirement; }
         retiring = true;
         retirement = Retirement.WAITING_WORK;
-        inactivity.stop(); cancelBiometricEnrollment();
+        inactivity.stop(); cancelBiometricEnrollment(); biometricEpoch++;
         lockRequested = true; syncPending = false; pendingChange = null;
         preparedJoinCandidate = null; addOutcome = null; changeResult = null;
         cancelOutbound(); sessionGeneration++;
@@ -1391,7 +1437,7 @@ public final class AndroidVaultController {
     }
     private void requestLock() {
         if (lockRequested) return;
-        inactivity.stop(); cancelBiometricEnrollment();
+        inactivity.stop(); cancelBiometricEnrollment(); biometricEpoch++;
         lockRequested = true;
         syncPending = false; pendingChange = null;
         cancelOutbound(); sessionGeneration++;

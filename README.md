@@ -53,11 +53,14 @@ and retire its in-memory vault/session keys. Touch/key interaction resets a mono
 alone does not immediately lock, but background time counts. Foreground re-entry checks
 expiration before presenting vault content. Rotation does not reset the deadline.
 
-Production biometric unlock remains disabled until **A-MV4** supplies per-entry
-credentials and keys. Password unlock is the supported path. The retained biometric
-implementation and its historical threat model are documented in the
-[biometric qualification report](review/ANDROID_BIOMETRIC_INACTIVITY_LOCK_REPORT.md);
-its enrollment controls are unavailable in this intermediate multi-vault version.
+Biometric unlock is optional and belongs independently to the selected local vault.
+Password unlock remains available. After password unlock, explicit opt-in authorizes
+an auth-per-use strong-biometric AES-GCM operation storing that entry's reusable
+password in private no-backup storage. Every biometric unlock requires a fresh
+framework CryptoObject authorization, then uses the normal password-open path.
+The authenticated session's exact VaultId must match the credential before OPEN,
+token observation or automatic Sync. See [per-vault biometrics](#per-vault-biometric-credentials)
+and the [A-MV4 report](review/A_MV4_PER_VAULT_BIOMETRICS_REPORT.md) for qualification status.
 Passwords remain mutable caller-owned buffers and are wiped on completion as best
 effort rather than guaranteed JVM erasure. Empty-password Create/unlock/Join requires
 explicit confirmation.
@@ -411,7 +414,7 @@ No bootstrap runs on startup, unlock, folder selection or access restoration.
 Historical M3D reports and checkpoints record the earlier explicit Import/Publish UX
 and remain unchanged. The daily-driver milestone's current validation and outstanding
 human gates are recorded in [the daily-driver UX report](review/ANDROID_DAILY_DRIVER_UX_REPORT.md).
-There is no background sync, Syncthing integration, biometric unlock,
+There is no background sync or embedded Syncthing integration,
 field-by-field conflict combination, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
 and universal Android filesystem/runtime or interoperability qualification are not claimed.
 JVM/build evidence complements the isolated physical-device qualification recorded in the report.
@@ -515,13 +518,11 @@ recreation; process death drops it and rejects the outstanding result.
 The
 registry supports multiple entries, but a registry with multiple entries is
 preserved and requires the later selection UI; no switching or inactive-vault
-Sync is exposed. Production unlock is
-password-only until A-MV4 provides per-entry biometric records and keys. The
-existing biometric cryptography remains unchanged and global credentials are
-never reused. Complete A → B retirement is exercised through the Application's
-internal lifecycle authority by controlled qualification. No production Change Vault
-entry point, selection screen, inactive-vault Sync or per-entry biometric management
-is exposed; A-MV3/4/5 must complete those boundaries before general switching.
+Sync is exposed. Optional biometric credentials are scoped to the selected entry;
+global credentials are never reused. Complete A → B retirement is exercised through
+the Application's internal selection authority by controlled qualification. No
+production Change Vault entry point, selection screen, inactive-vault Sync or
+management of inactive entries is exposed; public navigation remains A-MV5 work.
 
 The debug disposable-create probe remains disabled while the Application holds
 selection. Use the isolated registry qualification harness for synthetic creation;
@@ -569,6 +570,80 @@ visible in folder management when release fails or is deferred. Some unused gran
 may therefore remain until explicit recovery; no broad startup cleanup is performed.
 
 A-MV2's complete retirement and single-active-session guarantees remain in force.
-A-MV4 per-vault biometrics and A-MV5 public multi-entry navigation remain unavailable.
+A-MV5 public multi-entry navigation remains unavailable; A-MV4 adds only selected-entry biometric controls.
 See the [A-MV3 report](review/A_MV3_PER_VAULT_SYNC_REPORT.md) for qualification evidence
 and conservative cleanup limitations.
+
+
+## Per-vault biometric credentials
+
+A local entry ID is the registry's immutable generated 32-character lowercase hex
+storage identity. It differs from the protocol VaultId, which identifies the exact
+canonical VAULT and may be equal across separate local replicas. Neither labels,
+SAF URIs nor record-supplied metadata choose keys or paths. Schema-v2 aliases are
+`org.totipo.biometric-password.v2.<local-id>`. Each entry has its own non-exportable
+AndroidKeyStore AES-256 key: GCM/NoPadding, randomized encryption, authentication
+required for each operation, strong biometrics only, and biometric-enrollment
+invalidation. No device-credential fallback, cached authorization or shared key exists.
+
+Records live at `noBackupFilesDir/totipo-local-v1/roots/<local-id>/biometric-v2`,
+beside `store/`, never inside VAULT, objects-v1 or a synchronized folder. The bounded
+binary envelope contains version, exact local ID, authenticated session VaultId,
+expected alias, 12-byte nonce and ciphertext with a 128-bit tag. Canonical
+length-prefixed AAD binds a fixed application context, version, derived alias,
+local ID and VaultId. Strict parsing rejects unexpected identity/alias/version,
+invalid encodings, truncation, oversize and trailing bytes. Path validation checks
+every ancestor without following symlinks. Registry metadata contains no password.
+
+Enrollment follows explicit password authentication, captures the entry, activation,
+session generation, actual session VaultId and owned password buffer, and rechecks
+those values at the durable write boundary. Replacement uses the same entry's key
+with a fresh operation and nonce; cancellation preserves the prior working record.
+Writes force a create-new temporary file, atomically replace the record, force the
+parent and check exact readback. A durable `.pending` marker blocks use until success.
+An interrupted or failed replacement conservatively requires explicit Disable and
+reenrollment, even if old bytes remain; no failure is reported as successful enrollment.
+An unused key after canceled initial enrollment is bounded to the entry's one alias
+and may be reused by a later explicit enrollment or removed by Disable.
+
+Unlock callbacks retain their original controller and request. Lock, controller
+retirement, Activity pause/stop, background transitions, cancellation and the bounded
+prompt deadline revoke the relevant ownership. If a callback has already submitted
+password-open work, cancellation is rechecked after authentication and after the
+existing canonical read, before subscription or OPEN exposure. A VaultId mismatch
+closes the candidate through the existing lifecycle, preserves uncertain store
+and failed-close evidence, and never reassigns the credential or registry identity.
+Normal rotation preserves an already authenticated session, never prompt authority
+or decrypted passwords. Process restart requires a new biometric operation.
+The 15-minute inactivity policy is unchanged.
+
+The locked password form offers enrollment or replacement; the open selected vault's
+overflow offers **Disable biometric unlock**, also for incomplete cleanup. Disable
+revokes the Activity request and enrollment ownership, durably marks `.disabled`,
+removes that entry's record/temporary metadata and its own key, and checks completion.
+Partial cleanup reports failure, keeps a blocker and can be retried. A-MV5 has a
+small Application cleanup hook that refuses a still-selected or incompletely retired
+entry; it never deletes the canonical encrypted store. No Forget UI is added.
+
+Missing/malformed/incompatible records, missing or invalidated keys and tag failures
+leave password authentication available. Temporary hardware unavailability, lockout,
+non-match or prompt cancellation never automatically delete credentials. Explicit
+reenrollment can replace malformed ciphertext with a usable existing key; missing
+or invalidated keys and interrupted persistence require Disable first. No key is
+silently regenerated beside an old record. A failure to validate private storage
+uses an unavailable adapter that cannot claim successful deletion.
+
+Local-only and synchronized entries use the same credential implementation. Provider
+attachment/disconnection, inaccessible folders and Sync retries never change key or
+record ownership. There is no inactive-vault authentication or background Sync.
+Legacy global files/aliases remain incompatible-installation evidence: no adoption,
+decryption, migration or automatic deletion is performed.
+
+Keystore non-exportability and auth-per-use protect device-local key use under the
+platform's security model; they do not protect a reusable password after authorized
+decryption from a compromised application process. JVM buffer wiping is best effort.
+Application-directed cleanup of A never touches B, but platform security changes,
+including changes to enrolled biometrics, may invalidate several keys. There is no
+rollback resistance, secure filesystem erasure or guarantee against a compromised
+app UID concurrently replacing private files. Physical qualification status and
+remaining hardware scenarios are recorded explicitly in the A-MV4 report.

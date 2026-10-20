@@ -44,6 +44,12 @@ public final class VaultSelection {
         changed();
         return result;
     }
+    synchronized void requireRetiredEntry(String id) {
+        VaultRegistry.validateId(id);
+        // A partially constructed or failed-close owner still prevents cleanup.
+        if ((owner != null && owner.localId().equals(id)) || (selected != null && selected.localId().equals(id)))
+            throw new IllegalStateException("Entry must be fully retired before credential cleanup");
+    }
     private void changed() {
         for (var observer : new java.util.ArrayList<>(observers)) observer.accept(selected);
     }

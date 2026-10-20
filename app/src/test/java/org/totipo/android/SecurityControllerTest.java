@@ -17,7 +17,7 @@ import static org.totipo.android.AndroidVaultController.*;
 public class SecurityControllerTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
     final ProductControllerFixtures real = new ProductControllerFixtures();
-    final Queue<Runnable> ui = new ConcurrentLinkedQueue<>();
+    final BlockingQueue<Runnable> ui = new LinkedBlockingQueue<>();
     final List<Job> jobs = new ArrayList<>();
     long now; int opens;
     AndroidVaultController controller;
@@ -49,6 +49,7 @@ public class SecurityControllerTest {
             public Instant wall() { return Instant.ofEpochSecond(59); }
             public long elapsedMillis() { return now; }
         }, null);
+        credentials.local = controller.localId();
         biometric = new BiometricUnlock(controller, credentials, prompt, this::after);
         await(() -> controller.snapshot().state() == State.NO_LOCAL_VAULT && idle());
         assertTrue(controller.create(password())); awaitOpen();
@@ -61,7 +62,7 @@ public class SecurityControllerTest {
     }
     void await(BooleanSupplier condition) throws Exception {
         long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
-        do { pump(); if (condition.getAsBoolean()) return; Thread.sleep(5); } while (System.nanoTime() < end);
+        do { pump(); if (condition.getAsBoolean()) return; Runnable next = ui.poll(100, TimeUnit.MILLISECONDS); if (next != null) next.run(); } while (System.nanoTime() < end);
         fail("Timed out: " + controller.snapshot());
     }
     void awaitOpen() throws Exception { await(() -> controller.snapshot().state() == State.OPEN && idle()); }
@@ -89,7 +90,7 @@ public class SecurityControllerTest {
         lock(); final PasswordBuffer[] retained = {null};
         assertTrue(controller.unlockAndEnroll(password(), e -> { retained[0] = e.password(); biometric.enroll(e); }));
         await(() -> prompt.result != null); prompt.cancel(); awaitOpen(); assertFalse(credentials.configured());
-        assertThrows(IllegalStateException.class, retained[0]::encode); assertNull(credentials.key);
+        assertThrows(IllegalStateException.class, retained[0]::encode);
     }
     @Test public void boundedEnrollmentExpiresAndLateSuccessCannotStore() throws Exception {
         lock(); assertTrue(controller.unlockAndEnroll(password(), biometric::enroll)); await(() -> prompt.result != null);
@@ -101,19 +102,21 @@ public class SecurityControllerTest {
     }
     @Test public void invalidatedKeyAndCorruptCredentialFailClosedAndPermitReenrollment() throws Exception {
         enroll(); lock(); credentials.invalid = true; biometric.unlock(); assertEquals(State.LOCKED, controller.snapshot().state());
-        assertFalse(credentials.configured()); assertNull(credentials.key); credentials.invalid = false;
+        assertTrue(credentials.configured()); assertNotNull(credentials.key);
+        assertTrue(biometric.disable()); credentials.invalid = false;
         assertTrue(controller.unlockAndEnroll(password(), biometric::enroll)); await(() -> prompt.result != null);
         prompt.succeed(); awaitOpen(); assertTrue(credentials.configured());
         lock(); credentials.record.ciphertext[0] ^= 1; biometric.unlock(); prompt.succeed();
-        assertEquals(State.LOCKED, controller.snapshot().state()); assertFalse(credentials.configured());
+        assertEquals(State.LOCKED, controller.snapshot().state()); assertTrue(credentials.configured());
+        assertTrue(biometric.disable());
     }
     @Test public void wrongRecoveredPasswordFailsThroughNormalAuthentication() throws Exception {
         enroll(); lock(); credentials.wrongPassword = true; biometric.unlock(); prompt.succeed(); awaitLocked();
         assertEquals(AndroidVaultController.Error.AUTHENTICATION_FAILED, controller.snapshot().error()); assertEquals(2, opens);
     }
-    @Test public void differentAuthenticatedVaultIdRetiresOpenedSessionAndCredential() throws Exception {
+    @Test public void differentAuthenticatedVaultIdClosesCandidateWithoutReassigningCredential() throws Exception {
         enroll(); lock(); credentials.wrongIdentity = true; biometric.unlock(); prompt.succeed(); awaitLocked();
-        assertFalse(credentials.configured()); assertNull(credentials.key);
+        assertTrue(credentials.configured()); assertNotNull(credentials.key);
         assertEquals(org.totipo.android.reconcile.ForegroundVaultCoordinator.State.CLOSED, real.coordinator.lifecycle());
     }
     @Test public void disableRemovesRecordAndKeyWithoutLockingOrChangingPassword() throws Exception {
@@ -156,6 +159,95 @@ public class SecurityControllerTest {
         assertTrue(jobs.stream().noneMatch(j -> !j.cancelled));
         assertEquals(org.totipo.android.reconcile.ForegroundVaultCoordinator.State.CLOSED, real.coordinator.lifecycle());
     }
+    @Test public void lockedOrForeignEnrollmentCannotPrepareOrPersistCredential() throws Exception {
+        lock();
+        try (var secret = new PasswordBuffer(password())) {
+            var forged = new Enrollment(controller.localId(), controller.activationId(), 0, "a".repeat(64), secret);
+            biometric.enroll(forged); assertNull(prompt.result); assertFalse(credentials.configured());
+        }
+        final Enrollment[] captured = {null};
+        assertTrue(controller.unlockAndEnroll(password(), e -> captured[0] = e)); await(() -> captured[0] != null);
+        var enrollment = captured[0];
+        assertFalse(controller.completeBiometricEnrollment(new Enrollment("0".repeat(32), enrollment.activationId(),
+                enrollment.session(), enrollment.vaultId(), enrollment.password()), () -> fail("foreign write")));
+        assertFalse(controller.completeBiometricEnrollment(new Enrollment(enrollment.localId(), enrollment.activationId(),
+                enrollment.session(), "b".repeat(64), enrollment.password()), () -> fail("wrong session identity")));
+        lock(); assertTrue(controller.unlock(password())); awaitOpen();
+        biometric.enroll(enrollment); assertNull(prompt.result); assertFalse(credentials.configured());
+    }
+    @Test public void lockAndPasswordReopenCannotAuthorizeOldEnrollmentWithSameVaultId() throws Exception {
+        lock(); assertTrue(controller.unlockAndEnroll(password(), biometric::enroll)); await(() -> prompt.result != null);
+        var late = prompt.result; lock(); assertTrue(controller.unlock(password())); awaitOpen();
+        late.authorized(); assertFalse(credentials.configured());
+    }
+    @Test public void cancellationOfReplacementRetainsPriorUsableCredential() throws Exception {
+        enroll(); var prior = credentials.record; var key = credentials.key;
+        lock(); assertTrue(controller.unlockAndEnroll(password(), biometric::enroll)); await(() -> prompt.result != null);
+        prompt.cancel(); assertSame(prior, credentials.record); assertSame(key, credentials.key);
+        lock(); biometric.unlock(); prompt.succeed(); awaitOpen();
+    }
+    @Test public void failedPersistenceNeverPublishesEnrollmentSuccess() throws Exception {
+        credentials.failWrite = true; lock();
+        assertTrue(controller.unlockAndEnroll(password(), biometric::enroll)); await(() -> prompt.result != null);
+        prompt.succeed(); awaitOpen(); assertFalse(credentials.configured());
+        assertTrue(biometric.message().contains("unavailable"));
+    }
+    @Test public void activityCloseAndBackgroundCancelPromptWithoutDeletingCredential() throws Exception {
+        enroll(); lock(); biometric.unlock(); var late = prompt.result; biometric.close(); late.authorized();
+        assertEquals(State.LOCKED, controller.snapshot().state()); assertTrue(credentials.configured());
+        biometric.unlock(); late = prompt.result; controller.foregroundChanged(false); late.authorized();
+        assertEquals(State.LOCKED, controller.snapshot().state()); assertTrue(credentials.configured());
+        credentials.local = controller.localId();
+        biometric = new BiometricUnlock(controller, credentials, prompt, this::after);
+        controller.foregroundChanged(true); biometric.unlock(); prompt.succeed(); awaitOpen();
+    }
+    @Test public void activityCancellationDuringActualPasswordOpenClosesCandidateBeforeObservation() throws Exception {
+        enroll(); lock(); var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var once = new java.util.concurrent.atomic.AtomicBoolean(true);
+        real.operationHook = name -> { if (name.equals("readVault") && once.getAndSet(false)) {
+            entered.countDown(); try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+            catch (InterruptedException failure) { throw new AssertionError(failure); }
+        } };
+        var states = new ArrayList<State>(); controller.attach(s -> states.add(s.state())); pump();
+        biometric.unlock(); prompt.succeed(); assertTrue(entered.await(10, TimeUnit.SECONDS));
+        try { biometric.close(); } finally { release.countDown(); }
+        awaitLocked(); assertFalse(states.contains(State.OPEN));
+        assertNull(field("observationOwner"));
+        assertEquals(ForegroundVaultCoordinator.State.CLOSED, real.coordinator.lifecycle());
+    }
+    private Object field(String name) throws Exception {
+        var field = AndroidVaultController.class.getDeclaredField(name); field.setAccessible(true); return field.get(controller);
+    }
+    @Test public void cancelledActivityDuringPasswordOpenCannotOfferLateEnrollment() throws Exception {
+        lock(); var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var once = new java.util.concurrent.atomic.AtomicBoolean(true);
+        real.operationHook = name -> { if (name.equals("readVault") && once.getAndSet(false)) {
+            entered.countDown(); try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+            catch (InterruptedException failure) { throw new AssertionError(failure); }
+        } };
+        assertTrue(controller.unlockAndEnroll(password(), biometric::enroll)); assertTrue(entered.await(10, TimeUnit.SECONDS));
+        try { controller.cancelBiometricEnrollment(); biometric.close(); } finally { release.countDown(); }
+        awaitOpen(); assertNull(prompt.result); assertFalse(credentials.configured());
+    }
+    @Test public void enrollmentUsesImmutableAuthenticatedIdentityWhileCoordinatorRefreshIsInFlight() throws Exception {
+        lock(); assertTrue(controller.unlockAndEnroll(password(), biometric::enroll)); await(() -> prompt.result != null);
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        real.operationHook = name -> { if (name.equals("requestRefresh")) {
+            entered.countDown(); try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+            catch (InterruptedException failure) { throw new AssertionError(failure); }
+        } };
+        var coordinator = (ForegroundVaultCoordinator)field("vault");
+        // Use the real existing worker and a real coordinator operation; no second
+        // session, fake VaultId or manually assigned coordinator state.
+        ((java.util.concurrent.Executor)field("worker")).execute(coordinator::requestRefresh);
+        assertTrue(entered.await(10, TimeUnit.SECONDS));
+        try {
+            assertEquals(ForegroundVaultCoordinator.State.REQUESTING_REFRESH, coordinator.lifecycle());
+            prompt.succeed(); assertTrue(credentials.configured());
+            assertEquals(real.session.vaultId().hex(), credentials.record.vaultId);
+        } finally { release.countDown(); }
+        await(() -> coordinator.lifecycle() == ForegroundVaultCoordinator.State.OPEN);
+    }
     static class FakePrompt implements BiometricUnlock.Prompt {
         Result result; int prompts;
         public Runnable authenticate(BiometricCredentials.Operation op, Result result) { this.result = result; prompts++; return () -> {}; }
@@ -163,12 +255,14 @@ public class SecurityControllerTest {
         void cancel() { var next = result; result = null; next.cancelled(); }
     }
     static class MemoryCredentials implements BiometricCredentials {
-        SecretKey key; BiometricRecord record; boolean strong = true, invalid, wrongPassword, wrongIdentity; char[] recovered;
+        String local;
+        public String localId() { return local; }
+        SecretKey key; BiometricRecord record; boolean strong = true, invalid, wrongPassword, wrongIdentity, failWrite; char[] recovered;
         public boolean available() { return strong; }
         public boolean configured() { return record != null; }
         public void delete() { key = null; record = null; }
         public Operation enrollment(String id) throws Exception {
-            key = KeyGenerator.getInstance("AES").generateKey(); Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            if (key == null) key = KeyGenerator.getInstance("AES").generateKey(); Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
             c.init(Cipher.ENCRYPT_MODE, key); return operation(c, id);
         }
         public Operation unlock() throws Exception {
@@ -181,12 +275,13 @@ public class SecurityControllerTest {
                 public Cipher cipher() { return c; }
                 public String vaultId() { return id; }
                 public void encrypt(PasswordBuffer password) throws Exception {
-                    c.updateAAD(BiometricRecord.aad(id));
-                    byte[] plain = password.encode(); try { record = new BiometricRecord(id, c.getIV(), c.doFinal(plain)); }
+                    if (failWrite) throw new IOException();
+                    c.updateAAD(BiometricRecord.aad(local, id));
+                    byte[] plain = password.encode(); try { record = new BiometricRecord(local, id, c.getIV(), c.doFinal(plain)); }
                     finally { Arrays.fill(plain, (byte) 0); }
                 }
                 public char[] decrypt() throws Exception {
-                    c.updateAAD(BiometricRecord.aad(record.vaultId));
+                    c.updateAAD(BiometricRecord.aad(local, record.vaultId));
                     byte[] plain = c.doFinal(record.ciphertext);
                     try { recovered = wrongPassword ? new char[]{'x'} : PasswordBuffer.decode(plain); return recovered; }
                     finally { Arrays.fill(plain, (byte) 0); }

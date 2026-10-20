@@ -10,6 +10,7 @@ interface BiometricCredentials {
         void encrypt(PasswordBuffer password) throws Exception;
         char[] decrypt() throws Exception;
     }
+    String localId();
     boolean available();
     boolean configured();
     Operation enrollment(String vaultId) throws Exception;

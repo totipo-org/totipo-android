@@ -5,104 +5,131 @@ import android.hardware.biometrics.BiometricManager;
 import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
-import android.util.AtomicFile;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.security.KeyStore;
 import java.util.Arrays;
+import java.util.function.BooleanSupplier;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
-/** Device-local authenticated reusable password representation, protected by an auth-per-use key. */
+/** Entry-bound auth-per-use crypto. Platform policy is unchanged; no legacy credential access. */
 @android.annotation.TargetApi(30)
 final class AndroidBiometricCredentials implements BiometricCredentials {
-    private final Context context;
-    private final AtomicFile record;
-    AndroidBiometricCredentials(Context context) {
-        this.context = context;
-        record = new AtomicFile(new File(context.getNoBackupFilesDir(), "biometric-password-v1"));
+    interface Keys {
+        SecretKey find(String alias) throws Exception;
+        SecretKey create(String alias) throws Exception;
+        void delete(String alias) throws Exception;
     }
-    public boolean available() {
-        if (Build.VERSION.SDK_INT < 30) return false;
-        var manager = context.getSystemService(BiometricManager.class);
-        return manager != null && manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-                == BiometricManager.BIOMETRIC_SUCCESS;
+    private final String localId, alias;
+    private final BiometricCredentialStorage storage;
+    private final Keys keys;
+    private final BooleanSupplier available;
+    private long generation;
+    AndroidBiometricCredentials(Context context, VaultRegistry registry, String localId) throws java.io.IOException {
+        this(localId, new BiometricCredentialStorage(registry, localId), new PlatformKeys(), () -> {
+            if (Build.VERSION.SDK_INT < 30) return false;
+            var manager = context.getSystemService(BiometricManager.class);
+            return manager != null && manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                    == BiometricManager.BIOMETRIC_SUCCESS;
+        });
+        // Registry is rooted in canonical getNoBackupFilesDir(), never a provider folder.
     }
-    public boolean configured() { return record.getBaseFile().exists(); }
-    private KeyStore store() throws Exception {
-        KeyStore keys = KeyStore.getInstance("AndroidKeyStore"); keys.load(null); return keys;
+    AndroidBiometricCredentials(String localId, BiometricCredentialStorage storage, Keys keys, BooleanSupplier available) {
+        this.localId = localId; alias = BiometricRecord.alias(localId);
+        if (!localId.equals(storage.localId)) throw new IllegalArgumentException("Credential storage ownership mismatch");
+        this.storage = storage; this.keys = keys; this.available = available;
     }
-    public Operation enrollment(String vaultId) throws Exception {
-        if (!available()) throw new IllegalStateException("Biometrics unavailable");
-        delete();
-        var generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
-        generator.init(new KeyGenParameterSpec.Builder(BiometricRecord.ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
-                .setKeySize(256).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setRandomizedEncryptionRequired(true).setUserAuthenticationRequired(true)
-                .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
-                .setInvalidatedByBiometricEnrollment(true).build());
-        SecretKey key = generator.generateKey(); // Non-exportable; never request getEncoded().
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.ENCRYPT_MODE, key);
-        return new Transaction(cipher, vaultId, null);
+    public String localId() { return localId; }
+    public boolean available() { return available.getAsBoolean(); }
+    public synchronized boolean configured() {
+        try { BiometricRecord.decode(storage.read(), localId); return keys.find(alias) != null; }
+        catch (Exception unavailable) { return false; }
     }
-    public Operation unlock() throws Exception {
-        byte[] bytes;
-        try (var input = record.openRead()) {
-            byte[] bounded = new byte[BiometricRecord.MAX_BYTES + 1];
-            int size = 0, count;
-            while (size < bounded.length && (count = input.read(bounded, size, bounded.length - size)) != -1) size += count;
-            bytes = Arrays.copyOf(bounded, size);
+    public synchronized Operation enrollment(String vaultId) throws Exception {
+        if (!available() || storage.recovery()) throw new IllegalStateException("Biometric enrollment unavailable; disable before recovery");
+        // Reuse this entry's key with a fresh auth-per-use encryption operation. Cancel
+        // leaves the prior ciphertext/key intact. Missing keys never revive old records.
+        SecretKey key = keys.find(alias);
+        if (key == null) {
+            if (storage.present()) throw new IllegalStateException("Credential key missing; disable before reenrollment");
+            key = keys.create(alias);
         }
-        BiometricRecord saved = BiometricRecord.decode(bytes);
-        var key = store().getKey(BiometricRecord.ALIAS, null);
-        if (!(key instanceof SecretKey)) throw new IllegalStateException("Credential unavailable");
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key);
+        return new Transaction(cipher, vaultId, null, ++generation);
+    }
+    public synchronized Operation unlock() throws Exception {
+        BiometricRecord saved = BiometricRecord.decode(storage.read(), localId);
+        SecretKey key = keys.find(alias);
+        if (key == null) throw new IllegalStateException("Credential key missing");
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, saved.iv));
-        return new Transaction(cipher, saved.vaultId, saved);
+        return new Transaction(cipher, saved.vaultId, saved, ++generation);
     }
-    public void delete() throws Exception {
-        // Delete the key first: even if filesystem deletion fails, ciphertext cannot reopen.
-        try { store().deleteEntry(BiometricRecord.ALIAS); }
-        finally { record.delete(); }
-        if (configured()) throw new java.io.IOException("Credential deletion failed");
+    public synchronized void delete() throws Exception {
+        generation++;
+        storage.beginDelete(); // Durable fail-closed marker precedes either cleanup action.
+        Exception failure = null;
+        try { storage.deleteRecord(); } catch (Exception failed) { failure = failed; }
+        try {
+            keys.delete(alias);
+            if (keys.find(alias) != null) throw new java.io.IOException("Credential key deletion incomplete");
+        } catch (Exception failed) { if (failure == null) failure = failed; }
+        if (failure != null) throw failure; // marker retained for explicit bounded retry
+        storage.finishDelete();
     }
     private final class Transaction implements Operation {
         private final Cipher cipher;
         private final String id;
         private final BiometricRecord saved;
+        private final long request;
         private boolean used;
-        Transaction(Cipher cipher, String id, BiometricRecord saved) { this.cipher = cipher; this.id = id; this.saved = saved; }
+        Transaction(Cipher cipher, String id, BiometricRecord saved, long request) {
+            this.cipher = cipher; this.id = id; this.saved = saved; this.request = request;
+        }
         public Cipher cipher() { return cipher; }
         public String vaultId() { return id; }
-        private void once() { if (used) throw new IllegalStateException("Credential operation retired"); used = true; }
+        private void once() {
+            if (used || request != generation) throw new IllegalStateException("Credential operation retired"); used = true;
+        }
         public void encrypt(PasswordBuffer password) throws Exception {
-            once();
-            byte[] plaintext = null;
-            try {
-                // Keystore updateAAD consumes authorization: invoke only after CryptoObject success.
-                cipher.updateAAD(BiometricRecord.aad(id));
-                plaintext = password.encode();
-                byte[] ciphertext = cipher.doFinal(plaintext);
-                byte[] encoded = new BiometricRecord(id, cipher.getIV(), ciphertext).encode();
-                FileOutputStream output = null;
-                try { output = record.startWrite(); output.write(encoded); record.finishWrite(output); }
-                catch (Exception failed) { if (output != null) record.failWrite(output); throw failed; }
-            } finally { if (plaintext != null) Arrays.fill(plaintext, (byte) 0); }
+            synchronized (AndroidBiometricCredentials.this) {
+                once(); byte[] plaintext = null;
+                try {
+                    // Keystore updateAAD consumes authorization: only after CryptoObject success.
+                    cipher.updateAAD(BiometricRecord.aad(localId, id));
+                    plaintext = password.encode();
+                    storage.write(new BiometricRecord(localId, id, cipher.getIV(), cipher.doFinal(plaintext)).encode());
+                } finally { if (plaintext != null) Arrays.fill(plaintext, (byte) 0); }
+            }
         }
         public char[] decrypt() throws Exception {
-            once();
-            byte[] plaintext = null;
-            try {
-                cipher.updateAAD(BiometricRecord.aad(id));
-                plaintext = cipher.doFinal(saved.ciphertext);
-                return PasswordBuffer.decode(plaintext);
+            synchronized (AndroidBiometricCredentials.this) {
+                once(); byte[] plaintext = null;
+                try {
+                    cipher.updateAAD(BiometricRecord.aad(localId, id));
+                    plaintext = cipher.doFinal(saved.ciphertext);
+                    return PasswordBuffer.decode(plaintext);
+                } finally { if (plaintext != null) Arrays.fill(plaintext, (byte) 0); }
             }
-            finally { if (plaintext != null) Arrays.fill(plaintext, (byte) 0); }
         }
+    }
+    private static final class PlatformKeys implements Keys {
+        private KeyStore store() throws Exception { var keys = KeyStore.getInstance("AndroidKeyStore"); keys.load(null); return keys; }
+        public SecretKey find(String alias) throws Exception {
+            var key = store().getKey(alias, null); return key instanceof SecretKey secret ? secret : null;
+        }
+        public SecretKey create(String alias) throws Exception {
+            if (store().containsAlias(alias)) throw new IllegalStateException("Credential key already exists");
+            var generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+            generator.init(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                    .setKeySize(256).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setRandomizedEncryptionRequired(true).setUserAuthenticationRequired(true)
+                    .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
+                    .setInvalidatedByBiometricEnrollment(true).build());
+            return generator.generateKey(); // Non-exportable; key bytes are never requested.
+        }
+        public void delete(String alias) throws Exception { store().deleteEntry(alias); }
     }
 }

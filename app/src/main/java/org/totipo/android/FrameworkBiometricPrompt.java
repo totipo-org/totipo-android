@@ -8,11 +8,12 @@ import android.os.CancellationSignal;
 @android.annotation.TargetApi(30)
 final class FrameworkBiometricPrompt implements BiometricUnlock.Prompt {
     private final Activity activity;
-    FrameworkBiometricPrompt(Activity activity) { this.activity = activity; }
+    private final String label;
+    FrameworkBiometricPrompt(Activity activity, String label) { this.activity = activity; this.label = label; }
     public Runnable authenticate(BiometricCredentials.Operation operation, Result callback) {
         CancellationSignal cancellation = new CancellationSignal();
         var prompt = new BiometricPrompt.Builder(activity).setTitle("Unlock Totipo")
-                .setSubtitle("Use a strong biometric")
+                .setSubtitle(label + " · Use a strong biometric")
                 .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
                 .setNegativeButton("Use vault password", activity.getMainExecutor(), (dialog, which) -> callback.cancelled())
                 .build();

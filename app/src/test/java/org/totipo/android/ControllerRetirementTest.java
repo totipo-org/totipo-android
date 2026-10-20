@@ -110,6 +110,88 @@ public final class ControllerRetirementTest {
         await(() -> controller.unlock("A password".toCharArray())); state(State.OPEN);
         assertEquals(uriA, controller.initialTreeUri()); assertNull(portB.stored);
     }
+    private final PerVaultBiometricCredentialsTest.Keys biometricKeys = new PerVaultBiometricCredentialsTest.Keys();
+    private AndroidBiometricCredentials credentials(String id) throws Exception {
+        return new AndroidBiometricCredentials(id, new BiometricCredentialStorage(registry, id), biometricKeys, () -> true);
+    }
+    private BiometricUnlock biometric(AndroidBiometricCredentials credentials, SecurityControllerTest.FakePrompt prompt) {
+        return new BiometricUnlock(controller, credentials, prompt, (delay, action) -> () -> {});
+    }
+    private void enroll(BiometricUnlock biometric, SecurityControllerTest.FakePrompt prompt) throws Exception {
+        await(controller::lock); state(State.LOCKED);
+        await(() -> controller.unlockAndEnroll("same password".toCharArray(), biometric::enroll));
+        await(() -> prompt.result != null); prompt.succeed(); state(State.OPEN);
+    }
+    @Test public void latePromptAfterRetirementCannotOpenReplacementAndCleanupRequiresFullRetirement() throws Exception {
+        select(a, new Backend(), null); state(State.NO_LOCAL_VAULT);
+        await(() -> controller.create("same password".toCharArray())); state(State.OPEN);
+        var ca = credentials(a); var prompt = new SecurityControllerTest.FakePrompt(); var bio = biometric(ca, prompt);
+        enroll(bio, prompt); await(controller::lock); state(State.LOCKED);
+        bio.unlock(); var late = prompt.result; var old = controller;
+        assertThrows(IllegalStateException.class, () -> selection.requireRetiredEntry(a));
+        // Hold actual provider drain so late authorization is delivered during retirement.
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var port = new SyncFolderBindingTest.MemoryPort(); port.onProbe = () -> gate(entered, release);
+        var lane = (ProviderIoLane)field(old, "providerIo");
+        lane.submit(port, new SyncFolderBinding.Request(0, "content://fixture/tree/a"), false, ignored -> {});
+        assertTrue(entered.await(10, TimeUnit.SECONDS));
+        try {
+            selection.retire(); await(() -> old.retirement() == Retirement.WAITING_PROVIDER);
+            late.authorized(); assertNull(field(old, "vault")); unavailableB();
+            assertThrows(IllegalStateException.class, () -> selection.requireRetiredEntry(a));
+        } finally { release.countDown(); }
+        finish(); selection.requireRetiredEntry(a);
+        select(b, new Backend(), null); state(State.NO_LOCAL_VAULT);
+        await(() -> controller.create("same password".toCharArray())); state(State.OPEN);
+        var cb = credentials(b); var bp = new SecurityControllerTest.FakePrompt(); var bb = biometric(cb, bp);
+        enroll(bb, bp); await(controller::lock); state(State.LOCKED);
+        late.authorized(); assertEquals(State.LOCKED, controller.snapshot().state());
+        assertTrue(ca.configured()); assertTrue(cb.configured());
+        // Disabling fully retired A cannot affect active B's namespace.
+        selection.requireRetiredEntry(a); ca.delete(); assertFalse(ca.configured()); assertTrue(cb.configured());
+        bb.unlock(); bp.succeed(); state(State.OPEN); bio.close(); bb.close();
+    }
+    @Test public void lateEnrollmentAfterActualSelectionSwitchNeverWritesEitherNamespace() throws Exception {
+        select(a, new Backend(), null); state(State.NO_LOCAL_VAULT);
+        await(() -> controller.create("same password".toCharArray())); state(State.OPEN);
+        var ca = credentials(a); var p = new SecurityControllerTest.FakePrompt(); var bio = biometric(ca, p);
+        await(controller::lock); state(State.LOCKED);
+        await(() -> controller.unlockAndEnroll("same password".toCharArray(), bio::enroll)); await(() -> p.result != null);
+        var late = p.result; selection.retire(); finish();
+        select(b, new Backend(), null); state(State.NO_LOCAL_VAULT);
+        await(() -> controller.create("same password".toCharArray())); state(State.OPEN);
+        late.authorized(); assertFalse(ca.configured()); assertFalse(credentials(b).configured());
+        assertEquals(State.OPEN, controller.snapshot().state()); bio.close();
+    }
+    @Test public void vaultIdentityMismatchHasNoOpenObservationOrAutomaticSyncEvenWithEqualPassword() throws Exception {
+        select(a, new Backend(), null); state(State.NO_LOCAL_VAULT);
+        await(() -> controller.create("same password".toCharArray())); state(State.OPEN);
+        String vaultA = ((ForegroundVaultCoordinator)field(controller, "vault")).sessionVaultId().hex();
+        selection.retire(); finish();
+        var port = new SyncFolderBindingTest.MemoryPort();
+        String uri = "content://fixture/tree/b";
+        port.stored = new SyncFolderBinding.Stored(uri, true, true);
+        port.permissions.put(uri, new SyncFolderBinding.Grants(true, true));
+        select(b, new Backend(), new SyncFolderBinding(port)); state(State.NO_LOCAL_VAULT);
+        await(() -> controller.create("same password".toCharArray())); state(State.OPEN);
+        await(controller::lock); state(State.LOCKED);
+        var snapshots = new ArrayList<State>(); controller.attach(value -> snapshots.add(value.state()));
+        while (!main.isEmpty()) main.remove().run();
+        int scans = port.scans;
+        var request = controller.beginBiometricUnlock(); assertNotNull(request);
+        char[] recovered = "same password".toCharArray();
+        assertTrue(controller.unlockBiometric(request, recovered, vaultA, () -> {}));
+        state(State.LOCKED); await(() -> !(boolean)field(controller, "operating"));
+        assertFalse(snapshots.contains(State.OPEN)); assertNull(field(controller, "observationOwner"));
+        assertNull(controller.snapshot().view()); assertEquals(scans, port.scans);
+        assertEquals(ForegroundVaultCoordinator.State.CLOSED, real.coordinator.lifecycle());
+        assertArrayEquals(new char[recovered.length], recovered);
+        await(() -> controller.unlock("same password".toCharArray())); state(State.OPEN);
+    }
+    private Object field(Object target, String name) {
+        try { var f = target.getClass().getDeclaredField(name); f.setAccessible(true); return f.get(target); }
+        catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }
+    }
     private String registryPath() throws Exception {
         try (var paths = Files.list(temporary.getRoot().toPath())) {
             return paths.filter(p -> Files.exists(p.resolve("totipo-local-v1"))).findFirst().orElseThrow().getFileName().toString();

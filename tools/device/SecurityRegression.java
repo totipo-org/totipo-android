@@ -160,7 +160,7 @@ public final class SecurityRegression extends Instrumentation {
             controllerField.set(getTargetContext().getApplicationContext(), controller);
             await(() -> controller.snapshot().state() != AndroidVaultController.State.STARTING && idle());
             check(InactivityLock.TIMEOUT_MILLIS == 900_000, "production_constant_exactly_fifteen_minutes");
-            var credentials = new AndroidBiometricCredentials(getTargetContext()); check(credentials.available(), "framework_strong_biometric_available");
+            var credentials = new AndroidBiometricCredentials(getTargetContext(), (VaultRegistry)field(getTargetContext().getApplicationContext(), "registry"), controller.localId()); check(credentials.available(), "framework_strong_biometric_available");
             if (!"restart".equals(args.getString("phase"))) {
                 check(controller.snapshot().state() == AndroidVaultController.State.NO_LOCAL_VAULT, "disposable_vault_absent");
                 command(() -> controller.create(password())); Files.write(port.root.resolve("vault"), vault().snapshotVault()); launch(); lifecycle();
@@ -192,7 +192,7 @@ public final class SecurityRegression extends Instrumentation {
                 check(!controller.diagnostics().contains("Public smoke vault"), "diagnostics_omit_fixture_password");
                 credentials.delete(); check(!credentials.configured(), "final_record_cleanup");
                 var keys = java.security.KeyStore.getInstance("AndroidKeyStore"); keys.load(null);
-                check(!keys.containsAlias(BiometricRecord.ALIAS), "delete_removes_key_ownership");
+                check(!keys.containsAlias(BiometricRecord.LEGACY_ALIAS), "delete_removes_key_ownership");
                 lock();
             }
             output.putString("stream", "SECURITY_PASS phase=" + args.getString("phase", "first") + " checks=" + checks + "\n"); result = -1;
