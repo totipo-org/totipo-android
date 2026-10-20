@@ -214,6 +214,10 @@ public final class MainActivity extends Activity {
         String message = next.equals("open") ? mainStatus(state) : state.message();
         if (!biometric.message().isEmpty() && (next.equals("unlock") || next.equals("open")))
             message = message.isEmpty() ? biometric.message() : message + "\n" + biometric.message();
+        if (next.equals("open") || next.equals("manage") || next.equals("join") || next.equals("joinSetup")) {
+            String notice = controller.folderConfigurationNotice();
+            if (!notice.isEmpty()) message = message.isEmpty() ? notice : notice + "\n" + message;
+        }
         if (!TextUtils.equals(status.getText(), message)) status.setText(message);
         status.setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
         var sync = controller.syncView();

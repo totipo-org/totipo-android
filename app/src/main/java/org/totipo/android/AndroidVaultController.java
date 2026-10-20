@@ -80,6 +80,9 @@ public final class AndroidVaultController {
     private long sessionGeneration;
     private SyncView syncView = new SyncView(new SyncFolderBinding.View(
             SyncFolderBinding.Status.NOT_CONFIGURED, false, false), "Not configured");
+    // Explicit configuration outcomes must not disappear behind a later ordinary Sync.
+    // Presentation only, scoped to this activation; never persisted or used for admission.
+    private String folderConfigurationNotice = "";
     private String initialTreeUri;
     private long bindingGeneration;
     private boolean importIntegrityAttention;
@@ -1002,6 +1005,7 @@ public final class AndroidVaultController {
                     .allMatch(c -> c.kind() == org.totipo.android.provider.ImmutableCandidateClassifier.Kind.VALID);
     }
     public synchronized SyncView syncView() { return syncView; }
+    public synchronized String folderConfigurationNotice() { return folderConfigurationNotice; }
     /** Private picker hint only; never rendered in product status. */
     public synchronized String initialTreeUri() { return initialTreeUri; }
     public synchronized boolean canManageSyncFolder() { return !retiring && !shuttingDown && syncBinding != null && !operating && pendingChange == null; }
@@ -1049,6 +1053,10 @@ public final class AndroidVaultController {
             boolean accepted = syncBinding.choose(cancelled, uri,
                     (flags & android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0,
                     (flags & android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0);
+            if (!cancelled) synchronized (this) {
+                folderConfigurationNotice = accepted ? "" : "Folder choice was not saved. Any previous binding was kept. "
+                        + "Choose a folder not used by another vault, or check access and retry.";
+            }
             updateBinding(accepted ? null : "Folder access could not be saved. Choose folder again.");
             if (accepted && !cancelled) startProvider(false);
         });
@@ -1058,6 +1066,10 @@ public final class AndroidVaultController {
         return folderOperation(() -> {
             cancelOutbound();
             boolean disconnected = syncBinding.disconnect();
+            synchronized (this) {
+                folderConfigurationNotice = disconnected ? "" : "Folder disconnection was not saved. "
+                        + "The binding was kept. Retry Disconnect or check folder configuration.";
+            }
             if (disconnected) {
                 synchronized (this) { setPendingPublication(false); syncPending = false; syncStatus = ""; lastSyncResult = "Local only"; }
                 persistPublicationHint();
@@ -1067,7 +1079,10 @@ public final class AndroidVaultController {
     }
     public synchronized boolean checkSyncFolder() {
         if (providerActive) return false;
-        return folderOperation(() -> { syncBinding.check(); updateBinding(null); startProvider(false); });
+        return folderOperation(() -> {
+            synchronized (this) { folderConfigurationNotice = ""; }
+            syncBinding.check(); updateBinding(null); startProvider(false);
+        });
     }
     public synchronized boolean importProviderChanges() {
         dispatcher.assertDispatchThread();

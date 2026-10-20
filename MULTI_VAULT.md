@@ -99,3 +99,49 @@ it does not protect decrypted reusable passwords against process compromise. Pri
 registry/data do not survive guaranteed app-data removal or uninstall. There is no
 rollback resistance, secure erasure or forced cancellation of arbitrary provider I/O.
 Physical coverage and remaining gates are tracked in the A-MV5 review report.
+
+## Integrated operation and qualification
+
+The [A-MV6 integrated qualification report](review/A_MV6_INTEGRATED_MULTI_VAULT_QUALIFICATION_REPORT.md)
+records the current environment, evidence matrix and remaining integration gates.
+A-MV6 has demonstrated physical desktop-created Join and bidirectional real
+Syncthing convergence, alongside local-only and independently synchronized vaults.
+Final corrected-APK integration, biometric, recovery and focused UI checks pass;
+the human Nix gate passed on frozen inputs. A-MV6 qualification is complete for
+the documented environment and ready for a subsequent release decision, without
+authorizing publication.
+A-MV5's successful controller Join tests and actual SAF initialization are distinct
+from successful desktop-created Join after real Syncthing propagation. Historical
+M3D passes retain their older source/client scope. None establishes the current
+three-vault journey by itself.
+
+Each synchronized identity needs its own provider folder and binding. Desktop writes
+its filesystem store; Syncthing replicates immutable evidence into Android's shared
+folder; SAF imports into Android's private canonical root. Android publishes back
+through SAF, followed by Syncthing delivery and desktop observation. Local save,
+provider publication, peer propagation and logical convergence need separate evidence.
+Provider readiness and registry metadata are never protocol identity authority.
+A rejected folder choice keeps the previous binding. Its configuration notice
+remains visible across ordinary Sync until a successful configuration action or
+explicit Retry access; cancellation alone does not acknowledge the notice.
+
+An independent local-only entry has no folder, permission or transport retry state.
+It uses the same local authoring, password, biometric and retirement implementation.
+Equal passwords never grant cross-entry authority. Selection retires the previous
+controller completely and never schedules Sync for an inactive entry. A hung
+third-party provider can hold retirement until process restart; no timeout releases
+its ownership. Revoked access remains configured until explicit reselection or
+Disconnect, and conservative shared-grant retention can leave deferred cleanup.
+
+Forget retains reserved IDs/roots and encrypted history. Recovery depends on that
+installation's private data and ordinary password authentication. Corrupt registry,
+unknown/missing roots and uncertain Create/Join/Forget writes require explicit
+recovery while preserving evidence. App-data removal/uninstall is not recovery.
+No destructive cleanup, automatic repair, legacy migration, password change,
+inactive background scheduler or cross-vault merge is supplied.
+
+The Activity uses an explicit light native theme. Actual dark-system rendering and
+TalkBack must be reported separately from accessibility node/layout inspection.
+Device/process compromise, best-effort JVM wiping, conditional clipboard clearing,
+lack of rollback protection and unbounded third-party SAF calls retain their
+documented limits. Passing host gates is not integrated release qualification.

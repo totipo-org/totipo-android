@@ -724,3 +724,54 @@ clipboard limitations, process-compromise limits and lack of rollback resistance
 remain unchanged. See [multi-vault architecture](MULTI_VAULT.md) and the
 [A-MV5 report](review/A_MV5_ANDROID_MULTI_VAULT_UI_REPORT.md) for exact qualification
 status; uncompleted physical or human Nix gates are not claimed as passing.
+
+## Desktop–Syncthing–Android journey
+
+Use a separate shared folder for each independent vault. Android keeps its canonical
+encrypted vault in app-private no-backup storage; the SAF-selected Syncthing folder
+is an exchange location. Never point another writer at Android's private store.
+
+For a desktop-created vault, create it with Totipo Desktop, add a disposable token
+when testing, and share that folder through Syncthing. Wait for actual VAULT and
+immutable object arrival on Android. In Android choose **Join Existing Vault**,
+select that vault's Android folder through the system picker, and enter its existing
+password. Join authenticates the existing identity into a new private local root;
+**Create Local Vault** makes an independent identity and cannot substitute for Join.
+
+For an Android-created vault, choose **Create Local Vault** and its own password.
+It works without synchronization. To synchronize it later, select its own empty
+shared folder in **Manage sync folder**, explicitly **Initialize sync folder**, then
+use **Sync** to publish token evidence. Wait for Syncthing delivery before opening
+that synchronized vault on desktop. Folder access and initialization alone do not
+prove object publication or peer receipt.
+
+After either setup, edit normally and use the selected vault's Sync behavior.
+Confirm remote observation on the other client; desktop may need its ordinary
+refresh/reopen. Local save, SAF publication, Syncthing delivery and remote logical
+convergence are separate events. A disconnected peer can receive published objects
+later. Missing SAF access needs folder reselection; local saves remain valid and
+ordinary Sync retries after access restoration. Inactive vaults never synchronize
+automatically. Compare live OTPs within the same time step on aligned clocks;
+never use a rollover mismatch as proof of different secrets.
+
+Change Vault waits for complete retirement, then requires independent authentication.
+Biometric enrollment is optional for each entry. Forget retires that entry's
+convenience credentials and Sync binding while retaining its encrypted data;
+Recover requires its password and retained private data. App-data removal/uninstall
+can permanently destroy local-only and forgotten vaults. Preserve and independently
+verify another usable synchronized copy before any deliberate reset.
+
+The [A-MV6 qualification report](review/A_MV6_INTEGRATED_MULTI_VAULT_QUALIFICATION_REPORT.md)
+separates current integrated results from A-MV1–5 and historical M3D evidence.
+Physical desktop-created Join and bidirectional Add/update/delete through real
+Syncthing now have captured evidence, including conflict resolution and independent
+local-only and synchronized identities. Final corrected-APK Join, bidirectional
+delivery, hardware biometrics, retained
+recovery and focused UI checks pass. The human Nix gate passed on frozen inputs;
+A-MV6 qualification is complete for the documented environment and ready for a
+subsequent release decision. This does not authorize publishing a release.
+Its tested environment and documented limitations govern interoperability claims;
+connected peers or a configured folder are insufficient evidence. Arbitrary SAF
+providers, OEMs and accessibility services are not universally qualified. The
+current native Activity theme is explicitly light; a dark system setting does
+not imply a dedicated dark application theme.

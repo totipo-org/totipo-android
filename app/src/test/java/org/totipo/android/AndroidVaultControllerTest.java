@@ -1352,6 +1352,48 @@ public final class AndroidVaultControllerTest {
         assertFalse(port.pending); automaticSync = true;
         return port;
     }
+    @Test public void failedFolderChoiceRemainsVisibleAfterSyncAndCancellationUntilSuccessfulChoice() throws Exception {
+        var port = dailyFixture();
+        String previous = controller.initialTreeUri();
+        var session = real.session;
+        var objects = new LinkedHashMap<String, byte[]>();
+        port.objects.forEach((id, bytes) -> objects.put(id, bytes.clone()));
+        port.failSave = true;
+        accept(() -> controller.chooseSyncFolder(false, "content://fixture/tree/b", 3)); await(this::providerDone);
+        assertEquals(previous, controller.initialTreeUri());
+        assertTrue(controller.folderConfigurationNotice().contains("Folder choice was not saved"));
+        String refusal = controller.folderConfigurationNotice();
+        accept(() -> controller.sync()); await(this::providerDone);
+        assertEquals("No local changes to publish", controller.syncView().message());
+        assertEquals("ordinary Sync must not hide an explicit configuration failure", refusal, controller.folderConfigurationNotice());
+        accept(() -> controller.chooseSyncFolder(true, null, 0)); await(this::providerDone);
+        assertEquals("canceling a picker is not successful configuration", refusal, controller.folderConfigurationNotice());
+        assertSame(session, real.session); assertEquals(objects.keySet(), port.objects.keySet());
+        objects.forEach((id, bytes) -> assertArrayEquals(bytes, port.objects.get(id)));
+        port.failSave = false;
+        accept(() -> controller.chooseSyncFolder(false, previous, 3)); await(this::providerDone);
+        assertEquals("", controller.folderConfigurationNotice());
+        assertEquals(previous, controller.initialTreeUri()); assertSame(session, real.session);
+    }
+    @Test public void failedDisconnectNoticeSurvivesSyncUntilExplicitRecovery() throws Exception {
+        var port = dailyFixture();
+        String previous = controller.initialTreeUri();
+        port.failSave = true;
+        accept(() -> controller.disconnectSyncFolder()); await(this::providerDone);
+        String refusal = controller.folderConfigurationNotice();
+        assertTrue(refusal.contains("Folder disconnection was not saved"));
+        assertEquals(previous, controller.initialTreeUri());
+        accept(() -> controller.sync()); await(this::providerDone);
+        assertEquals(refusal, controller.folderConfigurationNotice());
+        accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+        assertEquals("explicit Retry access acknowledges the prior notice", "", controller.folderConfigurationNotice());
+        accept(() -> controller.disconnectSyncFolder()); await(this::providerDone);
+        assertFalse(controller.folderConfigurationNotice().isEmpty());
+        port.failSave = false;
+        accept(() -> controller.disconnectSyncFolder()); await(this::providerDone);
+        assertEquals("", controller.folderConfigurationNotice()); assertNull(controller.initialTreeUri());
+        assertEquals("Local only", controller.dailySyncStatus());
+    }
     private org.totipo.android.sync.PublicationPort dailyConcurrentFixture() throws Exception {
         var port = outboundFixture(1); await(this::providerDone);
         Path remoteRoot = temporary.newFolder().toPath();
