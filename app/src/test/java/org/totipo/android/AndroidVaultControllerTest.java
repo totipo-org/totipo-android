@@ -736,6 +736,7 @@ public final class AndroidVaultControllerTest {
     @Test public void initializeThenManualPublishOnlyAndRepeatedInitializationNoWrites() throws Exception {
         var port=outboundFixture(1);var session=real.session;byte[] exact=port.vaultBytes.clone();port.vaultBytes=null;port.directoryPresent=false;
         accept(() -> controller.initializeSyncFolder());await(this::providerDone);
+        assertEquals("Sync folder initialized. Use Sync to publish local changes.", controller.syncView().message());
         assertArrayEquals(exact,port.vaultBytes);assertTrue(port.directoryPresent);assertTrue(port.objects.isEmpty());assertEquals(1,port.vaultCreates);
         accept(() -> controller.publishLocalChanges());await(this::providerDone);assertEquals(1,port.objects.size());assertSame(session,real.session);
         accept(() -> controller.initializeSyncFolder());await(this::providerDone);assertEquals(1,port.vaultCreates);assertEquals(1,port.directoryCreates);
@@ -1338,9 +1339,12 @@ public final class AndroidVaultControllerTest {
     }
     @Test public void revokedBindingStaysConfiguredAndLocalChangesRetainRetryHint() throws Exception {
         var port = dailyFixture();
+        accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+        assertEquals("Sync folder configured", controller.syncView().message());
         port.permissions.clear(); accept(() -> controller.checkSyncFolder()); await(this::providerDone);
-        assertEquals("Access needed. Choose folder again.", controller.dailySyncStatus());
+        assertEquals("Folder access needed. Choose sync folder again.", controller.dailySyncStatus());
         assertNotNull(controller.initialTreeUri());
+        assertEquals("Folder access needed. Choose sync folder again.", controller.syncView().message());
         finishChange(controller.beginTokenChange(lifecycleRow().id(), TokenChange.Kind.EDIT), "local", "revoked", 0);
         await(this::providerDone); assertTrue(port.pending); assertEquals("Changes not synced", controller.dailySyncStatus());
         assertNotNull(port.stored);

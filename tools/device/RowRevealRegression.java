@@ -378,7 +378,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             throw new AssertionError(stage + ": " + controller.snapshot().state() + ": " + controller.snapshot().message() + ": " + failure);
         } finally { release[0].countDown(); controller.shutdown(); }
     }
-    @Override public void onCreate(Bundle args) { syncBaseline = "true".equals(args.getString("syncBaseline")); syncOnly = "true".equals(args.getString("syncOnly")); super.onCreate(args); start(); }
+    @Override public void onCreate(Bundle args) { syncBaseline = "true".equals(args.getString("syncBaseline")); syncOnly = "true".equals(args.getString("syncOnly")); terminologyOnly = "true".equals(args.getString("terminologyOnly")); super.onCreate(args); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle(); int status = -1;
         try {
@@ -393,6 +393,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
     }
     private static void run(Context context) throws Exception {
         context.setTheme(android.R.style.Theme_Material_Light);
+        if (terminologyOnly) { folderTerminology(context); return; }
         if (syncOnly) { delayedSyncScreen(context); return; }
         int[] taps = {0}, retired = {0}; TokenChange.Kind[] changed = {null};
         var adapter = new TokenListAdapter(context, id -> taps[0]++, (id, kind) -> changed[0] = kind, () -> retired[0]++);
@@ -514,6 +515,37 @@ public final class RowRevealRegression extends android.app.Instrumentation {
         }
         return value.toString();
     }
+    // Focused native View smoke: no controller, session, SAF grant or owner app.
+    private static void folderTerminology(Context context) throws Exception {
+        for (float scale : new float[]{1f, 1.5f, 2f}) for (int width : new int[]{320, 640}) {
+            var configuration = new android.content.res.Configuration(context.getResources().getConfiguration());
+            configuration.fontScale = scale;
+            Context scaled = context.createConfigurationContext(configuration);
+            var info = new android.content.pm.ActivityInfo(); info.theme = android.R.style.Theme_Material_Light_NoActionBar;
+            var activity = (MainActivity) new android.app.Instrumentation().newActivity(MainActivity.class,
+                    scaled, null, new android.app.Application(), new android.content.Intent().setClass(scaled, MainActivity.class), info, "Totipo", null, null, null);
+            activity.setTheme(info.theme);
+            var root = new LinearLayout(activity); root.setOrientation(LinearLayout.VERTICAL);
+            var content = MainActivity.class.getDeclaredField("content"); content.setAccessible(true); content.set(activity, root);
+            var build = MainActivity.class.getDeclaredMethod("buildFolderManagement"); build.setAccessible(true); build.invoke(activity);
+            measureGroup(root, scaled, width, 640);
+            for (String title : List.of("Choose sync folder", "Retry access", "Disconnect sync folder", "Join existing vault", "Initialize sync folder")) {
+                android.widget.Button button = null;
+                for (int i = 0; i < root.getChildCount(); i++)
+                    if (root.getChildAt(i) instanceof android.widget.Button candidate && title.contentEquals(candidate.getText())) button = candidate;
+                check(button != null && button.isFocusable(), "folder action present and focusable: " + title);
+                check(title.equalsIgnoreCase(String.valueOf(button.createAccessibilityNodeInfo().getText())), "folder action native accessible name: " + title);
+                check(button.getHeight() >= 48 * scaled.getResources().getDisplayMetrics().density, "folder action touch target");
+                check(button.getLayout() != null, "folder action laid out");
+                for (int line = 0; line < button.getLayout().getLineCount(); line++)
+                    check(button.getLayout().getEllipsisCount(line) == 0, "folder action not ellipsized");
+            }
+            String help = ((TextView)root.getChildAt(root.getChildCount() - 1)).getText().toString();
+            check(help.contains("reads and writes encrypted vault data") && help.contains("Disconnect removes the folder association"), "folder workflow explained");
+            for (String provider : List.of("Syncthing", "Dropbox", "Google Drive")) check(!help.contains(provider), "no named provider instruction");
+            geometry.append("FOLDER_TERMINOLOGY scale=" + scale + " widthDp=" + width + " PASS\n");
+        }
+    }
     private static void delayedSyncScreen(Context context) throws Exception {
         var queue = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
         var directory = java.nio.file.Files.createTempDirectory(context.getCacheDir().toPath(), "sync-layout-");
@@ -622,7 +654,7 @@ public final class RowRevealRegression extends android.app.Instrumentation {
             }
         }
     }
-    private static boolean syncBaseline, syncOnly;
+    private static boolean syncBaseline, syncOnly, terminologyOnly;
     private static final class LayoutPort implements org.totipo.android.sync.SyncFolderBinding.Port {
         static final String URI = "content://fixture/tree/layout";
         final java.nio.file.Path root;

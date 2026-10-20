@@ -115,11 +115,14 @@ from successful desktop-created Join after real Syncthing propagation. Historica
 M3D passes retain their older source/client scope. None establishes the current
 three-vault journey by itself.
 
-Each synchronized identity needs its own provider folder and binding. Desktop writes
-its filesystem store; Syncthing replicates immutable evidence into Android's shared
-folder; SAF imports into Android's private canonical root. Android publishes back
-through SAF, followed by Syncthing delivery and desktop observation. Local save,
-provider publication, peer propagation and logical convergence need separate evidence.
+Each vault with Sync configured needs its own folder and binding. Android maintains
+its canonical vault in app-private no-backup storage and exchanges encrypted vault
+files with the selected folder through SAF. A Sync folder is optional; local-only
+vaults are fully functional. External replication between devices is managed
+separately; the selected folder may be local and configuring it guarantees neither
+replication nor backup. Local save, folder publication, external replication and
+observation by another device need separate evidence. Clearing Android application
+data or uninstalling may permanently destroy local-only vaults.
 Provider readiness and registry metadata are never protocol identity authority.
 A rejected folder choice keeps the previous binding. Its configuration notice
 remains visible across ordinary Sync until a successful configuration action or

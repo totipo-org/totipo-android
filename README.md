@@ -10,7 +10,7 @@ setup secrets, root keys or raw exception dumps.
 
 Vaults work fully **local only**. Create, password unlock, Add, Edit, Delete, Resolve,
 local observation, Lock/reopen and restart use the coordinated private canonical
-store without a provider, SAF grant, network or Syncthing. The neutral **Local only**
+store without a storage provider, SAF grant or network. The neutral **Local only**
 status does not mark successful local saves as unsynced or create transport retry hints.
 Synchronization is optional and belongs independently to each local registry entry.
 
@@ -34,7 +34,7 @@ A persisted local retry hint survives restart; immutable local evidence is the s
 of publication decisions. A later foreground event, mutation or manual Sync retries.
 Requests coalesce to one active Sync plus one pending request; failures never start a
 retry loop. Successful Sync is quiet and confirms only the bound shared folder, never
-receipt by other devices. **Syncthing remains the external transport** between folders.
+receipt by other devices. External replication between devices is managed separately.
 
 Edit changes issuer/account while retaining the hidden authenticator setup; **Change
 setup** is deferred. Delete requires confirmation and authors a Totipo tombstone,
@@ -414,7 +414,7 @@ No bootstrap runs on startup, unlock, folder selection or access restoration.
 Historical M3D reports and checkpoints record the earlier explicit Import/Publish UX
 and remain unchanged. The daily-driver milestone's current validation and outstanding
 human gates are recorded in [the daily-driver UX report](review/ANDROID_DAILY_DRIVER_UX_REPORT.md).
-There is no background sync or embedded Syncthing integration,
+There is no background sync or embedded external replication service,
 field-by-field conflict combination, DI, AndroidX, Compose, service or WorkManager dependency. Production signing
 and universal Android filesystem/runtime or interoperability qualification are not claimed.
 JVM/build evidence complements the isolated physical-device qualification recorded in the report.
@@ -648,11 +648,11 @@ remaining hardware scenarios are recorded explicitly in the A-MV4 report.
 
 A fresh installation shows **Initial setup** with **Create Local Vault** and
 **Join Existing Vault**. Create reuses the initial durable unused reservation and
-creates an independent, local-only vault. It needs no folder permission, Syncthing
-or biometric enrollment. Choose a password independently for each vault; equal
+creates an independent, local-only vault. It needs no folder permission, external
+replication or biometric enrollment. Choose a password independently for each vault; equal
 passwords do not make vaults the same identity. **Join Existing Vault** reserves a
-new private replica, asks for its existing Sync folder, recognizes and authenticates
-its exact VAULT with the existing password, rechecks provider evidence and installs
+new private replica, asks for a folder containing existing Totipo vault data, recognizes
+and authenticates its exact VAULT with the existing password, rechecks provider evidence and installs
 create-only. Successful Join uses the existing automatic Sync flow.
 
 With one established entry and a valid last selection, startup shows its locked
@@ -725,34 +725,42 @@ remain unchanged. See [multi-vault architecture](MULTI_VAULT.md) and the
 [A-MV5 report](review/A_MV5_ANDROID_MULTI_VAULT_UI_REPORT.md) for exact qualification
 status; uncompleted physical or human Nix gates are not claimed as passing.
 
-## Desktop–Syncthing–Android journey
+## Optional Sync folder
 
-Use a separate shared folder for each independent vault. Android keeps its canonical
-encrypted vault in app-private no-backup storage; the SAF-selected Syncthing folder
-is an exchange location. Never point another writer at Android's private store.
+Totipo maintains each canonical vault in app-private no-backup storage. Local-only
+vaults are fully functional. A **Sync folder** is optional: Totipo reads and writes
+encrypted vault files in a folder chosen through Android's Storage Access Framework
+(SAF). The selected folder may be local and may not be replicated anywhere.
+External replication between devices is managed separately. Configuring a folder
+does not guarantee replication, delivery to another device or backup.
 
-For a desktop-created vault, create it with Totipo Desktop, add a disposable token
-when testing, and share that folder through Syncthing. Wait for actual VAULT and
-immutable object arrival on Android. In Android choose **Join Existing Vault**,
-select that vault's Android folder through the system picker, and enter its existing
-password. Join authenticates the existing identity into a new private local root;
+To join an existing vault, choose **Join Existing Vault**, then choose a folder
+containing an existing Totipo vault. Totipo reads encrypted vault data from the
+selected folder and authenticates its existing identity with its password into a
+new private local root. An empty folder cannot recover or join an existing vault.
 **Create Local Vault** makes an independent identity and cannot substitute for Join.
 
-For an Android-created vault, choose **Create Local Vault** and its own password.
-It works without synchronization. To synchronize it later, select its own empty
-shared folder in **Manage sync folder**, explicitly **Initialize sync folder**, then
-use **Sync** to publish token evidence. Wait for Syncthing delivery before opening
-that synchronized vault on desktop. Folder access and initialization alone do not
-prove object publication or peer receipt.
+To configure a folder later for an Android-created local vault, use **Manage sync
+folder → Choose sync folder**. For an empty folder, explicitly **Initialize sync
+folder**, then use **Sync** to publish local changes. Choosing a folder establishes
+configuration; Initialize sets up this vault's encrypted replica there. Neither
+step alone establishes token publication or receipt elsewhere. Use a separate
+folder for each independent vault. Never point another writer at Android's private
+store.
 
-After either setup, edit normally and use the selected vault's Sync behavior.
-Confirm remote observation on the other client; desktop may need its ordinary
-refresh/reopen. Local save, SAF publication, Syncthing delivery and remote logical
-convergence are separate events. A disconnected peer can receive published objects
-later. Missing SAF access needs folder reselection; local saves remain valid and
-ordinary Sync retries after access restoration. Inactive vaults never synchronize
-automatically. Compare live OTPs within the same time step on aligned clocks;
-never use a rollover mismatch as proof of different secrets.
+**Sync folder configured** indicates an association, not a publication or delivery
+result. **Folder access needed** retains that association and requires access
+recovery; it does not mean **Local only**. **Local changes published** and **No local
+changes to publish** describe only Totipo's workflow against the configured folder.
+Successful Sync stays quiet on the main screen; folder management and Diagnostics
+retain operation details. Local save, folder publication, external replication and
+observation by another device are separate events.
+
+Use **Change sync folder** to select a different folder or recover missing SAF
+access. Local saves remain valid; ordinary Sync retries after access restoration.
+**Disconnect sync folder** removes the association and returns the vault to local-only
+use without deleting its local data or the files in the former folder. Inactive
+vaults never synchronize automatically.
 
 Change Vault waits for complete retirement, then requires independent authentication.
 Biometric enrollment is optional for each entry. Forget retires that entry's

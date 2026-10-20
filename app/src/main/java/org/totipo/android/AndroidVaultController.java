@@ -825,7 +825,7 @@ public final class AndroidVaultController {
                             }
                         }
                         finishOutbound(cancelled, switch (status) {
-                            case VERIFIED -> "Sync folder initialized. Publish local changes explicitly.";
+                            case VERIFIED -> "Sync folder initialized. Use Sync to publish local changes.";
                             case ALREADY_INITIALIZED -> "Sync folder already initialized.";
                             case PARTIAL -> "Sync folder vault verified; token directory initialization incomplete. Try Initialize again.";
                             case UNCERTAIN -> "Initialization uncertain. Check again before retrying.";
@@ -925,7 +925,7 @@ public final class AndroidVaultController {
         if (!syncStatus.isEmpty()) return syncStatus;
         if (initialTreeUri == null) return "Local only";
         if (pendingPublication) return "Changes not synced";
-        if (syncView.binding().status() == SyncFolderBinding.Status.ACCESS_LOST) return "Access needed. Choose folder again.";
+        if (syncView.binding().status() == SyncFolderBinding.Status.ACCESS_LOST) return "Folder access needed. Choose sync folder again.";
         if (syncView.binding().status() == SyncFolderBinding.Status.UNAVAILABLE) return "Sync folder unavailable";
         if (snapshot.view() != null && snapshot.view().tokens().stream().anyMatch(t -> t.conflict()))
             return "Conflict needs attention";
@@ -1026,8 +1026,8 @@ public final class AndroidVaultController {
         String detail = message == null ? switch (binding.status()) {
             case NOT_CONFIGURED -> "Local only";
             case CHECKING -> "Checking sync folder…";
-            case READY -> binding.writable() ? "Connected" : "Folder is read-only for Totipo.";
-            case ACCESS_LOST -> "Access needed. Choose folder again.";
+            case READY -> binding.writable() ? "Sync folder configured" : "Folder is read-only for Totipo.";
+            case ACCESS_LOST -> "Folder access needed. Choose sync folder again.";
             case UNAVAILABLE -> "Sync folder unavailable. Retry access.";
         } : message;
         if (importIntegrityAttention && !detail.contains("Integrity problem")) detail += " Integrity problem. Token changes need attention.";

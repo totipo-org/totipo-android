@@ -4,6 +4,7 @@ Requires the normal debug build, existing SDK/dependency cache, and one authoriz
 Does not install/launch Totipo or read its data. Installs/removes only its own test package.
 Optional baseline comparison: ROW_REVEAL_APP_APK=<retained debug APK>,
 SYNC_LAYOUT_BASELINE=1; SYNC_LAYOUT_ONLY=1 skips the established row suite.
+SYNC_TERMINOLOGY_ONLY=1 runs only detached folder-management wording/layout checks.
 """
 import os
 from pathlib import Path
@@ -52,6 +53,7 @@ subprocess.run([adb, 'install', '--no-incremental', str(signed)], check=True)
 try:
     result = subprocess.run([adb, 'shell', 'am', 'instrument', '-w',
                              *(['-e', 'syncBaseline', 'true'] if os.environ.get('SYNC_LAYOUT_BASELINE') == '1' else []),
+                             *(['-e', 'terminologyOnly', 'true'] if os.environ.get('SYNC_TERMINOLOGY_ONLY') == '1' else []),
                              *(['-e', 'syncOnly', 'true'] if os.environ.get('SYNC_LAYOUT_ONLY') == '1' else []),
                              package + '/org.totipo.android.RowRevealRegression'],
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=420)

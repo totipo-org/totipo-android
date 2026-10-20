@@ -99,7 +99,7 @@ public final class MainActivity extends Activity {
     }
     private void confirmForget(VaultRegistry.Entry entry) {
         new AlertDialog.Builder(this).setTitle("Forget " + application().localName(entry) + "?")
-                .setMessage("This removes the vault from normal selection, its biometric credential and its Sync binding. Encrypted local data is kept in this installation's private storage. Recovering it requires the vault password. Clearing app data or uninstalling can permanently destroy it.")
+                .setMessage("This removes the vault from normal selection, its biometric credential and its sync folder association. Encrypted local data is kept in this installation's private storage. Recovering it requires the vault password. Clearing app data or uninstalling can permanently destroy it.")
                 .setNegativeButton("Cancel", null).setPositiveButton("Forget", (dialog, which) -> application().forgetEntry(entry.id())).show();
     }
     private void changeVault() {
@@ -224,7 +224,7 @@ public final class MainActivity extends Activity {
         if (chooseFolder != null) {
             syncStatus.setText(sync.message());
             boolean configured = sync.binding().status() != org.totipo.android.sync.SyncFolderBinding.Status.NOT_CONFIGURED;
-            chooseFolder.setText(configured ? "Change folder" : "Choose folder");
+            chooseFolder.setText(configured ? "Change sync folder" : "Choose sync folder");
             chooseFolder.setEnabled(controller.canManageSyncFolder());
             joinVault.setVisibility(state.state() == State.NO_LOCAL_VAULT ? View.VISIBLE : View.GONE);
             joinVault.setEnabled(controller.canJoinExistingVault());
@@ -305,7 +305,7 @@ public final class MainActivity extends Activity {
         if (next.equals("create")) label("Create a new independent local-only vault. A Sync folder can be configured after creation.");
         if (next.equals("joinSetup")) {
             label("Join existing vault").setTextSize(22);
-            label("Choose its Sync folder, then check the existing vault before entering its password.");
+            label("Choose a folder containing an existing Totipo vault, then check the vault before entering its password.");
             button("Cancel setup", this::changeVault); return;
         }
         if (next.equals("manage")) button("Back", () -> { managing = false; surface = null; render(controller.snapshot()); });
@@ -439,12 +439,12 @@ public final class MainActivity extends Activity {
     private void buildFolderManagement() {
         label("Manage sync folder").setTextSize(20);
         syncStatus = label("");
-        chooseFolder = button("Choose folder", this::chooseSyncFolder);
+        chooseFolder = button("Choose sync folder", this::chooseSyncFolder);
         checkFolder = button("Retry access", () -> controller.checkSyncFolder());
-        disconnectFolder = button("Disconnect", () -> controller.disconnectSyncFolder());
+        disconnectFolder = button("Disconnect sync folder", () -> controller.disconnectSyncFolder());
         joinVault = button("Join existing vault", () -> { managing = false; joining = true; controller.prepareJoin(); render(controller.snapshot()); });
         initializeFolder = button("Initialize sync folder", () -> controller.initializeSyncFolder());
-        label("Choose the shared folder used by Syncthing. Join opens an existing vault on this device. Initialize sets up an empty shared folder for this vault. These setup actions never replace an existing vault.");
+        label("Totipo reads and writes encrypted vault data in the selected folder. Join opens an existing vault on this device. Initialize sets up an empty sync folder for this vault; use Sync to publish local changes. These setup actions never replace an existing vault. Disconnect removes the folder association and keeps the local vault and folder files.");
     }
     private void dismissTokenChange() {
         TokenChange previous = tokenChange; tokenChange = null;
@@ -457,7 +457,7 @@ public final class MainActivity extends Activity {
         tokenChange = change;
         AlertDialog.Builder builder = new AlertDialog.Builder(this).setNegativeButton("Cancel", (dialog, which) -> dismissTokenChange());
         if (kind == TokenChange.Kind.DELETE) {
-            builder.setTitle("Delete this token?").setMessage("This removes the token from the current vault state. Historical encrypted revisions may remain in synchronized storage.")
+            builder.setTitle("Delete this token?").setMessage("This removes the token from the current vault state. Historical encrypted revisions may remain in local vault storage and the sync folder.")
                     .setPositiveButton("Delete", (dialog, which) -> { controller.confirmTokenChange(change, null, null, 0); dismissTokenChange(); });
         } else if (kind == TokenChange.Kind.EDIT) {
             var descriptor = change.basis().alternatives().get(0);

@@ -50,6 +50,17 @@ public final class DailyDriverUxTest {
         assertFalse(ui.contains("code.setAccessibilityLiveRegion"));
         assertTrue(read("TokenListAdapter").contains("text.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE)"));
     }
+    @Test public void folderSetupExplainsLocalCreateExistingJoinAndNonDestructiveDisconnect() throws Exception {
+        String ui = read("MainActivity");
+        for (String required : List.of("Create a new independent local-only vault", "A Sync folder can be configured after creation",
+                "Choose a folder containing an existing Totipo vault", "Totipo reads and writes encrypted vault data",
+                "Initialize sets up an empty sync folder", "Choose sync folder", "Change sync folder", "Disconnect sync folder",
+                "Disconnect removes the folder association and keeps the local vault and folder files"))
+            assertTrue(required, ui.contains(required));
+        for (String provider : List.of("Syncthing", "Dropbox", "Google Drive")) assertFalse(provider, ui.contains(provider));
+        assertTrue(ui.contains("controller.folderConfigurationNotice()"));
+        assertTrue(ui.contains("notice + \"\\n\" + message"));
+    }
     @Test public void searchMatchesIssuerAccountAndConflictAlternativesWithLocaleIndependentCase() {
         var first = new TokenDescriptor(TokenStatus.ACTIVE, "GitHub", "alice@example.test", TotpAlgorithm.SHA1, 6, Duration.ofSeconds(30));
         var second = new TokenDescriptor(TokenStatus.ACTIVE, "AWS", "production", TotpAlgorithm.SHA1, 6, Duration.ofSeconds(30));
