@@ -31,7 +31,7 @@ public final class DailyDriverUxTest {
         assertTrue(overflow.contains("setMessage(controller.diagnostics())"));
         for (String forbidden : List.of("controller.sync()", "initializeSyncFolder", "prepareJoin", "unlock(", "create("))
             assertFalse(forbidden, overflow.contains(forbidden));
-        assertTrue(ui.contains("next.equals(\"manage\") || next.equals(\"create\") || next.equals(\"join\")"));
+        assertTrue(ui.contains("next.equals(\"manage\") || next.equals(\"joinSetup\") || next.equals(\"join\")"));
         String setup = ui.substring(ui.indexOf("private void buildFolderManagement"), ui.indexOf("private void dismissTokenChange"));
         assertTrue(setup.contains("Join existing vault")); assertTrue(setup.contains("Initialize sync folder"));
         String controller = read("AndroidVaultController");

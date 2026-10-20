@@ -59,6 +59,13 @@ public final class LocalReplicaOwner {
         this.registry = registry; this.id = id; this.admission = admission; root = registry.root(id);
     }
     public String localId() { return id; }
+    /** After detached candidate authentication, before any create-only enrollment. */
+    public void refusePossibleDuplicate(org.totipo.VaultId identity) throws IOException {
+        synchronized (admission) {
+            if (sealed || admission.selected != this) throw new IllegalStateException("Selection retired");
+            registry.refusePossibleDuplicate(id, identity);
+        }
+    }
     public Lease acquire() throws IOException { return acquire(false); }
     public Lease acquireForCreation() throws IOException { return acquire(true); }
     private Lease acquire(boolean creation) throws IOException {

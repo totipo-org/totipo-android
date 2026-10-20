@@ -38,23 +38,85 @@ public final class MainActivity extends Activity {
             if (controller != null) controller.detach(this.listener);
             if (!replacing) { replacing = true; recreate(); }
         } else if (controller != null && !controller.selectedAuthority()) render(controller.snapshot());
+        else if (controller == null && !replacing) renderSelection();
     };
     private BiometricUnlock biometric;
     private android.widget.CheckBox enableBiometric;
-    private boolean resumed, biometricOffered;
+    private boolean resumed;
     private String biometricUi;
-    private void offerBiometric() {
-        if (resumed && !biometricOffered && controller.snapshot().state() == State.LOCKED
-                && biometric.available() && biometric.configured()) {
-            biometricOffered = true; biometric.unlock();
+    private boolean vaultManagement;
+    private TotipoApplication application() { return (TotipoApplication) getApplication(); }
+    private void renderSelection() {
+        build("selection");
+        boolean initialSetup = application().localEntries().size() == 1 && application().unusedReservation(application().localEntries().get(0));
+        label(vaultManagement ? "Manage vaults" : initialSetup ? "Initial setup" : "Vault selection").setTextSize(22);
+        if (Build.VERSION.SDK_INT < 30) { label(getString(R.string.unsupported_runtime)); return; }
+        String diagnostic = application().startupDiagnostic();
+        if (diagnostic != null) {
+            label("Storage recovery required").setTextSize(20);
+            label(diagnostic); label("Preserve application data. Do not clear data or uninstall to resolve this condition."); return;
         }
+        label(application().managementNotice());
+        if (application().managementBusy()) { label("Please wait for cleanup to finish."); return; }
+        var entries = application().localEntries();
+        boolean established = entries.stream().anyMatch(e -> e.state() == VaultRegistry.State.ESTABLISHED);
+        if (!vaultManagement && entries.stream().anyMatch(e -> e.state() == VaultRegistry.State.DETACHED))
+            label("Retained vault data is available in Manage Vaults. Recovery requires its password and this installation’s app data.");
+        if (!established) label("Create a local vault or join an existing vault. Retained and incomplete entries below require explicit recovery.");
+        for (var entry : entries) {
+            if (!vaultManagement && entry.state() == VaultRegistry.State.DETACHED) continue;
+            if (!vaultManagement && entries.size() == 1 && application().unusedReservation(entry)) continue;
+            String title = application().localName(entry);
+            boolean highlighted = entry.state() == VaultRegistry.State.ESTABLISHED && entry.id().equals(application().lastSelected());
+            TextView name = label(title + (highlighted ? " · Last selected" : ""));
+            name.setTextSize(20); name.setSelected(highlighted);
+            label(application().entrySummary(entry));
+            if (entry.state() == VaultRegistry.State.ESTABLISHED) button("Select " + title, () -> application().selectFromUi(entry.id(), false));
+            else if (entry.state() == VaultRegistry.State.PENDING && !entry.creationAttempted()) {
+                button("Resume Create · " + title, () -> application().selectFromUi(entry.id(), false));
+                button("Resume Join · " + title, () -> application().selectFromUi(entry.id(), true));
+                if (vaultManagement) button("Recover unused allocation", () -> application().recoverAllocation(entry.id()));
+            } else if (entry.state() == VaultRegistry.State.FORGETTING) button("Retry Forget cleanup", () -> application().forgetEntry(entry.id()));
+            else button("Recover " + title, () -> application().selectFromUi(entry.id(), false));
+            if (vaultManagement) {
+                button("Rename " + title, () -> renameEntry(entry));
+                if (entry.state() == VaultRegistry.State.DETACHED) button("Retry retained permission cleanup", () -> application().forgetEntry(entry.id()));
+                if (entry.state() != VaultRegistry.State.DETACHED && entry.state() != VaultRegistry.State.FORGETTING)
+                    button("Forget " + title, () -> confirmForget(entry));
+            }
+        }
+        button("Create Local Vault", () -> application().beginSetup(false));
+        button("Join Existing Vault", () -> application().beginSetup(true));
+        button(vaultManagement ? "Back to vault selection" : "Manage Vaults", () -> { vaultManagement = !vaultManagement; renderSelection(); });
+        if (vaultManagement) label("Forget removes a vault from normal selection and keeps its encrypted private data. Recovery requires its password and this installation's app data. Clearing app data or uninstalling can permanently destroy local-only vaults.");
+    }
+    private void renameEntry(VaultRegistry.Entry entry) {
+        EditText field = new EditText(this); field.setHint("Local display label (optional)");
+        field.setContentDescription("Local display label"); field.setSingleLine(true); field.setSaveEnabled(false);
+        field.setText(entry.label() == null ? "" : entry.label());
+        new AlertDialog.Builder(this).setTitle("Rename vault").setView(field)
+                .setNegativeButton("Cancel", null).setPositiveButton("Save", (dialog, which) -> application().renameEntry(entry.id(), field.getText().toString())).show();
+    }
+    private void confirmForget(VaultRegistry.Entry entry) {
+        new AlertDialog.Builder(this).setTitle("Forget " + application().localName(entry) + "?")
+                .setMessage("This removes the vault from normal selection, its biometric credential and its Sync binding. Encrypted local data is kept in this installation's private storage. Recovering it requires the vault password. Clearing app data or uninstalling can permanently destroy it.")
+                .setNegativeButton("Cancel", null).setPositiveButton("Forget", (dialog, which) -> application().forgetEntry(entry.id())).show();
+    }
+    private void changeVault() {
+        clearPasswords(); clearSecret(); clearCodeWidgets(); dismissTokenChange();
+        if (biometric != null) biometric.close();
+        controller.cancelBiometricEnrollment(); controller.hideCode();
+        adding = submitted = managing = joining = false; pickerActivation = null;
+        application().changeVault();
+        render(controller.snapshot());
     }
     @Override public void onUserInteraction() {
         super.onUserInteraction(); if (controller != null) controller.userInteraction();
     }
     @Override protected void onResume() {
         super.onResume(); resumed = true;
-        if (controller != null) { controller.checkInactivity(); render(controller.snapshot()); offerBiometric(); }
+        if (controller != null) { controller.checkInactivity(); render(controller.snapshot()); }
+        else if (!replacing) renderSelection();
     }
     @Override protected void onPause() {
         resumed = false;
@@ -98,12 +160,11 @@ public final class MainActivity extends Activity {
         // death loses this capability and rejects the outstanding result.
         Object retained = getLastNonConfigurationInstance();
         pickerActivation = retained instanceof String activation ? activation : null;
+        if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
+        joining = application().joining(controller);
         if (controller == null) {
-            TextView unsupported = new TextView(this);
-            String diagnostic = ((TotipoApplication) getApplication()).startupDiagnostic();
-            if (diagnostic == null) unsupported.setText(Build.VERSION.SDK_INT < 30 ? getString(R.string.unsupported_runtime) : "No vault selected");
-            else unsupported.setText(diagnostic);
-            unsupported.setPadding(24, 80, 24, 24); setContentView(unsupported);
+            renderSelection();
         } else {
             android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
             BiometricCredentials credentials;
@@ -115,8 +176,6 @@ public final class MainActivity extends Activity {
                     });
             biometric.changed = () -> handler.post(() -> { if (resumed && !replacing) render(controller.snapshot()); });
             controller.checkInactivity();
-            if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
             render(controller.snapshot());
         }
     }
@@ -125,10 +184,9 @@ public final class MainActivity extends Activity {
         ((TotipoApplication) getApplication()).selection().observe(selectionObserver);
         if (!replacing && controller != null) { controller.checkInactivity(); render(controller.snapshot()); controller.attach(listener); }
     }
-    @Override protected void onStop() { ((TotipoApplication) getApplication()).selection().detach(selectionObserver); biometricOffered = false; if (biometric != null) biometric.close(); if (controller != null) controller.cancelBiometricEnrollment(); clearPasswords(); clearSecret(); dismissTokenChange(); if (controller != null) controller.detach(listener); super.onStop(); }
+    @Override protected void onStop() { ((TotipoApplication) getApplication()).selection().detach(selectionObserver); if (biometric != null) biometric.close(); if (controller != null) controller.cancelBiometricEnrollment(); clearPasswords(); clearSecret(); dismissTokenChange(); if (controller != null) controller.detach(listener); super.onStop(); }
     // No session closure on Activity stop/destruction. No credential Bundle or saved widget state.
     private void render(Snapshot state) {
-        if (state.state() == State.OPEN) biometricOffered = false;
         if (state.state() == State.LOCKING || state.state() == State.FAILED_CLOSE || state.state() == State.RETIRING || state.state() == State.RETIRED) {
             if (biometric != null) biometric.close(); dismissTokenChange(); managing = false;
         }
@@ -146,12 +204,12 @@ public final class MainActivity extends Activity {
         if (state.state() != State.OPEN && state.state() != State.BUSY) { clearSecret(); adding = submitted = false; }
 
         String next = switch (state.state()) {
-            case NO_LOCAL_VAULT, CREATING -> joining && controller.hasJoinCandidate() && state.state() == State.NO_LOCAL_VAULT ? "join" : "create";
+            case NO_LOCAL_VAULT, CREATING -> joining ? (controller.hasJoinCandidate() && state.state() == State.NO_LOCAL_VAULT ? "join" : "joinSetup") : "create";
             case LOCKED, UNLOCKING -> "unlock";
             case OPEN, BUSY -> adding ? "add" : "open";
             default -> "status";
         };
-        if (managing && (state.state() == State.OPEN || state.state() == State.LOCKED || state.state() == State.NO_LOCAL_VAULT)) next = "manage";
+        if (managing && !joining && (state.state() == State.OPEN || state.state() == State.LOCKED || state.state() == State.NO_LOCAL_VAULT)) next = "manage";
         if (!next.equals(surface)) build(next);
         String message = next.equals("open") ? mainStatus(state) : state.message();
         if (!biometric.message().isEmpty() && (next.equals("unlock") || next.equals("open")))
@@ -192,7 +250,7 @@ public final class MainActivity extends Activity {
             renderSyncControl(syncAction, controller.dailySyncStatus());
             syncAction.setEnabled(controller.canSync());
         }
-        offerBiometric();
+
         if (tokens != null) {
             var view = state.view();
             tokens.replace(view == null ? java.util.List.of() : view.tokens(), controller.canAddToken(),
@@ -235,17 +293,26 @@ public final class MainActivity extends Activity {
         }
         Button more = buttonIn(toolbar, "⋮", () -> {}); more.setContentDescription("More options");
         more.setOnClickListener(ignored -> showOverflow(more));
+        more.setVisibility(controller == null || !controller.selectedAuthority() ? View.GONE : View.VISIBLE);
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        if (next.equals("manage") || next.equals("create") || next.equals("join")) buildFolderManagement();
+        if (next.equals("selection")) return;
+        if (controller.selectedAuthority()) label(application().selectedVaultLabel(controller));
+        if (next.equals("manage") || next.equals("joinSetup") || next.equals("join")) buildFolderManagement();
+        if (next.equals("create")) label("Create a new independent local-only vault. A Sync folder can be configured after creation.");
+        if (next.equals("joinSetup")) {
+            label("Join existing vault").setTextSize(22);
+            label("Choose its Sync folder, then check the existing vault before entering its password.");
+            button("Cancel setup", this::changeVault); return;
+        }
         if (next.equals("manage")) button("Back", () -> { managing = false; surface = null; render(controller.snapshot()); });
         if (next.equals("create") || next.equals("unlock") || next.equals("join")) {
             label(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock Vault").setTextSize(22);
             password = passwordField("Password");
             if (next.equals("create")) confirmation = passwordField("Confirm password");
             action = button(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock", () -> authenticate(false));
-            if (next.equals("join")) button("Cancel Join", () -> { controller.cancelJoin(); clearPasswords(); joining = false; build("create"); render(controller.snapshot()); });
+            if (next.equals("join") || next.equals("create")) button("Cancel setup", this::changeVault);
             if (next.equals("unlock") && biometric.available()) {
-                if (biometric.configured()) button("Use biometrics", () -> { biometricOffered = true; biometric.unlock(); });
+                if (biometric.configured()) button("Use biometrics", () -> { biometric.unlock(); });
                 {
                     enableBiometric = new android.widget.CheckBox(this);
                     enableBiometric.setText(biometric.configured() ? "Replace biometric unlock for this vault" : "Enable biometric unlock for this vault");
@@ -348,6 +415,7 @@ public final class MainActivity extends Activity {
     }
     private void showOverflow(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Change Vault").setOnMenuItemClickListener(item -> { changeVault(); return true; });
         menu.getMenu().add("Manage sync folder").setOnMenuItemClickListener(item -> {
             controller.hideCode(); managing = true; adding = false; surface = null; render(controller.snapshot()); return true;
         });
@@ -451,6 +519,12 @@ public final class MainActivity extends Activity {
     @android.annotation.SuppressLint("GestureBackNavigation")
     @Override public void onBackPressed() { navigateBack(); }
     private void navigateBack() {
+        if (controller == null) {
+            if (vaultManagement) { vaultManagement = false; renderSelection(); } else finish();
+            return;
+        }
+        if (!controller.selectedAuthority()) { finish(); return; }
+        if (joining || "create".equals(surface)) { changeVault(); return; }
         if (managing) { managing = false; surface = null; render(controller.snapshot()); return; }
         if (adding) { if (controller.snapshot().state() == State.OPEN) cancelAdd(); return; }
         finish();

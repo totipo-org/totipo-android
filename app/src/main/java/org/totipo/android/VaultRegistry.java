@@ -15,8 +15,8 @@ import static java.nio.file.StandardOpenOption.*;
  * A failed write poisons this instance: restart/recovery must inspect disk, never retry blind.
  */
 public final class VaultRegistry {
-    private static final int MAGIC = 0x544d5631, VERSION = 1, MAX_ENTRIES = 128, MAX_BYTES = 65536;
-    public enum State { PENDING, ESTABLISHED }
+    private static final int MAGIC = 0x544d5631, VERSION = 2, MAX_ENTRIES = 128, MAX_BYTES = 65536;
+    public enum State { PENDING, ESTABLISHED, FORGETTING, DETACHED }
     public record Entry(String id, String label, State state, boolean creationAttempted) {
         public Entry {
             validateId(id);
@@ -164,6 +164,7 @@ public final class VaultRegistry {
         entry(id); Path root = root(id); directory(root); return root;
     }
     public synchronized void select(String id) throws IOException {
+        if (entry(id).state() == State.FORGETTING) throw new RecoveryRequired("Forget cleanup must finish before recovery.");
         validateRoot(id); persist(entries, id);
     }
     synchronized void beginCreation(String id) throws IOException {
@@ -178,6 +179,57 @@ public final class VaultRegistry {
     synchronized void established(String id) throws IOException {
         Entry entry = entry(id); validateRoot(id);
         if (entry.state() != State.ESTABLISHED) replace(new Entry(id, entry.label(), State.ESTABLISHED, true));
+    }
+    public synchronized void rename(String id, String label) throws IOException {
+        Entry old = entry(id);
+        replace(new Entry(id, label, old.state(), old.creationAttempted()));
+    }
+    /** Durable intent BEFORE any scoped cleanup. Retrying never removes canonical data. */
+    synchronized void beginForget(String id) throws IOException {
+        Entry old = entry(id);
+        if (old.state() == State.DETACHED || old.state() == State.FORGETTING) return;
+        replace(new Entry(id, old.label(), State.FORGETTING, old.creationAttempted()));
+    }
+    synchronized void finishForget(String id) throws IOException {
+        Entry old = entry(id);
+        if (old.state() != State.FORGETTING) throw new RecoveryRequired("Forget intent missing.");
+        replace(new Entry(id, old.label(), State.DETACHED, old.creationAttempted()));
+    }
+    /** Bounded structural recognition is only a conservative refusal, never authentication.
+     * All roots, including detached ones, remain accounted for. No session/provider is opened. */
+    synchronized void refusePossibleDuplicate(String id, org.totipo.VaultId identity) throws IOException {
+        bindingEntries(); entry(id);
+        for (Entry other : entries) {
+            if (other.id().equals(id)) continue;
+            Path file = root(other.id()).resolve("vault");
+            if (!exists(file)) continue;
+            validateRoot(other.id()); regular(file);
+            byte[] bytes;
+            bytes = recognitionBytes(file);
+            try {
+                if (org.totipo.Totipo.vaultId(bytes).equals(identity))
+                    throw new RecoveryRequired("Possible duplicate vault identity in retained local data. Preserve both roots; explicit storage recovery is required. No histories were merged.");
+            } catch (IllegalArgumentException malformed) { /* Invalid bytes cannot identify another vault. */ }
+        }
+    }
+    synchronized void refusePossibleDuplicate(String id) throws IOException {
+        Path file = validateRoot(id).resolve("vault");
+        if (!exists(file)) return;
+        regular(file);
+        byte[] bytes;
+        bytes = recognitionBytes(file);
+        try { refusePossibleDuplicate(id, org.totipo.Totipo.vaultId(bytes)); }
+        catch (IllegalArgumentException malformed) { /* Normal selected discovery supplies the diagnostic. */ }
+    }
+    private static byte[] recognitionBytes(Path file) throws IOException {
+        try (var input = Files.newInputStream(file, READ, NOFOLLOW_LINKS)) {
+            byte[] bytes = new byte[88]; int size = 0, count;
+            while (size < bytes.length && (count = input.read(bytes, size, bytes.length - size)) != -1) {
+                if (count == 0) throw new IOException("No recognition read progress");
+                size += count;
+            }
+            return Arrays.copyOf(bytes, size);
+        }
     }
     private void replace(Entry entry) throws IOException {
         var updated = new ArrayList<>(entries);
@@ -228,16 +280,21 @@ public final class VaultRegistry {
             byte[] payload = Arrays.copyOf(bytes, bytes.length - 32);
             if (!MessageDigest.isEqual(digest(payload), Arrays.copyOfRange(bytes, payload.length, bytes.length))) throw new IOException();
             try (var in = new DataInputStream(new ByteArrayInputStream(payload))) {
-                if (in.readInt() != MAGIC || in.readInt() != VERSION) throw new IOException();
+                if (in.readInt() != MAGIC) throw new IOException();
+                int version = in.readInt(); if (version != 1 && version != VERSION) throw new IOException();
                 int count = in.readInt(); if (count < 0 || count > MAX_ENTRIES) throw new IOException();
                 var decoded = new ArrayList<Entry>();
                 for (int i = 0; i < count; i++) {
                     String id = in.readUTF(); String label = bool(in) ? in.readUTF() : null;
-                    int state = in.readUnsignedByte(); if (state > 1) throw new IOException();
+                    int state = in.readUnsignedByte(); if (state > (version == 1 ? 1 : 3)) throw new IOException();
                     decoded.add(new Entry(id, label, State.values()[state], bool(in)));
                 }
                 String selected = bool(in) ? in.readUTF() : null;
                 if (in.read() != -1) throw new IOException();
+                // Last selection is a navigation hint, never root/session authority.
+                // A stale/invalid hint does not invalidate otherwise checked registry entries.
+                String hint = selected;
+                if (hint != null && decoded.stream().noneMatch(e -> e.id().equals(hint))) selected = null;
                 validate(decoded, selected); entries = List.copyOf(decoded); lastSelected = selected;
             }
         } catch (IOException | IllegalArgumentException malformed) {

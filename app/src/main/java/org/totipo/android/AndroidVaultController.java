@@ -706,6 +706,10 @@ public final class AndroidVaultController {
                 try { authenticated = backend.authenticateCandidate(exact, joinCredential.value); }
                 catch (IllegalArgumentException invalid) { authenticated = false; }
                 if (!authenticated) { finishJoin(cancelled, "Could not unlock this vault."); return; }
+                try { owner.refusePossibleDuplicate(org.totipo.Totipo.vaultId(exact)); }
+                catch (IOException duplicateOrUnavailable) {
+                    finishJoin(cancelled, "Join refused: possible duplicate identity or local registry needs recovery. Existing encrypted data was preserved."); return;
+                }
                 if (!joinCurrent(request, generation, cancelled)) { finishJoin(cancelled, null); return; }
                 // Temporary session has closed. Never authenticate a changed replacement candidate.
                 providerIo.submit(syncBinding.transport(), request, true, fresh -> joinDispatch(cancelled, () -> {

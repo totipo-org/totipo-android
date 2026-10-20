@@ -627,6 +627,26 @@ public final class AndroidVaultControllerTest {
             await(() -> controller.snapshot().view().tokens().size()==3); assertSame(session,real.session);
         } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
     }
+    @Test public void authenticatedDuplicateJoinNeverEnrollsOrMarksCreationAttempted() throws Exception {
+        ForegroundVaultCoordinatorTest.realCoreFixture();
+        try {
+            var field = LocalReplicaOwner.class.getDeclaredField("registry"); field.setAccessible(true);
+            var registry = (VaultRegistry)field.get(owner);
+            var retained = registry.reserve("Remembered replica");
+            byte[] exact = ForegroundVaultCoordinatorTest.productFixtureVault();
+            Files.write(registry.root(retained.id()).resolve("vault"), exact);
+            var port = startBound(); port.snapshot = ForegroundVaultCoordinatorTest.productFixtureScan();
+            prepareJoin(); char[] password = "M1H disposable fixture".toCharArray();
+            accept(() -> controller.joinExistingVault(password)); await(this::providerDone);
+            assertEquals(1, candidateAuthentications.get());
+            assertArrayEquals(new char[password.length], password);
+            assertEquals(State.NO_LOCAL_VAULT, controller.snapshot().state());
+            assertFalse(Files.exists(localRoot().resolve("vault")));
+            assertFalse(registry.entry(owner.localId()).creationAttempted());
+            assertArrayEquals(exact, Files.readAllBytes(registry.root(retained.id()).resolve("vault")));
+            assertTrue(controller.syncView().message().contains("duplicate"));
+        } finally { ForegroundVaultCoordinatorTest.removeFixture(); }
+    }
     @Test public void joinInvalidInputMalformedMissingAndUnavailableLeaveAbsent() throws Exception {
         ForegroundVaultCoordinatorTest.realCoreFixture();
         try {

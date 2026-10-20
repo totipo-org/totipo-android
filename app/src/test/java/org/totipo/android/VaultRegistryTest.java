@@ -256,7 +256,7 @@ public final class VaultRegistryTest {
     @Test public void validChecksumDoesNotAuthorizeUnknownVersionBooleanOrTrailingPayload() throws Exception {
         var registry = registry(); registry.reserve(null);
         byte[] encoded = Files.readAllBytes(metadata()); byte[] payload = Arrays.copyOf(encoded, encoded.length - 32);
-        byte[] unsupported = payload.clone(); unsupported[7] = 2; writeChecksummedPayload(unsupported);
+        byte[] unsupported = payload.clone(); unsupported[7] = 3; writeChecksummedPayload(unsupported);
         assertThrows(IOException.class, this::registry);
         byte[] invalidBoolean = payload.clone(); invalidBoolean[12 + 2 + 32] = 2; writeChecksummedPayload(invalidBoolean);
         assertThrows(IOException.class, this::registry);

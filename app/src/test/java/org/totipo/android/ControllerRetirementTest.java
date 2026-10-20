@@ -269,6 +269,12 @@ public final class ControllerRetirementTest {
         try {
             selection.retire(); await(() -> controller.retirement() == Retirement.WAITING_PROVIDER);
             unavailableB(); assertEquals(ForegroundVaultCoordinator.State.CLOSED, real.coordinator.lifecycle());
+            var before = registry.entry(a);
+            assertThrows(IllegalStateException.class, () -> VaultForget.run(registry, selection, a, new VaultForget.Cleanup() {
+                public void biometrics() { fail("Cleanup before provider drain"); }
+                public void syncBinding() { fail("Binding retired before provider drain"); }
+            }));
+            assertEquals(before, registry.entry(a));
             assertNull(controller.snapshot().view()); assertFalse(controller.checkSyncFolder()); assertFalse(controller.sync());
             assertEquals(1, port.probes);
         } finally { release.countDown(); }

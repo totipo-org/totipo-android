@@ -515,14 +515,9 @@ Activities observe selection and recreate their presentation for a new activatio
 old controller, observer, enrollment and picker callbacks retain their originating
 activation. Only the non-secret picker activation is retained in memory across configuration
 recreation; process death drops it and rejects the outstanding result.
-The
-registry supports multiple entries, but a registry with multiple entries is
-preserved and requires the later selection UI; no switching or inactive-vault
-Sync is exposed. Optional biometric credentials are scoped to the selected entry;
-global credentials are never reused. Complete A → B retirement is exercised through
-the Application's internal selection authority by controlled qualification. No
-production Change Vault entry point, selection screen, inactive-vault Sync or
-management of inactive entries is exposed; public navigation remains A-MV5 work.
+The registry supports multiple remembered entries through the A-MV5 selection
+surface described below. Optional biometric credentials are scoped to the selected
+entry; global credentials are never reused. Inactive vaults never synchronize.
 
 The debug disposable-create probe remains disabled while the Application holds
 selection. Use the isolated registry qualification harness for synthetic creation;
@@ -570,7 +565,7 @@ visible in folder management when release fails or is deferred. Some unused gran
 may therefore remain until explicit recovery; no broad startup cleanup is performed.
 
 A-MV2's complete retirement and single-active-session guarantees remain in force.
-A-MV5 public multi-entry navigation remains unavailable; A-MV4 adds only selected-entry biometric controls.
+A-MV5 exposes public selection and management while retaining these per-entry boundaries.
 See the [A-MV3 report](review/A_MV3_PER_VAULT_SYNC_REPORT.md) for qualification evidence
 and conservative cleanup limitations.
 
@@ -623,7 +618,7 @@ revokes the Activity request and enrollment ownership, durably marks `.disabled`
 removes that entry's record/temporary metadata and its own key, and checks completion.
 Partial cleanup reports failure, keeps a blocker and can be retried. A-MV5 has a
 small Application cleanup hook that refuses a still-selected or incompletely retired
-entry; it never deletes the canonical encrypted store. No Forget UI is added.
+entry; it never deletes the canonical encrypted store. A-MV5 uses it during recoverable Forget.
 
 Missing/malformed/incompatible records, missing or invalidated keys and tag failures
 leave password authentication available. Temporary hardware unavailability, lockout,
@@ -647,3 +642,85 @@ including changes to enrolled biometrics, may invalidate several keys. There is 
 rollback resistance, secure filesystem erasure or guarantee against a compromised
 app UID concurrently replacing private files. Physical qualification status and
 remaining hardware scenarios are recorded explicitly in the A-MV4 report.
+
+
+## Multi-vault selection and management
+
+A fresh installation shows **Initial setup** with **Create Local Vault** and
+**Join Existing Vault**. Create reuses the initial durable unused reservation and
+creates an independent, local-only vault. It needs no folder permission, Syncthing
+or biometric enrollment. Choose a password independently for each vault; equal
+passwords do not make vaults the same identity. **Join Existing Vault** reserves a
+new private replica, asks for its existing Sync folder, recognizes and authenticates
+its exact VAULT with the existing password, rechecks provider evidence and installs
+create-only. Successful Join uses the existing automatic Sync flow.
+
+With one established entry and a valid last selection, startup shows its locked
+screen. Multiple remembered entries show **Vault selection**, with a valid
+last-selected established entry marked **Last selected**. Highlighting never
+activates or authenticates it. Missing last selection, incomplete entries or
+recovery evidence never authorize choosing another entry silently. Password and
+**Use biometrics** are explicit actions; startup never starts authentication.
+
+**More options → Change Vault** is available from locked and unlocked screens,
+including a single remembered vault. It clears forms, search, revealed codes,
+clipboard ownership, biometric and enrollment authority, and permanently retires
+the selected controller. The neutral closing screen remains until local/session/
+store closure, admitted provider operations and their handoffs have actually
+finished. Another controller cannot be constructed earlier. Failed closure offers
+its existing retry; a stuck provider can require process restart. No forced timeout
+release exists. Back from selection exits normally and never restores a retired
+controller or an unlocked session. Rotation preserves a valid authenticated session;
+setup secrets and biometric authorization do not survive Activity recreation.
+
+The selected vault retains **Manage sync folder**, optional independent biometric
+enrollment/disable, password fallback and the fixed 15-minute inactivity policy.
+Background time counts. A local-only vault can attach a folder later; Disconnect
+removes only its binding and retains local encrypted history and identity. Selector
+summaries distinguish **Local only**, **Sync folder configured**, **Folder access
+needed** and configuration recovery. A configured folder is not evidence that
+publication completed or another device received anything. No inactive controller,
+biometric helper or provider session is constructed just to render the selector.
+
+After Change Vault, **Manage Vaults** offers optional local labels and **Forget**.
+Labels can repeat, contain at most 128 UTF-16 code units, and contain no controls
+or malformed Unicode. Unnamed entries use Vault 1, Vault 2, etc.; repeated labels
+include their local entry number. Labels never change IDs, roots, credentials or
+Sync configuration. Numbering follows the retained registry order.
+
+**Forget does not delete encrypted local data.** After complete retirement it
+persists cleanup intent, removes only that entry's biometric record/key, retires
+its Sync binding through the shared SAF permission owner, and atomically marks it
+forgotten. The ID and root remain reserved in registry schema 2; schema 1 remains
+readable. Forgotten entries stay hidden from normal selection after restart.
+**Manage Vaults → Recover** selects the retained entry for normal password unlock;
+only successful authentication reestablishes it. Recovery requires the app-private
+data on this installation and the vault password. **Clearing app data or uninstalling
+Totipo can permanently destroy local-only and forgotten vaults.** No recovery after
+uninstall is promised. Shared, ambiguous or failed-release SAF grants retain their
+existing durable cleanup records; management exposes deferred cleanup and a retry.
+
+Interrupted Forget remains an explicit **Retry Forget cleanup** entry. Credential
+cleanup failure never counts as success; an uncertain registry write requires
+restart and explicit metadata recovery. No canonical files are deleted or merged.
+Pending Create/Join entries with retained VAULT data can use normal password-open;
+an attempted creation without usable VAULT cannot be retried as fresh Create.
+An unused, unattempted empty reservation has an explicit allocation recovery action.
+Missing roots, corrupt metadata, unknown roots and unsafe paths preserve evidence;
+there is no automatic metadata repair, filesystem import, overwrite or broad scan.
+Possible duplicate VAULT identities conservatively block activation/Join, including
+retained roots. Structural recognition is not authentication. Preserve both histories
+for explicit storage recovery rather than merging or deleting them.
+
+External OTP enrollment cannot select or unlock a vault. Without an already open
+selected controller, scan/share must be repeated after explicit unlock. Selection
+changes discard old drafts and reject old picker/prompt callbacks. No OTP secret is
+stored in the registry, saved Activity state or navigation state.
+
+The clean-slate pre-A-MV1 upgrade policy remains: preserve/synchronize existing vaults
+with the prior app before any deliberate data reset. No legacy adoption or credential
+migration is provided. Platform UID/Keystore assumptions, best-effort JVM wiping,
+clipboard limitations, process-compromise limits and lack of rollback resistance
+remain unchanged. See [multi-vault architecture](MULTI_VAULT.md) and the
+[A-MV5 report](review/A_MV5_ANDROID_MULTI_VAULT_UI_REPORT.md) for exact qualification
+status; uncompleted physical or human Nix gates are not claimed as passing.

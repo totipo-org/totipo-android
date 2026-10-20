@@ -81,6 +81,7 @@ public final class TokenLifecycleRegression extends Instrumentation {
     @Override public void onStart(){Bundle output=new Bundle();int status=0;
         try {
             check(getTargetContext().getPackageName().equals("org.totipo.securityqualification"),"isolated_package");
+            await(() -> !getTargetContext().getSystemService(KeyguardManager.class).isKeyguardLocked());
             check(!getTargetContext().getSystemService(KeyguardManager.class).isKeyguardLocked(),"device_unlocked");
             application=(TotipoApplication)getTargetContext().getApplicationContext();
             runOnMainSync(()->application.selection().retire());

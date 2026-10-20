@@ -63,15 +63,25 @@ public final class ControllerRetirementRegression extends Instrumentation {
         });
         check(copied.get(), label);
     }
+    private android.view.View findControl(android.view.View root, String name) {
+        if (root instanceof android.widget.TextView text && name.contentEquals(text.getText())) return root;
+        if (name.contentEquals(root.getContentDescription() == null ? "" : root.getContentDescription())) return root;
+        if (root instanceof android.view.ViewGroup group) for (int i = 0; i < group.getChildCount(); i++) {
+            var found = findControl(group.getChildAt(i), name); if (found != null) return found;
+        }
+        return null;
+    }
     @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle(); int code = 0; var release = new CountDownLatch(1);
         try {
             check(getTargetContext().getPackageName().equals("org.totipo.securityqualification"), "isolated_package");
+            await(() -> !getTargetContext().getSystemService(KeyguardManager.class).isKeyguardLocked());
             check(!getTargetContext().getSystemService(KeyguardManager.class).isKeyguardLocked(), "device_unlocked");
             runOnMainSync(() -> {}); // Application startup completion barrier.
             var app = (TotipoApplication)getTargetContext().getApplicationContext();
             var registry = (VaultRegistry)field(app, "registry");
+            if (app.vaultController() == null) runOnMainSync(() -> app.beginSetup(false));
             var authority = app.selection(); var a = app.vaultController();
             check(a != null && registry.entries().size() == 1, "fresh_single_entry");
             await(() -> a.snapshot().state() == AndroidVaultController.State.NO_LOCAL_VAULT);
@@ -132,9 +142,24 @@ public final class ControllerRetirementRegression extends Instrumentation {
                     value -> lane.dispatch(handler::post, () -> late.set(true)));
             check(entered.await(10, TimeUnit.SECONDS), "provider_entered");
             var bId = registry.reserve("Public B retirement fixture").id();
-            runOnMainSync(() -> { authority.retire(); authority.retire(); });
+            // Exercise the production navigation action while the provider lane is held.
+            runOnMainSync(() -> {
+                var root = activity.get().getWindow().getDecorView();
+                var more = findControl(root, "More options");
+                check(more != null && more.performClick(), "overflow_UI_opened");
+            });
+            await(() -> getUiAutomation().getRootInActiveWindow() != null && !getUiAutomation().getRootInActiveWindow().findAccessibilityNodeInfosByText("Change Vault").isEmpty());
+            var change = getUiAutomation().getRootInActiveWindow().findAccessibilityNodeInfosByText("Change Vault").get(0);
+            try { getUiAutomation().waitForIdle(300, 5000); }
+        catch (java.util.concurrent.TimeoutException busy) { throw new AssertionError("Native UI did not settle"); }
+            check(change.refresh(), "change_vault_node_current");
+            android.graphics.Rect bounds = new android.graphics.Rect(); change.getBoundsInScreen(bounds);
+            check(!bounds.isEmpty() && change.isEnabled(), "change_vault_UI_available");
+            long down = SystemClock.uptimeMillis();
+            sendPointerSync(android.view.MotionEvent.obtain(down, down, android.view.MotionEvent.ACTION_DOWN, bounds.exactCenterX(), bounds.exactCenterY(), 0));
+            sendPointerSync(android.view.MotionEvent.obtain(down, SystemClock.uptimeMillis(), android.view.MotionEvent.ACTION_UP, bounds.exactCenterX(), bounds.exactCenterY(), 0));
+            waitForIdleSync(); // Pointer injection returns before the main-thread click is delivered.
             check(a.snapshot().view() == null && a.snapshot().revealedCode() == null, "retirement_sensitive_snapshot_empty");
-            waitForIdleSync();
             check(retirementSecret.length() == 0, "retirement_clears_form");
             await(() -> a.retirement() == AndroidVaultController.Retirement.WAITING_PROVIDER);
             runOnMainSync(() -> {
@@ -159,6 +184,8 @@ public final class ControllerRetirementRegression extends Instrumentation {
             check(a.snapshot().view() == null, "rotation_never_restores_tokens");
             release.countDown(); await(() -> authority.snapshot() == null);
             check(a.retirement() == AndroidVaultController.Retirement.SUCCESS, "complete_retirement");
+            await(() -> activity.get() != null && field(activity.get(), "controller") == null);
+            check(findControl(activity.get().getWindow().getDecorView(), "Manage Vaults") != null, "selector_after_actual_drain");
             check(!late.get(), "late_provider_handoff_discarded");
             runOnMainSync(() -> {
                 try {
