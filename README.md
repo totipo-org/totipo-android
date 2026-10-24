@@ -9,9 +9,9 @@ synchronization and biometric unlocking are optional.
 
 Download the signed APK from
 [GitHub Releases](https://github.com/totipo-org/totipo-android/releases/latest).
-The [0.2.1 release](https://github.com/totipo-org/totipo-android/releases/tag/v0.2.1)
-provides **`totipo-android-0.2.1.apk`**, its SHA-256 checksum and release provenance.
-Open the APK on your Android device and, if prompted, allow that browser or file
+Expand **Assets** and select the signed **`totipo-android-<version>.apk`**;
+the adjacent `.apk.sha256` file is its checksum. Verify the APK as described below,
+then open it on your Android device and, if prompted, allow that browser or file
 manager to install apps from this source. For later updates, install the new signed
 APK over the existing app; avoid uninstalling or clearing app data.
 
@@ -19,6 +19,37 @@ APK over the existing app; avoid uninstalling or clearing app data.
 when installing the APK. Biometric unlock requires available strong biometric
 hardware and enrollment. Arbitrary devices and shared-folder providers are not
 universally qualified; see the [user guide](docs/USER_GUIDE.md#compatibility).
+
+Optionally, use [Obtainium](https://github.com/ImranR98/Obtainium) to follow
+[this repository](https://github.com/totipo-org/totipo-android) and manage updates
+from GitHub Releases. Verify the signing identity below when setting it up;
+following a repository alone does not establish the expected signer.
+
+## Verify the APK
+
+Production package ID: **`org.totipo.android`**. Signing certificate SHA-256:
+
+```text
+74fd4c313856e1773fd174fba4ecd2a12cc4fde85ae34a3d8a3e986353b01632
+```
+
+This value is copied from the canonical [public fingerprint](release/signing/android-release-cert.sha256)
+for the committed [public certificate](release/signing/android-release-cert.pem).
+
+On Android, use [AppVerifier](https://github.com/soupslurpr/AppVerifier) to compare
+Totipo's package ID and signing certificate SHA-256 with the values above.
+Alternatively, on a computer with [Android SDK Build Tools](https://developer.android.com/tools/apksigner),
+run this command, replacing the filename with your downloaded APK:
+
+```sh
+apksigner verify --print-certs "totipo-android-<version>.apk"
+```
+
+The command must succeed and its **Signer #1 certificate SHA-256 digest** must
+match the fingerprint above (ignore letter case and colon separators). Stop if
+verification fails or the identity differs. The certificate fingerprint identifies
+the signer across releases; the release's `.apk.sha256` checksum identifies that
+specific APK file and is not a substitute for checking the signing certificate.
 
 ## Start using Totipo
 
