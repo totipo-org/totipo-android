@@ -1,5 +1,8 @@
 # Protected Android releases
 
+For APK installation, start with the [README](../README.md#install).
+For the managed build environment, see [development](../docs/DEVELOPMENT.md).
+
 Release 0.1.2 (versionCode 3) is the first successfully published release and remains
 unchanged. Its permanent public signing identity is committed; see
 [public identity and provisioning status](signing/README.md). No Android production
@@ -95,7 +98,7 @@ For diagnostic / developer use only, the internal read-only CLI
 prepared diff or clean committed source. It is not a public Nix app or a required
 release step.
 
-Qualify the unsigned APK from committed source. The [final APK policy](../README.md#nix-qualification-and-package)
+Qualify the unsigned APK from committed source. The [final APK policy](../docs/DEVELOPMENT.md#nix-qualification-and-package)
 checks versionName **equals reviewed VERSION** and versionCode **equals reviewed
 VERSION_CODE**, as well as application ID and SDK properties. The canonical source
 parsers remain authoritative; neither the APK nor generated provenance supplies the

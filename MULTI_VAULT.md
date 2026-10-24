@@ -1,5 +1,10 @@
 # Android multi-vault UI ownership
 
+For everyday switching, naming, Forget and Recover workflows, see the
+[user guide](docs/USER_GUIDE.md#manage-multiple-vaults). This document owns selection
+and registry state transitions. Other vault, Sync and biometric implementation
+invariants are in [vault/Sync internals](docs/ARCHITECTURE.md).
+
 `TotipoApplication` owns the existing `VaultSelection`, its shared admission authority,
 registry and SAF grant owner. MainActivity observes selection snapshots and captures
 one immutable controller/activation for its lifetime. A selection change clears its

@@ -5,7 +5,8 @@
 **Full qualification at stable boundaries. Focused validation during iteration.**
 This controls interactive agent work; CI continues to run the package-inclusive
 `nix flake check` and its unchanged-input check. Do not weaken final evidence to
-reduce invocation counts. Use the pinned Nix/direnv environment described in README.
+reduce invocation counts. Use the pinned Nix/direnv environment described in
+[development documentation](docs/DEVELOPMENT.md#managed-development-environment).
 Nix provides Gradle, JDK 17 and the Android SDK for all supported command-line builds.
 
 ### Classify before editing
