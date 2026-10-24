@@ -10,6 +10,29 @@ from source import fingerprint
 from release import load_provenance, bind_unsigned, require_metadata, unsigned_check
 
 
+def verify_signatures(apk, expected, sdk):
+    # Keep the manifest-derived supported range: a diagnostic lower-API check
+    # alone is not acceptance on the platforms where the app will be installed.
+    # Since API 28, a valid v3 signature can cause apksigner to skip v2. Force
+    # a separate v2-only platform range, and pin the signer in BOTH results.
+    for label, options, required_scheme in (
+        ('supported API range', [], 3),
+        ('v2 API range', ['--min-sdk-version', '24', '--max-sdk-version', '27'], 2),
+    ):
+        result = subprocess.run([str(sdk / 'apksigner'), 'verify', '--verbose', '--print-certs',
+                                 *options, str(apk)], text=True, capture_output=True, check=True)
+        output = result.stdout
+        for scheme in (1, 2, 3, 4):
+            values = re.findall(rf'^Verified using v{scheme} scheme .*: (true|false)$', output, re.M)
+            require(len(values) == 1, f'Missing/ambiguous v{scheme} verification result ({label})')
+            if scheme in (1, 4) or scheme == required_scheme:
+                wanted = 'true' if scheme == required_scheme else 'false'
+                require(values == [wanted], f'Unexpected v{scheme} signature scheme ({label})')
+        require(re.findall(r'^Number of signers: (\d+)$', output, re.M) == ['1'],
+                f'Expected exactly one signer ({label})')
+        signers = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]+)$', output, re.M)
+        require(signers == [expected], f'Signing certificate mismatch ({label})')
+
 
 def verify(apk, expected, provenance, unsigned):
     p = load_provenance(provenance)
@@ -17,15 +40,7 @@ def verify(apk, expected, provenance, unsigned):
     bind_unsigned(unsigned, p)
     unsigned_check(unsigned)
     sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
-    result = subprocess.run([str(sdk / 'apksigner'), 'verify', '--verbose', '--print-certs',
-                             str(apk)], text=True, capture_output=True, check=True)
-    output = result.stdout
-    for scheme, wanted in ((1, 'false'), (2, 'true'), (3, 'true'), (4, 'false')):
-        require(re.search(rf'^Verified using v{scheme} scheme .*: {wanted}$', output, re.M),
-                f'Unexpected v{scheme} signature scheme')
-    require(re.search(r'^Number of signers: 1$', output, re.M), 'Expected exactly one signer')
-    signers = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]+)$', output, re.M)
-    require(signers == [fingerprint(expected)], 'Signing certificate mismatch')
+    verify_signatures(apk, fingerprint(expected), sdk)
     require_metadata(apk, p)
     subprocess.run([str(sdk / 'zipalign'), '-c', '-P', '16', '4', str(apk)], check=True,
                    stdout=subprocess.DEVNULL)

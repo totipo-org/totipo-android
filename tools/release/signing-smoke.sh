@@ -46,21 +46,66 @@ sha256sum "$work/first.der" | cut -d ' ' -f 1 > "$work/expected.sha256"
 fixture_fp=$(cat "$work/expected.sha256")
 sed -i "s/\"certificate_sha256\": \"0*\"/\"certificate_sha256\": \"$fixture_fp\"/" "$work/release-provenance.json"
 provenance_before=$(sha256sum "$work/release-provenance.json")
-for kind in first second altered; do
+for kind in first second altered v2-only v3-only; do
     key=first
     input="$unsigned"
     if [[ "$kind" == second ]]; then key=second; fi
     if [[ "$kind" == altered ]]; then input="$work/altered.apk"; fi
+    v2=true
+    v3=true
+    if [[ "$kind" == v2-only ]]; then v3=false; fi
+    if [[ "$kind" == v3-only ]]; then v2=false; fi
     "$sdk/apksigner" sign --ks "$work/$key.p12" --ks-type PKCS12 --ks-key-alias test \
         --ks-pass env:TEST_STORE_PASSWORD --key-pass env:TEST_STORE_PASSWORD \
-        --alignment-preserved true --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true \
+        --alignment-preserved true --v1-signing-enabled false --v2-signing-enabled "$v2" --v3-signing-enabled "$v3" \
         --v4-signing-enabled false --out "$work/$kind-signed.apk" "$input"
 done
 rm -f "$work/first.p12" "$work/second.p12"
 unset TEST_STORE_PASSWORD
 # No private key remains when repository verifiers resume.
 test ! -e "$work/first.p12" && test ! -e "$work/second.p12"
+# Mutate only a cryptographic signature value in each scheme's signing block.
+# This is fixture corruption, not a verifier: the SDK decides signature validity.
+python3 -B - "$work" <<'PY'
+from pathlib import Path
+import struct, sys
+work = Path(sys.argv[1])
+original = (work / 'first-signed.apk').read_bytes()
+eocd = original.rfind(b'PK\x05\x06')
+central = struct.unpack_from('<I', original, eocd + 16)[0]
+assert original[central - 16:central] == b'APK Sig Block 42'
+size = struct.unpack_from('<Q', original, central - 24)[0]
+start = central - size - 8
+assert struct.unpack_from('<Q', original, start)[0] == size
+
+def lp(data, offset):
+    size = struct.unpack_from('<I', data, offset)[0]
+    return offset + 4, offset + 4 + size
+
+found = set()
+offset = start + 8
+while offset < central - 24:
+    size, ident = struct.unpack_from('<QI', original, offset)
+    if ident in (0x7109871a, 0xf05368c0):
+        scheme = 2 if ident == 0x7109871a else 3
+        signers, _ = lp(original, offset + 12)
+        signer, _ = lp(original, signers)
+        _, after_data = lp(original, signer)
+        signatures, _ = lp(original, after_data + (8 if scheme == 3 else 0))
+        signature_record, _ = lp(original, signatures)
+        signature, end = lp(original, signature_record + 4)  # skip algorithm ID
+        assert end > signature
+        changed = bytearray(original)
+        changed[signature] ^= 1
+        (work / f'invalid-v{scheme}.apk').write_bytes(changed)
+        found.add(scheme)
+    offset += 8 + size
+assert found == {2, 3}
+PY
 verify=(python3 -B tools/release/verify-signed-apk.py --provenance "$work/release-provenance.json" --unsigned "$unsigned")
+# Record the complete scheme/certificate output, including the skipped-v2 result.
+"$sdk/apksigner" verify --verbose --print-certs "$work/first-signed.apk"
+"$sdk/apksigner" verify --verbose --print-certs --min-sdk-version 24 "$work/first-signed.apk"
 "${verify[@]}" "$work/first-signed.apk" --fingerprint "$work/expected.sha256"
 sha256sum "$work/first-signed.apk"
 expect_failure() {
@@ -74,6 +119,24 @@ printf 'malformed\n' > "$work/malformed.sha256"
 expect_failure "${verify[@]}" "$work/first-signed.apk" --fingerprint "$work/wrong.sha256"
 expect_failure "${verify[@]}" "$work/second-signed.apk" --fingerprint "$work/expected.sha256"
 expect_failure "${verify[@]}" "$unsigned" --fingerprint "$work/expected.sha256"
+for kind in v2-only v3-only; do
+    # Both are platform-valid at minSdk 30, but violate the two-scheme policy.
+    "$sdk/apksigner" verify "$work/$kind-signed.apk"
+    expect_failure "${verify[@]}" "$work/$kind-signed.apk" --fingerprint "$work/expected.sha256"
+done
+# A corrupted v2 can hide behind a valid v3 in the default range, and vice versa
+# in the v2-only range. Each independent SDK check must still reject corruption.
+"$sdk/apksigner" verify "$work/invalid-v2.apk"
+"$sdk/apksigner" verify --min-sdk-version 24 --max-sdk-version 27 "$work/invalid-v3.apk"
+expect_failure "$sdk/apksigner" verify --min-sdk-version 24 --max-sdk-version 27 "$work/invalid-v2.apk"
+cat "$work/negative.log"
+grep -q 'APK Signature Scheme v2 signer #1: .* signature over signed-data did not verify' "$work/negative.log"
+expect_failure "$sdk/apksigner" verify "$work/invalid-v3.apk"
+cat "$work/negative.log"
+grep -q 'APK Signature Scheme v3 signer #1: .* signature over signed-data did not verify' "$work/negative.log"
+for scheme in 2 3; do
+    expect_failure "${verify[@]}" "$work/invalid-v$scheme.apk" --fingerprint "$work/expected.sha256"
+done
 python3 -B - "$work/first-signed.apk" "$work/tampered.apk" <<'PY'
 import sys, zipfile
 from pathlib import Path
@@ -92,4 +155,4 @@ grep -q 'APK ZIP payload differs' "$work/negative.log"
 expect_failure "${verify[@]}" "$work/first-signed.apk" --fingerprint "$work/malformed.sha256"
 test "$before" = "$(sha256sum "$unsigned")"
 test "$provenance_before" = "$(sha256sum "$work/release-provenance.json")"
-echo 'PASS: disposable signing, six negative cases, original unsigned SHA unchanged; temporary keys erased'
+echo 'PASS: disposable signing, ten verifier negatives plus two SDK corruption checks, original unsigned SHA unchanged; temporary keys erased'

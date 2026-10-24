@@ -255,9 +255,31 @@ class ReleaseTests(unittest.TestCase):
              patch.object(signed, 'unsigned_check'), patch.object(signed, 'bind_unsigned'), \
              patch.object(signed, 'require_metadata'), \
              patch.object(signed.subprocess, 'run', side_effect=[SimpleNamespace(stdout=self.signature()),
+                          SimpleNamespace(stdout=self.signature()),
                           subprocess.CalledProcessError(1, 'zipalign')]):
             with self.assertRaises(subprocess.CalledProcessError):
                 signed.verify('signed.apk', fp, provenance, self.unsigned)
+
+    def test_supported_range_and_independent_v2_signer(self):
+        supported = self.signature().replace('v2 scheme (test): true', 'v2 scheme (test): false')
+        v2 = self.signature().replace('v3 scheme (test): true', 'v3 scheme (test): false')
+        sdk = Path('/pinned/sdk')
+        with patch.object(signed.subprocess, 'run', side_effect=[
+                SimpleNamespace(stdout=supported), SimpleNamespace(stdout=v2)]) as run:
+            signed.verify_signatures('test.apk', 'a' * 64, sdk)
+        self.assertEqual([c.args[0] for c in run.call_args_list], [
+            [str(sdk / 'apksigner'), 'verify', '--verbose', '--print-certs', 'test.apk'],
+            [str(sdk / 'apksigner'), 'verify', '--verbose', '--print-certs',
+             '--min-sdk-version', '24', '--max-sdk-version', '27', 'test.apk']])
+        for output in ('', v2.replace('a' * 64, 'b' * 64),
+                       v2.replace('signers: 1', 'signers: 2'),
+                       v2.replace('v2 scheme (test): true', 'v2 scheme (test): false'),
+                       v2 + 'Verified using v2 scheme (test): false\n',
+                       v2 + 'Number of signers: 2\n'):
+            with self.subTest(output=output), patch.object(signed.subprocess, 'run', side_effect=[
+                    SimpleNamespace(stdout=supported), SimpleNamespace(stdout=output)]):
+                with self.assertRaises(ValueError):
+                    signed.verify_signatures('test.apk', 'a' * 64, sdk)
 
     def test_initial_404_then_draft_publish(self):
         # RED on the original implementation: the tag endpoint is for published

@@ -166,6 +166,12 @@ Build Tools 36.0.0 supplies apksigner and zipalign from the existing locked SDK;
 JDK 17 supplies keytool. Signing explicitly disables v1/v4 and enables v2/v3, with
 `--alignment-preserved true` to retain the qualified ZIP local headers.
 minSdk 30 needs no v1. Verification checks alignment without rewriting the APK.
+Signature acceptance first uses apksigner's default manifest-derived supported API
+range and requires verified v3. A second check forces API 24–27 and requires
+verified v2, with the same sole pinned certificate in both results. In the default
+API 30+ range, a valid v3 signature can cause v2 verification to be skipped;
+the reported v2 `false` there does not establish that v2 is absent. The lower
+range is an independent signature-policy check, not a lower installation minimum.
 The signed verifier invokes the retained ZIP comparator, which compares every payload entry, order, central metadata, raw
 local headers, compressed bytes and uncompressed SHA-256. It permits signing-block
 insertion and changed central-directory offsets; it does not claim whole-file
@@ -258,5 +264,8 @@ bash tools/release/signing-smoke.sh app/build/outputs/apk/release/app-release-un
 This uses temporary TEST-only RSA PKCS#12 keys outside source; it deletes both
 keys before repository verifiers run and removes the whole temporary directory on
 exit. It checks the intended signer/schemes, release boundaries, payload equality,
-unsigned immutability and six negative cases. It never installs an APK or uses a
+unsigned immutability and ten verifier negative cases, including missing v2/v3
+and individually corrupted v2/v3 signatures. Two direct SDK negative checks
+confirm cryptographic rejection of those corruptions while the other scheme
+remains valid in its range. It never installs an APK or uses a
 production identity. No device installation is needed for this tooling milestone.
