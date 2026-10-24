@@ -65,7 +65,7 @@ def require_identity(root, expected):
     for key in actual:
         require(actual[key] == expected[key], f'APK {key} differs from reviewed source')
     require(root.find('uses-sdk') is not None, 'Missing uses-sdk')
-    require(root.find('uses-sdk').attrib == {ANDROID + 'minSdkVersion': '26',
+    require(root.find('uses-sdk').attrib == {ANDROID + 'minSdkVersion': '30',
             ANDROID + 'targetSdkVersion': '37'}, 'Unexpected SDK policy')
     return actual
 
@@ -104,7 +104,7 @@ def require_manifest(root, expected, debug, refs):
         package="{APP}" android:versionName="{expected['version_name']}" android:versionCode="{expected['version_code']}"
         android:compileSdkVersion="37" android:compileSdkVersionCodename="17"
         platformBuildVersionCode="37" platformBuildVersionName="17">
-      <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37"/>
+      <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="37"/>
       <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
       <application android:name="{APP}.TotipoApplication" android:allowBackup="false"
           android:extractNativeLibs="false" android:theme="@ref/0x1030241"

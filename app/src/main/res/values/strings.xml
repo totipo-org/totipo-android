@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Totipo</string>
-    <string name="unsupported_runtime">Totipo vault operations require Android 11 or newer.</string>
     <string name="enrollment_label">Add to Totipo</string>
     <string name="enrollment_unsupported">This authenticator link isn\'t supported by Totipo.</string>
     <string name="enrollment_invalid">This authenticator link is invalid.</string>

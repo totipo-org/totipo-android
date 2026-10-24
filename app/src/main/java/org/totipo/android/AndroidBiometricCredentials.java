@@ -2,7 +2,6 @@ package org.totipo.android;
 
 import android.content.Context;
 import android.hardware.biometrics.BiometricManager;
-import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import java.security.KeyStore;
@@ -28,7 +27,6 @@ final class AndroidBiometricCredentials implements BiometricCredentials {
     private long generation;
     AndroidBiometricCredentials(Context context, VaultRegistry registry, String localId) throws java.io.IOException {
         this(localId, new BiometricCredentialStorage(registry, localId), new PlatformKeys(), () -> {
-            if (Build.VERSION.SDK_INT < 30) return false;
             var manager = context.getSystemService(BiometricManager.class);
             return manager != null && manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
                     == BiometricManager.BIOMETRIC_SUCCESS;

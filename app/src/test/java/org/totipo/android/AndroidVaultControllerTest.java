@@ -1339,7 +1339,10 @@ public final class AndroidVaultControllerTest {
     }
     @Test public void revokedBindingStaysConfiguredAndLocalChangesRetainRetryHint() throws Exception {
         var port = dailyFixture();
-        accept(() -> controller.checkSyncFolder()); await(this::providerDone);
+        accept(() -> controller.checkSyncFolder());
+        // The provider lane becomes idle before its callback installs binding readiness.
+        await(() -> providerDone() && controller.syncView().binding().status()
+                == org.totipo.android.sync.SyncFolderBinding.Status.READY);
         assertEquals("Sync folder configured", controller.syncView().message());
         port.permissions.clear(); accept(() -> controller.checkSyncFolder()); await(this::providerDone);
         assertEquals("Folder access needed. Choose sync folder again.", controller.dailySyncStatus());

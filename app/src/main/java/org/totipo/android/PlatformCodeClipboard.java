@@ -39,7 +39,7 @@ final class PlatformCodeClipboard implements TotpPresentation.Clipboard {
                     description.getMimeTypeCount() == 1 && description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN)
                     && item.getUri() == null && item.getIntent() == null && item.getHtmlText() == null)) return;
             // Global clipboard may change between this comparison and clear; Android has no CAS.
-            if (Build.VERSION.SDK_INT >= 28) clipboard.clearPrimaryClip();
+            clipboard.clearPrimaryClip();
         } catch (RuntimeException unavailable) { /* No ownership established: skip cleanup. */ }
     }
 }

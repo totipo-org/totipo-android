@@ -105,8 +105,9 @@ Java's existing-token-data creation veto is presented without bypass.
 
 Manual enrollment, otpauth enrollment, reveal/copy, vault shell, explicit lock and token
 list behavior remain. Empty-password create/unlock/Join requires
-confirmation. Backgrounding alone does not lock; elapsed inactivity does. Java Flow requires API 30 for vault
-operations; minSdk remains 26 and older devices receive the unsupported-runtime message.
+confirmation. Backgrounding alone does not lock; elapsed inactivity does.
+Requires Android 11 or newer (API 30+): the APK minimum SDK enforces the Java Flow
+runtime requirement for vault operations.
 
 The launcher uses canonical adaptive/round/density resources copied unchanged from
 `totipo-spec/design/icons` at r19 commit `cdb4e91be1c6d3704874b2b92457ffe7be5e9084`.

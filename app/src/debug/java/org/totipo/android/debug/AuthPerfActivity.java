@@ -32,10 +32,8 @@ public final class AuthPerfActivity extends Activity {
     private void startProbe() {
         if (!RUNNING.compareAndSet(false, true)) { Log.i(TAG, "busy=1"); return; }
         // This fixed-label debug screen exposes no credentials, keys or vault content.
-        if (Build.VERSION.SDK_INT >= 27) {
-            setShowWhenLocked(true);
-            setTurnScreenOn(true);
-        }
+        setShowWhenLocked(true);
+        setTurnScreenOn(true);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         String action = getIntent().getStringExtra("probe");
         var origin = ((org.totipo.android.TotipoApplication)getApplication()).selection().snapshot();
@@ -60,10 +58,8 @@ public final class AuthPerfActivity extends Activity {
             } finally {
                 runOnUiThread(() -> {
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    if (Build.VERSION.SDK_INT >= 27) {
-                        setShowWhenLocked(false);
-                        setTurnScreenOn(false);
-                    }
+                    setShowWhenLocked(false);
+                    setTurnScreenOn(false);
                     RUNNING.set(false);
                 });
             }

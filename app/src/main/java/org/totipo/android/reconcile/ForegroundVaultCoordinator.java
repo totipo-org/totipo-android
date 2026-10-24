@@ -611,8 +611,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         }
         void observe(VaultSession session) throws Exception { awaitObservation(session); }
     }
-    // Same released-core Flow boundary exercised by M1C on API 37. Flow needs API 30;
-    // minSdk 26 is not a runtime qualification. Future unlock UX must gate supported runtime.
+    // Released-core Flow requires API 30, enforced by the application minimum SDK.
     @android.annotation.TargetApi(30)
     private static void awaitObservation(VaultSession session) throws Exception {
         var finished = new CountDownLatch(1);

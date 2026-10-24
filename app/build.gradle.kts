@@ -21,7 +21,7 @@ android {
     buildToolsVersion = "36.0.0"
     defaultConfig {
         applicationId = "org.totipo.android"
-        minSdk = 26
+        minSdk = 30
         targetSdk = 37
         versionCode = releaseVersionCode
         versionName = rootProject.version.toString()

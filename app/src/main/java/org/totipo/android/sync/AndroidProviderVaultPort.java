@@ -14,7 +14,6 @@ final class AndroidProviderVaultPort implements ProviderVaultWriter.Port {
     public Document createVault(Document root) throws Exception { return create(root, "vault", "application/octet-stream"); }
     public Document createObjectsDirectory(Document root) throws Exception { return create(root, "objects-v1", DocumentsContract.Document.MIME_TYPE_DIR); }
     private Document create(Document root, String name, String mime) throws Exception {
-        if (android.os.Build.VERSION.SDK_INT < 29) throw new UnsupportedOperationException();
         if (!root.tree().rootId().equals(root.id())) throw new IllegalArgumentException();
         Uri tree = Uri.parse(root.tree().locator());
         Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, root.id());

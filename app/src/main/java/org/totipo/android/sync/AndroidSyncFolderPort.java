@@ -197,7 +197,6 @@ public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, Prov
     }
     public org.totipo.android.provider.ProviderSnapshot.Document create(
             org.totipo.android.provider.ProviderSnapshot.Document parent, String name) throws Exception {
-        if (android.os.Build.VERSION.SDK_INT < 29) throw new UnsupportedOperationException("Tree relationship verification unavailable");
         new org.totipo.RevisionId(name); // Canonical lowercase filename, never vault/directory.
         Uri tree = Uri.parse(parent.tree().locator());
         Uri uri = DocumentsContract.createDocument(resolver,

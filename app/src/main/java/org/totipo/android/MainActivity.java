@@ -51,7 +51,6 @@ public final class MainActivity extends Activity {
     private void renderSelection() {
         build("selection");
         boolean initialSetup = application().localEntries().size() == 1 && application().unusedReservation(application().localEntries().get(0));
-        if (Build.VERSION.SDK_INT < 30) { label(getString(R.string.unsupported_runtime)); return; }
         String diagnostic = application().startupDiagnostic();
         if (diagnostic != null) {
             label("Storage recovery required").setTextSize(20);
@@ -344,7 +343,7 @@ public final class MainActivity extends Activity {
         int padding = (int) (20 * getResources().getDisplayMetrics().density);
         content.setPadding(padding, padding, padding, padding);
         View root = next.equals("open") ? content : scroll;
-        if (Build.VERSION.SDK_INT >= 30) root.setOnApplyWindowInsetsListener((view, insets) -> {
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
             var bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
         });
@@ -353,7 +352,7 @@ public final class MainActivity extends Activity {
         setContentView(root);
         LinearLayout toolbar = new LinearLayout(this); content.addView(toolbar);
         TextView title = new TextView(this); title.setText(heading(next)); title.setTextSize(28);
-        if (Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
+        title.setAccessibilityHeading(true);
         title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         if (next.equals("open")) {
@@ -516,7 +515,7 @@ public final class MainActivity extends Activity {
         try {
             var info = getPackageManager().getPackageInfo(getPackageName(), 0);
             return (info.versionName == null || info.versionName.isEmpty() ? "Unavailable" : info.versionName)
-                    + " (" + (Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode) + ")";
+                    + " (" + info.getLongVersionCode() + ")";
         } catch (android.content.pm.PackageManager.NameNotFoundException | RuntimeException unavailable) {
             return "Unavailable";
         }

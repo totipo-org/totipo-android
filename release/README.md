@@ -165,7 +165,7 @@ temp state stays on the ephemeral signing runner and is never uploaded.
 Build Tools 36.0.0 supplies apksigner and zipalign from the existing locked SDK;
 JDK 17 supplies keytool. Signing explicitly disables v1/v4 and enables v2/v3, with
 `--alignment-preserved true` to retain the qualified ZIP local headers.
-minSdk 26 needs no v1. Verification checks alignment without rewriting the APK.
+minSdk 30 needs no v1. Verification checks alignment without rewriting the APK.
 The signed verifier invokes the retained ZIP comparator, which compares every payload entry, order, central metadata, raw
 local headers, compressed bytes and uncompressed SHA-256. It permits signing-block
 insertion and changed central-directory offsets; it does not claim whole-file

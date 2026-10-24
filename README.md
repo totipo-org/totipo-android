@@ -15,9 +15,8 @@ Open the APK on your Android device and, if prompted, allow that browser or file
 manager to install apps from this source. For later updates, install the new signed
 APK over the existing app; avoid uninstalling or clearing app data.
 
-**Vault operations require Android 11 (API 30) or later.** The APK permits
-installation on Android 8–10, but those versions show an unsupported-runtime
-message and cannot use vaults. Biometric unlock requires available strong biometric
+**Requires Android 11 or newer (API 30+).** Android enforces this requirement
+when installing the APK. Biometric unlock requires available strong biometric
 hardware and enrollment. Arbitrary devices and shared-folder providers are not
 universally qualified; see the [user guide](docs/USER_GUIDE.md#compatibility).
 

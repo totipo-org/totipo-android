@@ -1,15 +1,14 @@
 # Totipo Android user guide
 
 Start with the [README](../README.md) for the download and a short introduction.
-This guide describes the 0.2.1 app. Release procedures belong in the
+This guide describes the current app. Release procedures belong in the
 [maintainer documentation](../release/README.md).
 
 ## Compatibility
 
-Vault operations require **Android 11/API 30 or later** because the vault library
-uses Java Flow APIs available on that runtime. The APK's install minimum is
-Android 8/API 26; Android 8–10 show an unsupported-runtime message. This lower
-install minimum does not mean vaults work there.
+**Requires Android 11 or newer (API 30+).** The installation minimum matches
+the vault library's Java Flow runtime requirement; Android enforces it when
+installing the APK.
 
 Strong biometric support and enrolled biometrics are required for biometric unlock.
 Password unlock works without biometric enrollment. Folder access depends on the

@@ -19,7 +19,7 @@ MANIFEST = '''<manifest xmlns:android="http://schemas.android.com/apk/res/androi
  package="org.totipo.android" android:versionCode="3" android:versionName="0.1.2"
  android:compileSdkVersion="37" android:compileSdkVersionCodename="17"
  platformBuildVersionCode="37" platformBuildVersionName="17">
- <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="37"/>
+ <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="37"/>
  <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
  <application android:name="org.totipo.android.TotipoApplication" android:allowBackup="false"
  android:theme="@ref/0x1030241" android:label="@ref/0x7f030000" android:icon="@ref/0x7f020000"
@@ -41,6 +41,15 @@ MANIFEST = '''<manifest xmlns:android="http://schemas.android.com/apk/res/androi
 class ApkPolicyTests(unittest.TestCase):
     def check(self, root):
         policy.require_manifest(root, EXPECTED, False, REFS)
+
+    def test_install_minimum_is_exactly_android_11(self):
+        # Identity policy is shared by debug, unsigned release and signed release.
+        self.check(policy.xml(MANIFEST))
+        for minimum in ('26', '29', '31'):
+            root = policy.xml(MANIFEST)
+            root.find('uses-sdk').set(A + 'minSdkVersion', minimum)
+            with self.subTest(minimum=minimum), self.assertRaisesRegex(ValueError, 'SDK policy'):
+                self.check(root)
 
     def test_approved_manifest_and_android_defaults(self):
         root = policy.xml(MANIFEST)

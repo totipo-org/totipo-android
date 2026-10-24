@@ -35,7 +35,8 @@ Python. All supported command-line builds use `gradle` in this environment.
 
 The flake provides JDK 17, Gradle 9.8.0, Python and a composed Android SDK from
 its existing locked nixpkgs input: API 37.0, Build Tools 36.0.0, platform tools
-37.0.1, command-line tools 22.0. Compile/target SDK are 37; min SDK is 26.
+37.0.1, command-line tools 22.0. Compile/target SDK are 37; min SDK is 30.
+Requires Android 11 or newer (API 30+).
 AGP is 9.4.0. No Android Studio, emulator, images, NDK or CMake are required.
 The flake accepts the Android SDK license and allows only the selected SDK
 package names as unfree. `ANDROID_HOME` and `ANDROID_SDK_ROOT` point to the
@@ -248,7 +249,7 @@ The verifier uses pinned SDK `apkanalyzer manifest print` and Python stdlib XML;
 AAPT2 supplies resource names/configurations. It rejects inspection failures,
 missing/duplicate/unknown declarations and unsupported output. Both variants must
 have application ID `org.totipo.android`, versionName equal to reviewed `VERSION`,
-versionCode equal to reviewed `VERSION_CODE`, min/target SDK 26/37 and compile SDK 37.
+versionCode equal to reviewed `VERSION_CODE`, min/target SDK 30/37 and compile SDK 37.
 It uses the existing canonical source metadata parsers; APK/provenance fields cannot
 supply their own expected version.
 
