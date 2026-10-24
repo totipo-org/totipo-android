@@ -89,7 +89,13 @@ public final class AndroidVaultControllerTest {
         synchronized (controller) {
             try {
                 var field = AndroidVaultController.class.getDeclaredField("providerActive"); field.setAccessible(true);
-                return idle() && !field.getBoolean(controller);
+                var workerField = AndroidVaultController.class.getDeclaredField("worker"); workerField.setAccessible(true);
+                var worker = (ThreadPoolExecutor) workerField.get(controller);
+                // Transport completion clears providerActive before the worker rechecks
+                // grants and classifies identity. Wait for that task (and queued work)
+                // before reading its final status or changing the provider fixture.
+                return idle() && !field.getBoolean(controller)
+                        && worker.getActiveCount() == 0 && worker.getQueue().isEmpty();
             } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
         }
     }
@@ -757,6 +763,30 @@ public final class AndroidVaultControllerTest {
         for (int i = 0; i < count; i++) add(enrollment("public", "test " + i, org.totipo.TotpAlgorithm.SHA1, 6, 30, rfcSecret()), AddTokenOutcome.Status.ADDED);
         await(() -> controller.snapshot().view().tokens().size() == count);
         return port;
+    }
+    @Test public void providerCompletionWaitIncludesWorkerIdentityClassification() throws Exception {
+        var port = startBound();
+        accept(() -> controller.create(password())); state(State.OPEN); await(this::providerDone);
+        var tree = org.totipo.android.sync.PublicationPort.TREE;
+        port.snapshot = new org.totipo.android.provider.ProviderSnapshot.Scan("e", tree,
+                new org.totipo.android.provider.ProviderSnapshot.Listing("e", tree.rootId(), List.of(),
+                        org.totipo.android.provider.ProviderSnapshot.State.COMPLETE, List.of()),
+                List.of(), org.totipo.android.provider.ProviderSnapshot.State.COMPLETE, List.of());
+        var scanned = new AtomicBoolean();
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        port.onScan = () -> scanned.set(true);
+        port.onGrants = () -> {
+            // providerReturned clears providerActive before this worker-side recheck.
+            if (scanned.compareAndSet(true, false)) block(entered, release);
+        };
+        try {
+            accept(() -> controller.importProviderChanges());
+            await(() -> entered.getCount() == 0);
+            assertEquals("Importing…", controller.syncView().message());
+            assertFalse("Transport returned, but identity classification is still running", providerDone());
+        } finally { release.countDown(); }
+        await(this::providerDone);
+        assertEquals("Sync folder has no Totipo vault.", controller.syncView().message());
     }
     @Test public void identityFailureStatusesKeepReadyAndBlockBothControllerDirections() throws Exception {
         var port = outboundFixture(1); var session = real.session;

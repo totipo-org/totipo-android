@@ -18,10 +18,11 @@ public final class SyncFolderBindingTest {
         public Scan snapshot;
         public Runnable onScan = () -> {};
         public Runnable onProbe = () -> {};
+        public Runnable onGrants = () -> {};
         public Stored load() { return stored; }
         public boolean save(Stored value) { if (failSave) return false; stored = value; return true; }
         public boolean validTree(String uri) { return uri != null && uri.startsWith("content://fixture/tree/"); }
-        public Grants grants(String uri) { return permissions.getOrDefault(uri, new Grants(false, false)); }
+        public Grants grants(String uri) { onGrants.run(); return permissions.getOrDefault(uri, new Grants(false, false)); }
         public void take(String uri, boolean read, boolean write) {
             takes++; if (failTake) throw new SecurityException();
             if (!discardTake) { var old = grants(uri); permissions.put(uri, new Grants(old.read() || read, old.write() || write)); }
