@@ -77,6 +77,48 @@ public class SecurityControllerTest {
         if (controller.snapshot().state() == State.OPEN || controller.snapshot().state() == State.BUSY) lock();
         controller.shutdown();
     }
+    @Test public void automaticOfferOncePerEpisodeCancelExplicitRetryAndNewLock() throws Exception {
+        enroll(); lock(); int before = prompt.prompts;
+        biometric.automaticUnlock(); assertEquals(before + 1, prompt.prompts);
+        prompt.cancel(); biometric.automaticUnlock(); biometric.automaticUnlock();
+        assertEquals(before + 1, prompt.prompts); assertEquals(State.LOCKED, controller.snapshot().state());
+        biometric.unlock(); assertEquals(before + 2, prompt.prompts); prompt.succeed(); awaitOpen();
+        lock(); biometric.automaticUnlock(); assertEquals(before + 3, prompt.prompts);
+    }
+    @Test public void automaticUnavailableOrUnenrolledOpportunityDoesNotLoop() throws Exception {
+        lock(); biometric.automaticUnlock(); assertEquals(0, prompt.prompts);
+        assertFalse(controller.claimAutomaticBiometricUnlock());
+        assertTrue(controller.unlock(password())); awaitOpen(); enroll(); lock();
+        credentials.strong = false; int before = prompt.prompts; biometric.automaticUnlock();
+        credentials.strong = true; biometric.automaticUnlock(); assertEquals(before, prompt.prompts);
+        biometric.unlock(); assertEquals(before + 1, prompt.prompts);
+    }
+    @Test public void automaticPreparationFailureAndFailedAuthenticationDoNotRearm() throws Exception {
+        enroll(); lock(); credentials.invalid = true; int before = prompt.prompts;
+        biometric.automaticUnlock(); credentials.invalid = false; biometric.automaticUnlock();
+        assertEquals(before, prompt.prompts);
+        credentials.wrongPassword = true; biometric.unlock(); prompt.succeed(); awaitLocked();
+        biometric.automaticUnlock(); assertEquals(before + 1, prompt.prompts);
+        credentials.wrongPassword = false; biometric.unlock(); prompt.succeed(); awaitOpen();
+    }
+    @Test public void automaticAttemptSurvivesHelperRecreationAndForegroundTransitions() throws Exception {
+        enroll(); lock(); biometric.automaticUnlock(); int before = prompt.prompts;
+        var late = prompt.result; biometric.close();
+        biometric = new BiometricUnlock(controller, credentials, prompt, this::after);
+        biometric.automaticUnlock(); controller.foregroundChanged(false); controller.foregroundChanged(true);
+        biometric.automaticUnlock(); assertEquals(before, prompt.prompts);
+        late.authorized(); assertEquals(State.LOCKED, controller.snapshot().state());
+        biometric.unlock(); prompt.succeed(); awaitOpen();
+        controller.foregroundChanged(false); now += InactivityLock.TIMEOUT_MILLIS;
+        controller.foregroundChanged(true); awaitLocked(); biometric.automaticUnlock();
+        assertEquals(before + 2, prompt.prompts);
+    }
+    @Test public void retirementRevokesAutomaticPromptAndNeverRearmsIt() throws Exception {
+        enroll(); lock(); biometric.automaticUnlock(); var late = prompt.result; int before = opens;
+        controller.retire(null); late.authorized(); biometric.automaticUnlock();
+        assertEquals(before, opens); assertFalse(controller.claimAutomaticBiometricUnlock());
+        await(() -> controller.retirement() == Retirement.SUCCESS);
+    }
     @Test public void manualPasswordDoesNotEnrollAndWipesInput() throws Exception {
         lock(); char[] input = password(); assertTrue(controller.unlock(input)); awaitOpen();
         assertArrayEquals(new char[input.length], input); assertFalse(credentials.configured()); assertEquals(1, opens);

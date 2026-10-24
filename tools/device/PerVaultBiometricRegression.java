@@ -70,7 +70,13 @@ public final class PerVaultBiometricRegression extends Instrumentation {
         }
         VaultRegistry.Entry entry;
         try { entry = registry.entry(id); } catch (Exception failure) { throw new AssertionError(failure); }
-        tap((entry.state() == VaultRegistry.State.ESTABLISHED ? "Select " : "Resume Create · ") + app.localName(entry));
+        if (entry.state() == VaultRegistry.State.ESTABLISHED)
+            tap("Open " + app.localName(entry) + " · " + app.entrySummary(entry));
+        else {
+            tap("Manage " + app.localName(entry));
+            await(() -> getUiAutomation().getRootInActiveWindow() != null && !getUiAutomation().getRootInActiveWindow().findAccessibilityNodeInfosByText("Resume Create").isEmpty());
+            touchNative(getUiAutomation().getRootInActiveWindow().findAccessibilityNodeInfosByText("Resume Create").get(0));
+        }
         controller = app.vaultController();
         await(() -> controller != null && controller.snapshot().state() != AndroidVaultController.State.STARTING && idle()
                 && field(activity.get(), "controller") == controller);
@@ -139,9 +145,12 @@ public final class PerVaultBiometricRegression extends Instrumentation {
         }
     }
     private void lock() { command(controller::lock); state(AndroidVaultController.State.LOCKED); }
+    private void promptUnlock() {
+        if (!(boolean)field(biometric(), "active")) tap("Use biometrics");
+    }
     private void biometricOpen(String label) {
         step = "biometric_" + label; say("HUMAN authenticate unlock for " + label);
-        tap("Use biometrics");
+        promptUnlock();
         state(AndroidVaultController.State.OPEN);
         check(controller.snapshot().view() != null, "authenticated_presentation_" + label);
     }
@@ -178,7 +187,7 @@ public final class PerVaultBiometricRegression extends Instrumentation {
             biometric().enroll(value); biometric().close(); cancelledReplacement.set(true);
         })); await(cancelledReplacement::get); state(AndroidVaultController.State.OPEN);
         check(Arrays.equals(prior, Files.readAllBytes(new BiometricCredentialStorage(registry, a).record)), "cancel_replacement_preserves_record");
-        lock(); tap("Use biometrics");
+        lock(); promptUnlock();
         // Retire A with its real platform prompt outstanding. Actual late callback
         // delivery is platform-controlled; deterministic JVM tests force that ordering.
         select(b); biometricOpen("B_after_A_prompt_retirement");
@@ -195,7 +204,7 @@ public final class PerVaultBiometricRegression extends Instrumentation {
         Files.delete(sa.record); check(!credentials(a).configured(), "missing_record_password_fallback");
         lock(); passwordOpen("A", true);
         byte[] damaged = Files.readAllBytes(sa.record); damaged[damaged.length - 1] ^= 1; Files.write(sa.record, damaged);
-        lock(); say("HUMAN authenticate A's intentionally corrupt credential; unlock must fail closed"); tap("Use biometrics");
+        lock(); say("HUMAN authenticate A's intentionally corrupt credential; unlock must fail closed"); promptUnlock();
         await(() -> !biometric().message().isEmpty());
         check(controller.snapshot().state() == AndroidVaultController.State.LOCKED, "bad_tag_never_exposes_open");
         passwordOpen("A", false); check(credentials(c).configured(), "corruption_A_preserves_C");
@@ -214,11 +223,11 @@ public final class PerVaultBiometricRegression extends Instrumentation {
         runOnMainSync(() -> controller.foregroundChanged(false));
         runOnMainSync(() -> controller.foregroundChanged(true));
         check(controller.snapshot().state() == AndroidVaultController.State.OPEN, "short_background_preserves_session");
-        lock(); tap("Use biometrics"); MainActivity lockedActivity = activity.get(); var oldPrompt = biometric();
+        lock(); promptUnlock(); MainActivity lockedActivity = activity.get(); var oldPrompt = biometric();
         runOnMainSync(lockedActivity::recreate); await(() -> activity.get() != lockedActivity);
         check(!(boolean)field(oldPrompt, "active") && field(oldPrompt, "password") == null, "rotation_retires_old_prompt_authority");
         biometricOpen("C_fresh_prompt_after_locked_rotation");
-        lock(); tap("Use biometrics"); var backgroundPrompt = biometric();
+        lock(); promptUnlock(); var backgroundPrompt = biometric();
         runOnMainSync(() -> activity.get().moveTaskToBack(true));
         await(() -> !(boolean)field(activity.get(), "resumed"));
         check(!(boolean)field(backgroundPrompt, "active"), "background_cancels_prompt");
@@ -258,7 +267,7 @@ public final class PerVaultBiometricRegression extends Instrumentation {
         check(Arrays.equals(prior, Files.readAllBytes(new BiometricCredentialStorage(registry, entry.id()).record)), "attach_preserves_credential");
         lock(); biometricOpen("B_synchronized");
         check(controller.initialTreeUri().equals(uri), "biometric_open_preserves_binding");
-        overflow("Manage sync folder"); tap("Disconnect"); await(this::idle); tap("Back");
+        overflow("Manage sync folder"); tap("Disconnect sync folder"); await(this::idle); tap("Back");
         check(controller.initialTreeUri() == null, "disconnect_UI_returns_local_only");
         check(Arrays.equals(prior, Files.readAllBytes(new BiometricCredentialStorage(registry, entry.id()).record)), "disconnect_preserves_credential");
         lock(); biometricOpen("B_local_again");

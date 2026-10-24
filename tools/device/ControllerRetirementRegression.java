@@ -185,7 +185,7 @@ public final class ControllerRetirementRegression extends Instrumentation {
             release.countDown(); await(() -> authority.snapshot() == null);
             check(a.retirement() == AndroidVaultController.Retirement.SUCCESS, "complete_retirement");
             await(() -> activity.get() != null && field(activity.get(), "controller") == null);
-            check(findControl(activity.get().getWindow().getDecorView(), "Manage Vaults") != null, "selector_after_actual_drain");
+            check(findControl(activity.get().getWindow().getDecorView(), "Vaults") != null, "selector_after_actual_drain");
             check(!late.get(), "late_provider_handoff_discarded");
             runOnMainSync(() -> {
                 try {

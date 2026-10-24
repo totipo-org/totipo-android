@@ -44,13 +44,21 @@ tc = AndroidToolchain.discover()
 sdk, bt, platform, java = tc.sdk, tc.bt, tc.platform, tc.java
 package = 'org.totipo.securityqualification'
 parser = argparse.ArgumentParser()
+parser.add_argument('--ux2', action='store_true', help='Use a separate fresh A-UX2 disposable package; preserve prior qualification fixtures')
 parser.add_argument('--serial', default='37311JEGR05916')
 parser.add_argument('--build-only', action='store_true')
 parser.add_argument('--prepare', action='store_true')
 parser.add_argument('--update-harness', action='store_true', help='Update only the isolated test package, preserving disposable restart evidence')
-parser.add_argument('--phase', choices=['retirement', 'registry', 'lifecycle', 'first', 'restart', 'mv1-first', 'mv1-restart', 'mv1-missing', 'mv1-corrupt', 'mv1-restore', 'mv1-legacy', 'mv1-finish', 'mv3-first', 'mv3-restart', 'mv4-first', 'mv4-restart', 'mv4-sync', 'mv5-first', 'mv5-restart', 'mv5-recover', 'mv5-layout', 'mv5-menu', 'mv6-observe'])
+parser.add_argument('--phase', choices=['ux2-first', 'ux2-cold', 'ux2-ui', 'ux2-finish', 'ux2-navigation', 'retirement', 'registry', 'lifecycle', 'first', 'restart', 'mv1-first', 'mv1-restart', 'mv1-missing', 'mv1-corrupt', 'mv1-restore', 'mv1-legacy', 'mv1-finish', 'mv3-first', 'mv3-restart', 'mv4-first', 'mv4-restart', 'mv4-sync', 'mv5-first', 'mv5-restart', 'mv5-recover', 'mv5-layout', 'mv5-menu', 'mv6-observe'])
 parser.add_argument('--remove', action='store_true')
 args = parser.parse_args()
+if args.ux2:
+    package = 'org.totipo.ux2qualification'
+    out = root / '.gradle/ux2-security-qualification'
+    out.mkdir(parents=True, exist_ok=True)
+    assert args.phase is None or args.phase.startswith('ux2-'), 'A-UX2 uses only its isolated phases'
+else:
+    assert args.phase is None or not args.phase.startswith('ux2-'), 'A-UX2 phases require --ux2'
 if args.phase in ('first', 'restart'):
     parser.error('A-MV1 production biometrics are disabled; historical global-credential phases require replacement in A-MV4')
 
@@ -74,7 +82,7 @@ if args.build_only or args.prepare or args.update_harness:
     classes, dex = out / 'classes', out / 'dex'
     classes.mkdir(exist_ok=True)
     dex.mkdir(exist_ok=True)
-    names = ['TokenLifecycleRegression', 'SecurityRegression', 'VaultRegistryRegression', 'VaultRegistryUiRegression', 'ControllerRetirementRegression', 'PerVaultSyncRegression', 'PerVaultBiometricRegression', 'MultiVaultUiRegression', 'IntegratedMultiVaultObserver']
+    names = ['TokenLifecycleRegression', 'SecurityRegression', 'VaultRegistryRegression', 'VaultRegistryUiRegression', 'ControllerRetirementRegression', 'PerVaultSyncRegression', 'PerVaultBiometricRegression', 'MultiVaultUiRegression', 'IntegratedMultiVaultObserver', 'DailyUseUxRegression']
     class_files = compile_java(tc, [root / 'tools/device' / (name + '.java') for name in names],
                                classes, [platform, app, *jars],
                                ['org/totipo/android/' + name for name in names])
@@ -90,6 +98,7 @@ if args.build_only or args.prepare or args.update_harness:
 <activity android:name="org.totipo.android.PerVaultSyncRegression$GrantActivity" android:exported="false" />
 <activity android:name="org.totipo.android.OtpAuthEnrollmentActivity" android:exported="false" />
 </application>
+<instrumentation android:name="org.totipo.android.DailyUseUxRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.MultiVaultUiRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.IntegratedMultiVaultObserver" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.PerVaultBiometricRegression" android:targetPackage="org.totipo.securityqualification" />
@@ -99,7 +108,8 @@ if args.build_only or args.prepare or args.update_harness:
 <instrumentation android:name="org.totipo.android.VaultRegistryRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.SecurityRegression" android:targetPackage="org.totipo.securityqualification" />
 <instrumentation android:name="org.totipo.android.TokenLifecycleRegression" android:targetPackage="org.totipo.securityqualification" />
-</manifest>''')
+</manifest>'''.replace('org.totipo.securityqualification', package).replace('package="' + package + '"', 'package="' + package + '" android:versionName="' +
+        (root / 'VERSION').read_text().strip() + '" android:versionCode="' + (root / 'VERSION_CODE').read_text().strip() + '"'))
         unsigned, aligned, signed = out / 'unsigned.apk', out / 'aligned.apk', out / 'tests.apk'
         manifest_apk = out / 'manifest.apk'
         link_manifest(tc, manifest, manifest_apk)
@@ -139,6 +149,42 @@ if args.build_only or args.prepare or args.update_harness:
 if args.phase:
     adb('shell', 'am', 'force-stop', package)
     extra = []
+    if args.phase == 'ux2-ui':
+        import json
+        import uuid
+        from urllib.parse import quote
+        receipt = out / 'join-fixture.json'
+        if not receipt.exists():
+            fixture = out / 'join-origin'
+            fixture_classes = out / 'fixture-classes'
+            fixture_classes.mkdir(exist_ok=True)
+            fixture_cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
+            fixture_jars = []
+            for group, module, version in [('org.totipo', 'totipo-core', '0.2.0'), ('org.totipo', 'totipo-storage-nio', '0.2.0'), ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
+                candidates = list((fixture_cache / group / module / version).glob('*/*.jar'))
+                assert len(candidates) == 1
+                fixture_jars.extend(candidates)
+            compile_java(tc, [root / 'tools/device/InboundFixture.java'], fixture_classes, fixture_jars,
+                         ['org/totipo/safqualification/InboundFixture'], java17=False)
+            if not fixture.exists():
+                run([java / 'java', '-classpath', os.pathsep.join(map(str, [fixture_classes, *fixture_jars])),
+                     'org.totipo.safqualification.InboundFixture', fixture])
+            folder = 'Documents/Totipo-UX2-' + uuid.uuid4().hex + '/Work-TOTP'
+            exists = adb('shell', 'test', '-e', '/sdcard/' + folder, check=False)
+            assert exists.returncode == 1, 'New disposable folder must be absent'
+            adb('shell', 'mkdir', '-p', '/sdcard/' + folder)
+            adb('push', str(fixture) + '/.', '/sdcard/' + folder + '/')
+            receipt.write_text(json.dumps({'folder': folder, 'serial': args.serial}) + '\n')
+        fixture_info = json.loads(receipt.read_text())
+        assert fixture_info['serial'] == args.serial
+        uri = 'content://com.android.externalstorage.documents/tree/' + quote('primary:' + fixture_info['folder'], safe='')
+        extra.extend(['-e', 'folder', uri])
+        review_receipt = out / 'enlarged-review.json'
+        if review_receipt.exists():
+            review = json.loads(review_receipt.read_text())
+            if review.get('readable') is True and review.get('release_sha256') == __import__('hashlib').sha256((root / 'app/build/outputs/apk/release/app-release-unsigned.apk').read_bytes()).hexdigest():
+                extra.extend(['-e', 'reviewed', 'true'])
+        print('HUMAN select only this new disposable Join folder: ' + fixture_info['folder'], flush=True)
     if args.phase == 'mv4-sync':
         import json
         import uuid
@@ -167,9 +213,9 @@ if args.phase:
         for key, folder in zip(('folder_a', 'folder_b'), evidence['folders']):
             extra.extend(['-e', key, 'content://com.android.externalstorage.documents/tree/' + quote('primary:' + folder, safe='')])
         print('Disposable external folders retained for review: ' + ', '.join(evidence['folders']), flush=True)
-    name = 'IntegratedMultiVaultObserver' if args.phase == 'mv6-observe' else 'MultiVaultUiRegression' if args.phase.startswith('mv5-') else 'PerVaultBiometricRegression' if args.phase.startswith('mv4-') else 'PerVaultSyncRegression' if args.phase.startswith('mv3-') else 'VaultRegistryUiRegression' if args.phase.startswith('mv1-') else {'retirement': 'ControllerRetirementRegression', 'registry': 'VaultRegistryRegression', 'lifecycle': 'TokenLifecycleRegression'}.get(args.phase, 'SecurityRegression')
+    name = 'DailyUseUxRegression' if args.phase.startswith('ux2-') else 'IntegratedMultiVaultObserver' if args.phase == 'mv6-observe' else 'MultiVaultUiRegression' if args.phase.startswith('mv5-') else 'PerVaultBiometricRegression' if args.phase.startswith('mv4-') else 'PerVaultSyncRegression' if args.phase.startswith('mv3-') else 'VaultRegistryUiRegression' if args.phase.startswith('mv1-') else {'retirement': 'ControllerRetirementRegression', 'registry': 'VaultRegistryRegression', 'lifecycle': 'TokenLifecycleRegression'}.get(args.phase, 'SecurityRegression')
     instrument = ['shell', 'am', 'instrument', '-w', '-e', 'phase', args.phase, *extra, package + '/org.totipo.android.' + name]
-    if args.phase.startswith(('mv4-', 'mv5-', 'mv6-')):
+    if args.phase.startswith(('mv4-', 'mv5-', 'mv6-', 'ux2-')):
         # Let the human see each real authentication step while preserving exact output.
         command = ['adb', '-s', args.serial, *map(str, instrument)]
         lines = []
@@ -186,7 +232,7 @@ if args.phase:
         print(result.stdout, end='', flush=True)
     # A plain test-only window holds no session/prompt authority between phases.
     adb('shell', 'am', 'start', '-n', shlex.quote(package + '/org.totipo.android.MultiVaultUiRegression$IdleActivity'), capture_output=True, text=True)
-    expected = 'AMV6_OBSERVER_STOPPED' if args.phase == 'mv6-observe' else 'MULTI_VAULT_UI_PASS phase=' + args.phase if args.phase.startswith('mv5-') else 'PER_VAULT_BIOMETRIC_PASS phase=' + args.phase if args.phase.startswith('mv4-') else 'PER_VAULT_SYNC_PASS phase=' + args.phase if args.phase.startswith('mv3-') else 'MV1_UI_PASS phase=' + args.phase if args.phase.startswith('mv1-') else {'retirement': 'CONTROLLER_RETIREMENT_PASS', 'registry': 'VAULT_REGISTRY_PASS', 'lifecycle': 'TOKEN LIFECYCLE PASS'}.get(args.phase, 'SECURITY_PASS')
+    expected = 'DAILY_USE_UX_PASS phase=' + args.phase if args.phase.startswith('ux2-') else 'AMV6_OBSERVER_STOPPED' if args.phase == 'mv6-observe' else 'MULTI_VAULT_UI_PASS phase=' + args.phase if args.phase.startswith('mv5-') else 'PER_VAULT_BIOMETRIC_PASS phase=' + args.phase if args.phase.startswith('mv4-') else 'PER_VAULT_SYNC_PASS phase=' + args.phase if args.phase.startswith('mv3-') else 'MV1_UI_PASS phase=' + args.phase if args.phase.startswith('mv1-') else {'retirement': 'CONTROLLER_RETIREMENT_PASS', 'registry': 'VAULT_REGISTRY_PASS', 'lifecycle': 'TOKEN LIFECYCLE PASS'}.get(args.phase, 'SECURITY_PASS')
     assert expected in result.stdout, 'Physical qualification failed; inspect the phase log'
 if args.remove:
     adb('uninstall', package)

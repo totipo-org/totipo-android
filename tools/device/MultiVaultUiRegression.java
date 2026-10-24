@@ -36,7 +36,7 @@ public final class MultiVaultUiRegression extends Instrumentation {
         waitForIdleSync();
     }
     private View find(View root, String name) {
-        if (root instanceof TextView text && name.contentEquals(text.getText())) return root;
+        if (root instanceof TextView text && (name.contentEquals(text.getText()) || text.getText().toString().startsWith(name + "\n"))) return root;
         if (name.contentEquals(root.getContentDescription() == null ? "" : root.getContentDescription())) return root;
         if (root instanceof ViewGroup group) for (int i = 0; i < group.getChildCount(); i++) {
             View found = find(group.getChildAt(i), name); if (found != null) return found;
@@ -83,7 +83,7 @@ public final class MultiVaultUiRegression extends Instrumentation {
         startActivitySync(new Intent(getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
         bound();
     }
-    private void selector() { await(() -> controller() == null); bound(); check(shown("Manage Vaults"), "selector_visible_without_controller"); }
+    private void selector() { await(() -> controller() == null); bound(); check(shown("Vaults") && shown("Your vaults") && shown("Add vault"), "selector_visible_without_controller"); }
     private void change() {
         var old = controller(); overflow("Change Vault"); selector();
         check(old.retirement() == AndroidVaultController.Retirement.SUCCESS, "UI_waited_for_complete_retirement");
@@ -121,10 +121,17 @@ public final class MultiVaultUiRegression extends Instrumentation {
         }
         return result;
     }
+    private void selectEntry(int index) {
+        var entry = registry.entries().get(index);
+        tap("Open " + app.localName(entry) + " · " + app.entrySummary(entry));
+    }
+    private void entryAction(int index, String action) {
+        tap("Manage " + app.localName(registry.entries().get(index))); nativeTap(action);
+    }
     private void first() throws Exception {
         check(controller() == null && registry.entries().size() == 1, "fresh_setup_has_no_activation");
         String initial = registry.entries().get(0).id(); launch();
-        check(shown("Initial setup") && shown("Create Local Vault") && shown("Join Existing Vault"), "initial_setup_actions");
+        check(shown("Vaults") && shown("Create Local Vault") && shown("Join Existing Vault"), "initial_setup_actions");
         tap("Create Local Vault"); state(AndroidVaultController.State.NO_LOCAL_VAULT);
         check(controller().localId().equals(initial) && registry.entries().size() == 1, "initial_reservation_reused");
         password("Disposable MV5 A", true, false); state(AndroidVaultController.State.OPEN); add("A");
@@ -138,16 +145,16 @@ public final class MultiVaultUiRegression extends Instrumentation {
         byte[] b = Files.readAllBytes(registry.root(controller().localId()).resolve("vault"));
         check(!Arrays.equals(a, b), "independent_canonical_identities");
         check(controller().initialTreeUri() == null, "B_remains_local_only");
-        change(); check(shown("Vault 2 · Last selected"), "last_selection_highlighted");
+        change(); check(shown(app.localName(registry.entries().get(1)) + " · Last selected"), "last_selection_highlighted");
         tap("Join Existing Vault"); state(AndroidVaultController.State.NO_LOCAL_VAULT);
         check(shown("Join existing vault") && !shown("Create Vault"), "join_cannot_fall_through_to_create");
         tap("Cancel setup"); selector();
         check(registry.entries().size() == 3 && registry.entries().get(2).state() == VaultRegistry.State.PENDING, "cancel_preserves_reserved_join");
-        tap("Select Vault 2"); state(AndroidVaultController.State.LOCKED); change();
+        selectEntry(1); state(AndroidVaultController.State.LOCKED); change();
     }
     private void restart() throws Exception {
         check(controller() == null, "multi_vault_process_restart_requires_selection"); launch();
-        check(shown("Vault 2 · Last selected"), "restart_highlights_last_without_activation");
+        check(shown(app.localName(registry.entries().get(1)) + " · Last selected"), "restart_highlights_last_without_activation");
         await(() -> activity.get().hasWindowFocus());
         MainActivity selectionScreen = activity.get();
         sendKeyDownUpSync(KeyEvent.KEYCODE_BACK); await(selectionScreen::isFinishing);
@@ -156,16 +163,16 @@ public final class MultiVaultUiRegression extends Instrumentation {
                 .setClass(getTargetContext(), OtpAuthEnrollmentActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         check(field(ingress, "draft") == null && controller() == null, "selector_ingress_cannot_select_or_retain_secret");
         runOnMainSync(ingress::finish); waitForIdleSync();
-        tap("Select Vault 1"); state(AndroidVaultController.State.LOCKED);
+        selectEntry(0); state(AndroidVaultController.State.LOCKED);
         password("Disposable MV5 B", false, false); await(() -> controller().snapshot().error() == AndroidVaultController.Error.AUTHENTICATION_FAILED); state(AndroidVaultController.State.LOCKED);
         password("Disposable MV5 A", false, false); state(AndroidVaultController.State.OPEN); token("A");
         var selected = controller(); var old = activity.get(); runOnMainSync(old::recreate); await(() -> activity.get() != old); bound();
         check(controller() == selected && controller().snapshot().state() == AndroidVaultController.State.OPEN, "rotation_preserves_authenticated_selection");
-        change(); tap("Select Vault 2"); state(AndroidVaultController.State.LOCKED);
+        change(); selectEntry(1); state(AndroidVaultController.State.LOCKED);
         password("Disposable MV5 A", false, false); await(() -> controller().snapshot().error() == AndroidVaultController.Error.AUTHENTICATION_FAILED); state(AndroidVaultController.State.LOCKED);
         check(selected.retirement() == AndroidVaultController.Retirement.SUCCESS, "failed_B_auth_never_reopens_A");
         password("Disposable MV5 B", false, false); state(AndroidVaultController.State.OPEN); token("B"); change();
-        tap("Manage Vaults"); tap("Rename Vault 1");
+        entryAction(0, "Rename");
         await(() -> accessible("Save") != null);
         try { getUiAutomation().waitForIdle(300, 5000); }
         catch (java.util.concurrent.TimeoutException busy) { throw new AssertionError("Rename dialog did not settle"); }
@@ -187,20 +194,20 @@ public final class MultiVaultUiRegression extends Instrumentation {
         Path blocker = canonical.getParent().resolve("biometric-v2.disabled");
         check(!Files.exists(blocker, LinkOption.NOFOLLOW_LINKS), "disposable_blocker_path_unused");
         Files.createDirectory(blocker);
-        tap("Forget Personal A"); nativeTap("Forget"); await(() -> !app.managementBusy());
-        check(registry.entries().get(0).state() == VaultRegistry.State.FORGETTING && shown("Retry Forget cleanup"), "incomplete_credential_cleanup_is_not_success");
+        entryAction(0, "Forget…"); nativeTap("Forget"); await(() -> !app.managementBusy());
+        check(registry.entries().get(0).state() == VaultRegistry.State.FORGETTING && shown("Recovery"), "incomplete_credential_cleanup_is_not_success");
         check(beforeForget.equals(inventory(canonical)), "failed_forget_preserves_all_canonical_bytes");
         Files.delete(blocker); // Only the known empty synthetic directory, never canonical data.
-        tap("Retry Forget cleanup"); await(() -> !app.managementBusy());
+        entryAction(0, "Retry Forget cleanup"); await(() -> !app.managementBusy());
         check(registry.entries().get(0).state() == VaultRegistry.State.DETACHED, "forget_durably_detached");
         check(beforeForget.equals(inventory(canonical)), "forget_preserves_all_canonical_bytes");
-        tap("Back to vault selection"); check(!shown("Select Personal A") && !shown("Recover Personal A"), "forgotten_entry_hidden_from_normal_selection");
+        check(!shown("Open Personal A · Local only") && shown("Recovery"), "forgotten_entry_separate_from_normal_selection");
     }
     private void recover() throws Exception {
         launch();
         check(registry.entries().get(0).state() == VaultRegistry.State.DETACHED, "cold_restart_does_not_resurrect_forgotten");
         if (controller() != null) change();
-        tap("Manage Vaults"); tap("Recover Personal A"); state(AndroidVaultController.State.LOCKED);
+        entryAction(0, "Recover"); state(AndroidVaultController.State.LOCKED);
         check(registry.entries().get(0).state() == VaultRegistry.State.DETACHED, "recovery_selection_is_not_authentication");
         password("Disposable MV5 A", false, false); state(AndroidVaultController.State.OPEN); token("A");
         check(registry.entries().get(0).state() == VaultRegistry.State.ESTABLISHED, "authenticated_recovery_reregisters");
@@ -210,13 +217,13 @@ public final class MultiVaultUiRegression extends Instrumentation {
         try (var children = Files.list(root)) { check(!pending.creationAttempted() && children.findAny().isEmpty(), "unused_join_reservation"); }
         Files.delete(root); Files.delete(root.getParent());
         runOnMainSync(() -> app.selection().presentationChanged());
-        tap("Manage Vaults"); tap("Recover unused allocation"); check(Files.isDirectory(root), "explicit_allocation_recovery_UI");
+        entryAction(2, "Recover unused allocation"); check(Files.isDirectory(root), "explicit_allocation_recovery_UI");
         // Missing established storage is retained, never allocated by selector entry actions.
         var a = registry.entries().get(0); Path canonical = registry.root(a.id()), held = canonical.resolveSibling("held-store");
         Files.move(canonical, held);
         try {
             runOnMainSync(() -> app.selection().presentationChanged());
-            tap("Select Personal A"); check(controller() == null && !Files.exists(canonical), "missing_root_refuses_activation_and_recreation");
+            selectEntry(0); check(controller() == null && !Files.exists(canonical), "missing_root_refuses_activation_and_recreation");
         } finally { Files.move(held, canonical); }
     }
     private void menuCheck() {
@@ -234,7 +241,7 @@ public final class MultiVaultUiRegression extends Instrumentation {
                 && find(activity.get().getWindow().getDecorView(), "Create Local Vault").getHeight() > 0);
         runOnMainSync(() -> {
             float density = activity.get().getResources().getDisplayMetrics().density;
-            for (String title : List.of("Create Local Vault", "Join Existing Vault", "Manage Vaults")) {
+            for (String title : List.of("Create Local Vault", "Join Existing Vault")) {
                 var control = find(activity.get().getWindow().getDecorView(), title);
                 check(control instanceof Button && control.getHeight() >= (int)(48 * density), "native_touch_target");
                 var button = (Button)control;

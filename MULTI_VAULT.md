@@ -55,8 +55,9 @@ roots participate. Duplicate histories remain untouched for explicit recovery.
 
 ## Forget transaction
 
-Management is reached after complete retirement; selected entries use Change Vault
-first. Application serializes UI management admission. `VaultForget` reserves the
+The unified Vaults screen is reached after complete retirement; selected entries
+use Change Vault first. Its entry menus expose Forget and recovery. Selected-vault
+Rename is a guarded metadata-only action in overflow; Forget still requires retirement. Application serializes UI management admission. `VaultForget` reserves the
 existing selection authority for short-lived scoped maintenance without holding its
 monitor across I/O. Snapshot reads remain responsive; activation is refused. Nested
 biometric cleanup is allowed only on the same thread and entry. This reservation
@@ -91,7 +92,23 @@ recreation; process death drops it. Prompts and external drafts retain the origi
 controller. Controller retirement rejects late admission, clears presentation/session
 generations and drains entered callbacks before replacement. No old callback looks up
 a replacement controller. Unselected ingress is rejected before parsing an OTP draft.
-Normal rotation retains the Application session; a prompt requires a fresh operation.
+Normal rotation retains the Application session. Automatic biometric eligibility
+belongs to that controller: at most one offer per lock episode, consumed before
+credential preparation even if unavailable. A successful authenticated open rearms
+the next episode. Explicit retry creates a fresh operation; rotation, cancellation,
+failed authentication, and ordinary foreground/render callbacks never rearm it.
+Only the resumed, focused, attached locked Activity may launch the automatic offer.
+Application retains the non-secret setup-name draft by activation across recreation;
+provider display metadata runs on the existing metadata worker and returns through
+selection presentation notifications. Retired activations cannot apply suggestions.
+Manual edits and deliberate clearing prevent replacement. Validated names persist
+through registry rename on the existing reserved entry before Create/Join admission;
+write failure stops submission without allocating or recreating anything.
+
+Vaults has Your vaults, Add vault and conditional Recovery sections with scoped
+entry menus, and no separate management mode. Local display names share one policy:
+assigned name, or a distinguishing uppercase local-ID prefix plus ` · Unnamed`.
+Names never select protocol identities, storage roots, aliases or authentication.
 
 The 15-minute monotonic inactivity policy and background accounting are unchanged.
 Keystore isolation protects per-entry convenience credentials under Android's model;

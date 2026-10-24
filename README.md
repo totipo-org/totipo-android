@@ -4,9 +4,14 @@ Current source version is recorded in `VERSION`; Android versionCode is recorded
 in `VERSION_CODE`. Totipo creates, unlocks and explicitly locks an
 app-private local vault in no-backup storage. After setup, the main screen contains
 **Sync**, search, tokens and **Add token**, with **Lock**, **Manage sync folder** and
-**Diagnostics** in overflow. Show code and Copy code retain their conceal/expiry
+**Diagnostics**, **Rename Vault** and **Change Vault** in overflow. The selected
+vault name is the main heading. Tokens sort by issuer, account and stable token ID;
+missing issuers sort by account, and conflicts retain neutral deterministic ordering
+without choosing an alternative. Search preserves this order. Show code and Copy code retain their conceal/expiry
 behavior. Diagnostics shows public vault/provider/build information, never passwords,
-setup secrets, root keys or raw exception dumps.
+setup secrets, root keys or raw exception dumps. The App version comes from the
+installed package metadata (version name and version code), with an honest unavailable
+value if Android cannot supply it.
 
 Vaults work fully **local only**. Create, password unlock, Add, Edit, Delete, Resolve,
 local observation, Lock/reopen and restart use the coordinated private canonical
@@ -54,6 +59,10 @@ alone does not immediately lock, but background time counts. Foreground re-entry
 expiration before presenting vault content. Rotation does not reset the deadline.
 
 Biometric unlock is optional and belongs independently to the selected local vault.
+On an eligible locked-screen entry, an enrolled available credential automatically
+offers one strong-biometric prompt. Cancellation, non-match, errors, rotation and
+routine foreground transitions do not restart it; **Use biometrics** explicitly
+retries. A successful open rearms the next lock episode. No prompt runs in Vaults.
 Password unlock remains available. After password unlock, explicit opt-in authorizes
 an auth-per-use strong-biometric AES-GCM operation storing that entry's reusable
 password in private no-backup storage. Every biometric unlock requires a fresh
@@ -646,7 +655,7 @@ remaining hardware scenarios are recorded explicitly in the A-MV4 report.
 
 ## Multi-vault selection and management
 
-A fresh installation shows **Initial setup** with **Create Local Vault** and
+A fresh installation shows **Vaults** with **Create Local Vault** and
 **Join Existing Vault**. Create reuses the initial durable unused reservation and
 creates an independent, local-only vault. It needs no folder permission, external
 replication or biometric enrollment. Choose a password independently for each vault; equal
@@ -656,11 +665,13 @@ and authenticates its exact VAULT with the existing password, rechecks provider 
 create-only. Successful Join uses the existing automatic Sync flow.
 
 With one established entry and a valid last selection, startup shows its locked
-screen. Multiple remembered entries show **Vault selection**, with a valid
+screen. Multiple remembered entries show the unified **Vaults** screen, with a valid
 last-selected established entry marked **Last selected**. Highlighting never
 activates or authenticates it. Missing last selection, incomplete entries or
-recovery evidence never authorize choosing another entry silently. Password and
-**Use biometrics** are explicit actions; startup never starts authentication.
+recovery evidence never authorize choosing another entry silently. An enrolled,
+available credential gets at most one automatic biometric offer per lock episode
+when the selected locked screen is resumed and focused. Password unlock and explicit
+**Use biometrics** retry remain available; cancellation never starts a prompt loop.
 
 **More options → Change Vault** is available from locked and unlocked screens,
 including a single remembered vault. It clears forms, search, revealed codes,
@@ -682,18 +693,29 @@ needed** and configuration recovery. A configured folder is not evidence that
 publication completed or another device received anything. No inactive controller,
 biometric helper or provider session is constructed just to render the selector.
 
-After Change Vault, **Manage Vaults** offers optional local labels and **Forget**.
-Labels can repeat, contain at most 128 UTF-16 code units, and contain no controls
-or malformed Unicode. Unnamed entries use Vault 1, Vault 2, etc.; repeated labels
-include their local entry number. Labels never change IDs, roots, credentials or
-Sync configuration. Numbering follows the retained registry order.
+**Vaults** combines selection and management. Tap a remembered row under **Your
+vaults** to open its locked screen. Each trailing **⋮** menu scopes Rename and Forget
+to that entry. **Add vault** separates Create/Join from existing vaults; a compact
+**Recovery** section appears only when retained or interrupted entries need it.
+
+Create and Join offer an initially empty optional **Vault name**. Join suggests the
+selected folder's provider display name when available; the suggestion remains
+editable, manual edits (including clearing it) win, and no opaque URI is parsed as
+a filesystem path. Names identify the vault only on this device. Names can repeat,
+contain at most 128 UTF-16 code units, and contain no controls or malformed Unicode.
+Empty/whitespace-only input leaves the entry unnamed. Unnamed entries display, for
+example, **8F2A6C · Unnamed**, from the immutable local registry ID, with a longer
+prefix when necessary to distinguish registered entries. This generated fallback is
+never saved as a name. Assigned names display alone. Rename is also available in
+the selected vault's overflow, without another control beside token access. Names
+never change IDs, roots, credentials, cryptographic identity or Sync configuration.
 
 **Forget does not delete encrypted local data.** After complete retirement it
 persists cleanup intent, removes only that entry's biometric record/key, retires
 its Sync binding through the shared SAF permission owner, and atomically marks it
 forgotten. The ID and root remain reserved in registry schema 2; schema 1 remains
 readable. Forgotten entries stay hidden from normal selection after restart.
-**Manage Vaults → Recover** selects the retained entry for normal password unlock;
+**Vaults → Recovery → ⋮ → Recover** selects the retained entry for normal password unlock;
 only successful authentication reestablishes it. Recovery requires the app-private
 data on this installation and the vault password. **Clearing app data or uninstalling
 Totipo can permanently destroy local-only and forgotten vaults.** No recovery after

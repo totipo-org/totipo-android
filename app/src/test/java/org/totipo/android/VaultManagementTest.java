@@ -44,17 +44,18 @@ public final class VaultManagementTest {
         assertNull(VaultUiModel.startupSelection(registry.entries(), second.id()));
         assertEquals(pending.id(), VaultUiModel.startupSelection(registry.entries(), pending.id()));
     }
-    @Test public void renameDoesNotChangeIdentityRootStateOrVaultBytesAndDuplicateLabelsHaveContext() throws Exception {
+    @Test public void renameDoesNotChangeIdentityRootStateOrVaultBytesAndDuplicateLabelsAreAllowed() throws Exception {
         var registry = registry(); var a = create(registry, null, "A"); var b = create(registry, "Personal", "B");
         Path root = registry.root(a.id()); byte[] exact = Files.readAllBytes(root.resolve("vault"));
         registry.rename(a.id(), "Personal"); var renamed = registry.entry(a.id());
         assertEquals(a.state(), renamed.state()); assertEquals(root, registry.root(renamed.id()));
         assertArrayEquals(exact, Files.readAllBytes(root.resolve("vault")));
-        assertNotEquals(VaultUiModel.name(registry.entries(), renamed), VaultUiModel.name(registry.entries(), b));
+        assertEquals("Personal", VaultUiModel.name(registry.entries(), renamed));
+        assertEquals("Personal", VaultUiModel.name(registry.entries(), b));
         for (String invalid : List.of("x".repeat(129), "bad\nlabel", "\ud800"))
             assertThrows(IllegalArgumentException.class, () -> registry.rename(a.id(), invalid));
         assertEquals("Personal", registry().entry(a.id()).label());
-        registry.rename(a.id(), null); assertEquals("Vault 1", VaultUiModel.name(registry.entries(), registry.entry(a.id())));
+        registry.rename(a.id(), null); assertEquals(a.id().substring(0, 6).toUpperCase(Locale.ROOT) + " · Unnamed", VaultUiModel.name(registry.entries(), registry.entry(a.id())));
     }
     @Test public void schemaOneRemainsReadableAndNextWriteIsExplicitlyVersionTwo() throws Exception {
         var registry = registry(); var entry = registry.reserve("v1");

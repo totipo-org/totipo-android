@@ -11,10 +11,14 @@ public final class MultiVaultUiBoundaryTest {
     @Test public void selectorUsesApplicationMetadataAndExplicitAuthenticationWithoutInactiveControllers() throws Exception {
         String activity = read("MainActivity"), app = read("TotipoApplication");
         String selector = activity.substring(activity.indexOf("private void renderSelection()"), activity.indexOf("private void renameEntry"));
-        for (String expected : List.of("localEntries()", "entrySummary(entry)", "lastSelected()", "selectFromUi(entry.id()", "Create Local Vault", "Join Existing Vault", "Manage Vaults")) assertTrue(expected, selector.contains(expected));
+        for (String expected : List.of("localEntries()", "entrySummary(entry)", "lastSelected()", "selectFromUi(entry.id()", "Create Local Vault", "Join Existing Vault", "Your vaults", "Add vault", "Recovery", "entryMenu(more, entry)")) assertTrue(expected, selector.contains(expected));
         for (String forbidden : List.of("new AndroidVaultController", "new BiometricUnlock", "passwordField", "PasswordBuffer", "vaultController()", "session", "ACTION_OPEN_DOCUMENT_TREE")) assertFalse(forbidden, selector.contains(forbidden));
         assertTrue(activity.contains("selection().observe(selectionObserver)"));
-        assertFalse(activity.contains("offerBiometric"));
+        assertFalse(activity.contains("vaultManagement"));
+        assertFalse(selector.contains("automaticUnlock"));
+        assertTrue(activity.contains("resumed && !replacing && !isFinishing() && !isDestroyed() && hasWindowFocus()"));
+        assertTrue(activity.contains("getWindow().getDecorView().isAttachedToWindow()"));
+        assertTrue(activity.contains("biometric.automaticUnlock()"));
         assertTrue(activity.contains("button(\"Use biometrics\", () -> { biometric.unlock(); })"));
         assertTrue(app.contains("VaultUiModel.startupSelection"));
         assertFalse(app.contains("Multiple local vaults require selection support"));

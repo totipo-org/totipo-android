@@ -43,7 +43,8 @@ final class TokenListAdapter extends BaseAdapter {
     void replace(List<ObservedToken> values, boolean enabled) {
         source = values;
         var filtered = values.stream().filter(t -> t.conflict() || !t.unresolved().isEmpty()
-                || t.alternatives().stream().anyMatch(d -> d.status() == TokenStatus.ACTIVE)).filter(t -> matchesSearch(t, query)).collect(java.util.stream.Collectors.toList());
+                || t.alternatives().stream().anyMatch(d -> d.status() == TokenStatus.ACTIVE)).filter(t -> matchesSearch(t, query))
+                .sorted(TokenDisplayOrder.ORDER).collect(java.util.stream.Collectors.toList());
         boolean changed = !tokens.equals(filtered) || this.enabled != enabled;
         tokens = filtered;
         this.enabled = enabled;

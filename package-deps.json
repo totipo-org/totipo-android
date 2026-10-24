@@ -196,7 +196,7 @@
  },
  "https://maven.google.com": {
   "master-index": {
-   "xml": "sha256-A50cGTtYF/oHm8+QxLqSWihc1xpXg6IUkYEozsBhD08="
+   "xml": "sha256-FGidVTJOBhR6YirTc06mZEsz6r9DREFsYskItxfH4r4="
   }
  },
  "https://repo.maven.apache.org/maven2": {

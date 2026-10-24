@@ -24,7 +24,7 @@ final class FrameworkBiometricPrompt implements BiometricUnlock.Prompt {
                         else callback.cancelled();
                     }
                     @Override public void onAuthenticationError(int code, CharSequence message) { callback.cancelled(); }
-                    // A non-match keeps the framework prompt active, never opens the vault.
+                    @Override public void onAuthenticationFailed() { callback.cancelled(); }
                 });
         return cancellation::cancel;
     }

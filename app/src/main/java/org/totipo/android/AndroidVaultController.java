@@ -112,6 +112,15 @@ public final class AndroidVaultController {
     private long enrollmentEpoch;
     public record Enrollment(String localId, String activationId, long session, String vaultId, PasswordBuffer password) {}
     private long biometricEpoch;
+    // Process/controller owned, never Activity render state. Only a successful open
+    // rearms the next lock episode; failed opens/discovery/cancellation do not.
+    private boolean automaticBiometricAttempted;
+    synchronized boolean claimAutomaticBiometricUnlock() {
+        if (!selectedAuthority() || lockRequested || operating || snapshot.state() != State.LOCKED
+                || automaticBiometricAttempted) return false;
+        automaticBiometricAttempted = true;
+        return true;
+    }
     static final class BiometricRequest {
         final AndroidVaultController origin;
         final long epoch;
@@ -119,6 +128,7 @@ public final class AndroidVaultController {
     }
     synchronized BiometricRequest beginBiometricUnlock() {
         if (!selectedAuthority() || lockRequested || snapshot.state() != State.LOCKED || operating) return null;
+        automaticBiometricAttempted = true;
         return new BiometricRequest(this, ++biometricEpoch);
     }
     synchronized boolean biometricCurrent(BiometricRequest request) {
@@ -527,6 +537,7 @@ public final class AndroidVaultController {
             if (lockRequested || retiring || shuttingDown
                     || (biometricRequest != null && !biometricCurrent(biometricRequest))) return false;
             addOutcome = null; changeResult = null;
+            automaticBiometricAttempted = false;
             vaultId = openedId; observationOwner = current;
             // These are local subscription/descriptive reads, never provider/store I/O.
             observation = current.observe(() -> signal(current, false), () -> signal(current, true));
@@ -938,7 +949,8 @@ public final class AndroidVaultController {
                 + "\nProvider: " + syncView.binding().status() + "\nBinding generation: " + bindingGeneration
                 + "\nLast Sync: " + lastSyncResult + "\nLast operation detail: " + syncView.message()
                 + "\nPending local publication: " + pendingPublication + "\nConflicts: " + conflicts
-                + "\nJava/core: 0.2.0\nVault format: v1/r19\nApp: 0.0.0-dev";
+                + "\nLocal entry: " + localId()
+                + "\nJava/core: 0.2.0\nVault format: v1/r19";
     }
     private String productSyncError(String detail) {
         if (detail != null && detail.contains("different Totipo vault"))
@@ -1475,7 +1487,10 @@ public final class AndroidVaultController {
             boolean closed = closeOwned();
             synchronized (this) { lockRequested = false; }
             if (closed) discover();
-        } finally { synchronized (this) { operating = false; } }
+        } finally { synchronized (this) {
+            operating = false;
+            for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
+        } }
     }
     private boolean closeOwned() {
         try {

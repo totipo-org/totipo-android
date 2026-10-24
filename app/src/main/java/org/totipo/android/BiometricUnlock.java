@@ -26,6 +26,11 @@ final class BiometricUnlock implements AutoCloseable {
     boolean available() { return credentials.available(); }
     boolean configured() { return credentials.configured(); }
     String message() { return message; }
+    void automaticUnlock() {
+        // Consume even an unavailable/unenrolled opportunity: hardware recovery
+        // requires an explicit retry, never a render/foreground retry loop.
+        if (controller.claimAutomaticBiometricUnlock()) unlock();
+    }
     void enroll(AndroidVaultController.Enrollment enrollment) {
         close();
         this.enrollment = enrollment; password = enrollment.password();

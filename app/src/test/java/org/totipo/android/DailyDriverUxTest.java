@@ -28,7 +28,7 @@ public final class DailyDriverUxTest {
         String ui = read("MainActivity");
         String overflow = ui.substring(ui.indexOf("private void showOverflow"), ui.indexOf("private void buildFolderManagement"));
         assertTrue(overflow.contains("Manage sync folder")); assertTrue(overflow.contains("Diagnostics"));
-        assertTrue(overflow.contains("setMessage(controller.diagnostics())"));
+        assertTrue(overflow.contains("installedVersion()"));
         for (String forbidden : List.of("controller.sync()", "initializeSyncFolder", "prepareJoin", "unlock(", "create("))
             assertFalse(forbidden, overflow.contains(forbidden));
         assertTrue(ui.contains("next.equals(\"manage\") || next.equals(\"joinSetup\") || next.equals(\"join\")"));

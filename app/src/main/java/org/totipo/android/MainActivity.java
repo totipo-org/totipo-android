@@ -38,18 +38,19 @@ public final class MainActivity extends Activity {
             if (controller != null) controller.detach(this.listener);
             if (!replacing) { replacing = true; recreate(); }
         } else if (controller != null && !controller.selectedAuthority()) render(controller.snapshot());
+        else if (controller != null && !replacing) render(controller.snapshot());
         else if (controller == null && !replacing) renderSelection();
     };
     private BiometricUnlock biometric;
     private android.widget.CheckBox enableBiometric;
     private boolean resumed;
     private String biometricUi;
-    private boolean vaultManagement;
+    private EditText vaultName;
+    private boolean updatingVaultName;
     private TotipoApplication application() { return (TotipoApplication) getApplication(); }
     private void renderSelection() {
         build("selection");
         boolean initialSetup = application().localEntries().size() == 1 && application().unusedReservation(application().localEntries().get(0));
-        label(vaultManagement ? "Manage vaults" : initialSetup ? "Initial setup" : "Vault selection").setTextSize(22);
         if (Build.VERSION.SDK_INT < 30) { label(getString(R.string.unsupported_runtime)); return; }
         String diagnostic = application().startupDiagnostic();
         if (diagnostic != null) {
@@ -59,36 +60,59 @@ public final class MainActivity extends Activity {
         label(application().managementNotice());
         if (application().managementBusy()) { label("Please wait for cleanup to finish."); return; }
         var entries = application().localEntries();
-        boolean established = entries.stream().anyMatch(e -> e.state() == VaultRegistry.State.ESTABLISHED);
-        if (!vaultManagement && entries.stream().anyMatch(e -> e.state() == VaultRegistry.State.DETACHED))
-            label("Retained vault data is available in Manage Vaults. Recovery requires its password and this installation’s app data.");
-        if (!established) label("Create a local vault or join an existing vault. Retained and incomplete entries below require explicit recovery.");
+        label("Your vaults").setTextSize(20);
         for (var entry : entries) {
-            if (!vaultManagement && entry.state() == VaultRegistry.State.DETACHED) continue;
-            if (!vaultManagement && entries.size() == 1 && application().unusedReservation(entry)) continue;
+            if (entry.state() != VaultRegistry.State.ESTABLISHED) continue;
             String title = application().localName(entry);
-            boolean highlighted = entry.state() == VaultRegistry.State.ESTABLISHED && entry.id().equals(application().lastSelected());
-            TextView name = label(title + (highlighted ? " · Last selected" : ""));
-            name.setTextSize(20); name.setSelected(highlighted);
-            label(application().entrySummary(entry));
-            if (entry.state() == VaultRegistry.State.ESTABLISHED) button("Select " + title, () -> application().selectFromUi(entry.id(), false));
-            else if (entry.state() == VaultRegistry.State.PENDING && !entry.creationAttempted()) {
-                button("Resume Create · " + title, () -> application().selectFromUi(entry.id(), false));
-                button("Resume Join · " + title, () -> application().selectFromUi(entry.id(), true));
-                if (vaultManagement) button("Recover unused allocation", () -> application().recoverAllocation(entry.id()));
-            } else if (entry.state() == VaultRegistry.State.FORGETTING) button("Retry Forget cleanup", () -> application().forgetEntry(entry.id()));
-            else button("Recover " + title, () -> application().selectFromUi(entry.id(), false));
-            if (vaultManagement) {
-                button("Rename " + title, () -> renameEntry(entry));
-                if (entry.state() == VaultRegistry.State.DETACHED) button("Retry retained permission cleanup", () -> application().forgetEntry(entry.id()));
-                if (entry.state() != VaultRegistry.State.DETACHED && entry.state() != VaultRegistry.State.FORGETTING)
-                    button("Forget " + title, () -> confirmForget(entry));
-            }
+            boolean highlighted = entry.id().equals(application().lastSelected());
+            LinearLayout row = new LinearLayout(this); content.addView(row);
+            Button select = new Button(this); select.setAllCaps(false);
+            select.setText(title + (highlighted ? " · Last selected" : "") + "\n" + application().entrySummary(entry));
+            select.setContentDescription("Open " + title + " · " + application().entrySummary(entry));
+            select.setSelected(highlighted); select.setMinHeight(dp(64));
+            select.setOnClickListener(ignored -> application().selectFromUi(entry.id(), false));
+            row.addView(select, new LinearLayout.LayoutParams(0, -2, 1));
+            Button more = buttonIn(row, "⋮", () -> {});
+            more.setContentDescription("Manage " + title);
+            more.setOnClickListener(ignored -> entryMenu(more, entry));
         }
+        if (initialSetup) label("Create a local vault or join an existing vault.");
+        sectionGap(); label("Add vault").setTextSize(20);
         button("Create Local Vault", () -> application().beginSetup(false));
         button("Join Existing Vault", () -> application().beginSetup(true));
-        button(vaultManagement ? "Back to vault selection" : "Manage Vaults", () -> { vaultManagement = !vaultManagement; renderSelection(); });
-        if (vaultManagement) label("Forget removes a vault from normal selection and keeps its encrypted private data. Recovery requires its password and this installation's app data. Clearing app data or uninstalling can permanently destroy local-only vaults.");
+        var recovery = entries.stream().filter(e -> e.state() != VaultRegistry.State.ESTABLISHED
+                && !(entries.size() == 1 && application().unusedReservation(e))).collect(java.util.stream.Collectors.toList());
+        if (!recovery.isEmpty()) {
+            sectionGap(); label("Recovery").setTextSize(20);
+            label("Retained data requires this installation’s app data and the vault password.");
+            for (var entry : recovery) {
+                LinearLayout row = new LinearLayout(this); content.addView(row);
+                TextView text = new TextView(this); text.setText(application().localName(entry) + "\n" + application().entrySummary(entry));
+                row.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
+                Button more = buttonIn(row, "⋮", () -> {}); more.setContentDescription("Manage " + application().localName(entry));
+                more.setOnClickListener(ignored -> entryMenu(more, entry));
+            }
+        }
+    }
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void sectionGap() { View gap = new View(this); content.addView(gap, new LinearLayout.LayoutParams(1, dp(24))); }
+    private void entryMenu(View anchor, VaultRegistry.Entry entry) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Rename").setOnMenuItemClickListener(item -> { renameEntry(entry); return true; });
+        if (entry.state() == VaultRegistry.State.PENDING && !entry.creationAttempted()) {
+            menu.getMenu().add("Resume Create").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
+            menu.getMenu().add("Resume Join").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), true); return true; });
+            menu.getMenu().add("Recover unused allocation").setOnMenuItemClickListener(item -> { application().recoverAllocation(entry.id()); return true; });
+        } else if (entry.state() == VaultRegistry.State.FORGETTING) {
+            menu.getMenu().add("Retry Forget cleanup").setOnMenuItemClickListener(item -> { application().forgetEntry(entry.id()); return true; });
+        } else if (entry.state() != VaultRegistry.State.ESTABLISHED) {
+            menu.getMenu().add("Recover").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
+        }
+        if (entry.state() == VaultRegistry.State.DETACHED)
+            menu.getMenu().add("Retry retained permission cleanup").setOnMenuItemClickListener(item -> { application().forgetEntry(entry.id()); return true; });
+        else if (entry.state() != VaultRegistry.State.FORGETTING)
+            menu.getMenu().add("Forget…").setOnMenuItemClickListener(item -> { confirmForget(entry); return true; });
+        menu.show();
     }
     private void renameEntry(VaultRegistry.Entry entry) {
         EditText field = new EditText(this); field.setHint("Local display label (optional)");
@@ -260,6 +284,46 @@ public final class MainActivity extends Activity {
             tokens.replace(view == null ? java.util.List.of() : view.tokens(), controller.canAddToken(),
                     state.revealedCode(), state.remainingSeconds());
         }
+        if (vaultName != null && controller.selectedAuthority()) {
+            String value = application().setupName(controller).value();
+            if (!TextUtils.equals(vaultName.getText(), value)) {
+                updatingVaultName = true; vaultName.setText(value); updatingVaultName = false;
+            }
+        }
+        maybeAutomaticBiometric();
+    }
+    private void maybeAutomaticBiometric() {
+        if (resumed && !replacing && !isFinishing() && !isDestroyed() && hasWindowFocus()
+                && getWindow().getDecorView().isAttachedToWindow() && "unlock".equals(surface)
+                && controller != null && controller.selectedAuthority() && biometric != null)
+            biometric.automaticUnlock();
+    }
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused) maybeAutomaticBiometric();
+    }
+    private String heading(String next) {
+        return switch (next) {
+            case "selection" -> "Vaults";
+            case "create" -> "Create local vault";
+            case "join", "joinSetup" -> "Join existing vault";
+            case "manage" -> "Sync folder";
+            case "add" -> "Add token";
+            default -> controller != null && controller.selectedAuthority() ? application().selectedVaultLabel(controller) : "Vault";
+        };
+    }
+    private void buildVaultName() {
+        SetupVaultName draft = application().setupName(controller);
+        vaultName = metadataField(content, "Vault name (optional)", draft.value());
+        vaultName.setSingleLine(true); vaultName.setHint("Personal, Work, Infrastructure");
+        label("Identifies this vault only on this device. Up to 128 UTF-16 code units.");
+        vaultName.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+            public void onTextChanged(CharSequence text, int start, int before, int count) {
+                if (!updatingVaultName) draft.edit(text.toString());
+            }
+            public void afterTextChanged(Editable text) {}
+        });
     }
     static String grouped(String value) {
         int split = (value.length() + 1) / 2;
@@ -272,7 +336,7 @@ public final class MainActivity extends Activity {
         clearCodeWidgets();
         tokens = null;
         issuer = account = secret = period = null; algorithm = digits = null; add = cancel = scan = null;
-        enableBiometric = null;
+        enableBiometric = null; vaultName = null;
         surface = next; password = confirmation = null; action = syncAction = null;
         chooseFolder = disconnectFolder = checkFolder = joinVault = initializeFolder = null; syncStatus = null;
         ScrollView scroll = new ScrollView(this);
@@ -288,7 +352,9 @@ public final class MainActivity extends Activity {
         if (!next.equals("open")) { scroll.setFillViewport(true); scroll.addView(content); }
         setContentView(root);
         LinearLayout toolbar = new LinearLayout(this); content.addView(toolbar);
-        TextView title = new TextView(this); title.setText("Totipo"); title.setTextSize(28);
+        TextView title = new TextView(this); title.setText(heading(next)); title.setTextSize(28);
+        if (Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
+        title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         if (next.equals("open")) {
             syncAction = buttonIn(toolbar, "Sync", () -> controller.sync());
@@ -300,17 +366,15 @@ public final class MainActivity extends Activity {
         more.setVisibility(controller == null || !controller.selectedAuthority() ? View.GONE : View.VISIBLE);
         status = label(""); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         if (next.equals("selection")) return;
-        if (controller.selectedAuthority()) label(application().selectedVaultLabel(controller));
+        if (next.equals("create") || next.equals("joinSetup") || next.equals("join")) buildVaultName();
         if (next.equals("manage") || next.equals("joinSetup") || next.equals("join")) buildFolderManagement();
         if (next.equals("create")) label("Create a new independent local-only vault. A Sync folder can be configured after creation.");
         if (next.equals("joinSetup")) {
-            label("Join existing vault").setTextSize(22);
             label("Choose a folder containing an existing Totipo vault, then check the vault before entering its password.");
             button("Cancel setup", this::changeVault); return;
         }
         if (next.equals("manage")) button("Back", () -> { managing = false; surface = null; render(controller.snapshot()); });
         if (next.equals("create") || next.equals("unlock") || next.equals("join")) {
-            label(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock Vault").setTextSize(22);
             password = passwordField("Password");
             if (next.equals("create")) confirmation = passwordField("Confirm password");
             action = button(next.equals("join") ? "Join existing vault" : next.equals("create") ? "Create Vault" : "Unlock", () -> authenticate(false));
@@ -325,7 +389,6 @@ public final class MainActivity extends Activity {
             }
             password.requestFocus();
         } else if (next.equals("add")) {
-            label("Add token").setTextSize(22);
             scan = button(getString(R.string.scan_qr), () -> {
                 clearSecret();
                 try { startActivity(new android.content.Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)); }
@@ -420,12 +483,25 @@ public final class MainActivity extends Activity {
     private void showOverflow(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add("Change Vault").setOnMenuItemClickListener(item -> { changeVault(); return true; });
+        menu.getMenu().add("Rename Vault").setOnMenuItemClickListener(item -> {
+            EditText field = new EditText(this); field.setSingleLine(true); field.setSaveEnabled(false);
+            field.setHint("Vault name (optional)"); field.setContentDescription("Vault name");
+            field.setText(application().selectedAssignedName(controller));
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Rename vault").setView(field)
+                    .setNegativeButton("Cancel", null).setPositiveButton("Save", null).show();
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                if (application().saveSelectedName(controller, field.getText().toString())) {
+                    dialog.dismiss(); surface = null; render(controller.snapshot());
+                } else field.setError(application().managementNotice());
+            });
+            return true;
+        });
         menu.getMenu().add("Manage sync folder").setOnMenuItemClickListener(item -> {
             controller.hideCode(); managing = true; adding = false; surface = null; render(controller.snapshot()); return true;
         });
         menu.getMenu().add("Diagnostics").setOnMenuItemClickListener(item -> {
             controller.hideCode();
-            new AlertDialog.Builder(this).setTitle("Diagnostics").setMessage(controller.diagnostics())
+            new AlertDialog.Builder(this).setTitle("Diagnostics").setMessage(controller.diagnostics() + "\nApp: " + installedVersion())
                     .setPositiveButton("Close", null).show(); return true;
         });
         if (controller.snapshot().state() == State.OPEN)
@@ -436,8 +512,16 @@ public final class MainActivity extends Activity {
                 .setOnMenuItemClickListener(item -> { managing = false; clearPasswords(); controller.lock(); return true; });
         menu.show();
     }
+    private String installedVersion() {
+        try {
+            var info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return (info.versionName == null || info.versionName.isEmpty() ? "Unavailable" : info.versionName)
+                    + " (" + (Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode) + ")";
+        } catch (android.content.pm.PackageManager.NameNotFoundException | RuntimeException unavailable) {
+            return "Unavailable";
+        }
+    }
     private void buildFolderManagement() {
-        label("Manage sync folder").setTextSize(20);
         syncStatus = label("");
         chooseFolder = button("Choose sync folder", this::chooseSyncFolder);
         checkFolder = button("Retry access", () -> controller.checkSyncFolder());
@@ -513,9 +597,12 @@ public final class MainActivity extends Activity {
         String origin = pickerActivation;
         if (request == SYNC_TREE_REQUEST) pickerActivation = null;
         if (request == SYNC_TREE_REQUEST && controller != null && controller.selectedAuthority()
-                && controller.activationId().equals(origin) && !replacing) controller.chooseSyncFolder(
-                result != RESULT_OK, data == null || data.getData() == null ? null : data.getData().toString(),
-                data == null ? 0 : data.getFlags());
+                && controller.activationId().equals(origin) && !replacing) {
+            controller.chooseSyncFolder(result != RESULT_OK, data == null || data.getData() == null ? null : data.getData().toString(),
+                    data == null ? 0 : data.getFlags());
+            if (joining && result == RESULT_OK && data != null && data.getData() != null)
+                application().suggestJoinName(controller, data.getData());
+        }
     }
     private void clearSecret() { if (secret != null) secret.setText(""); }
     private void cancelAdd() { clearSecret(); adding = submitted = false; render(controller.snapshot()); }
@@ -524,7 +611,7 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed() { navigateBack(); }
     private void navigateBack() {
         if (controller == null) {
-            if (vaultManagement) { vaultManagement = false; renderSelection(); } else finish();
+            finish();
             return;
         }
         if (!controller.selectedAuthority()) { finish(); return; }
@@ -581,6 +668,7 @@ public final class MainActivity extends Activity {
     }
     private void authenticate(boolean emptyConfirmed) {
         boolean create = surface.equals("create");
+        if (controller.snapshot().state() != (create || surface.equals("join") ? State.NO_LOCAL_VAULT : State.LOCKED)) return;
         if (create && !TextUtils.equals(password.getText(), confirmation.getText())) {
             confirmation.setError("Passwords do not match"); confirmation.requestFocus(); return;
         }
@@ -590,6 +678,9 @@ public final class MainActivity extends Activity {
                     .setNegativeButton("Cancel", null)
                     .setPositiveButton(create ? "Create Vault" : "Unlock", (dialog, which) -> authenticate(true)).show();
             return;
+        }
+        if ((create || surface.equals("join")) && !application().saveSelectedName(controller, application().setupName(controller).value())) {
+            vaultName.setError(application().managementNotice()); return;
         }
         // Copy only at submission; controller takes exclusive ownership and clears even rejection.
         char[] credential = new char[password.length()];

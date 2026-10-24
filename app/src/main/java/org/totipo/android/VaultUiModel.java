@@ -12,9 +12,18 @@ final class VaultUiModel {
         return only.state() == VaultRegistry.State.ESTABLISHED && only.id().equals(lastSelected) ? only.id() : null;
     }
     static String name(List<VaultRegistry.Entry> entries, VaultRegistry.Entry entry) {
-        int number = entries.indexOf(entry) + 1;
-        String name = entry.label() == null ? "Vault " + number : entry.label();
-        long same = entries.stream().filter(e -> java.util.Objects.equals(e.label(), entry.label())).count();
-        return entry.label() != null && same > 1 ? name + " · Local entry " + number : name;
+        if (entry.label() != null) return entry.label();
+        int length = 6;
+        for (var other : entries) {
+            if (other.id().equals(entry.id())) continue;
+            int common = 0;
+            while (common < entry.id().length() && entry.id().charAt(common) == other.id().charAt(common)) common++;
+            length = Math.max(length, common + 1);
+        }
+        return entry.id().substring(0, length).toUpperCase(java.util.Locale.ROOT) + " · Unnamed";
+    }
+
+    static String optionalLabel(String value) {
+        return value == null || value.codePoints().allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c)) ? null : value;
     }
 }

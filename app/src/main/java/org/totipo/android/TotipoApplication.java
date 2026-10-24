@@ -19,6 +19,52 @@ public final class TotipoApplication extends Application {
     private volatile boolean managementBusy;
     private volatile String managementNotice = "";
     private String joinActivation;
+    private String setupNameActivation;
+    private SetupVaultName setupName;
+    SetupVaultName setupName(AndroidVaultController controller) {
+        if (controller == null || !controller.selectedAuthority() || vaultController() != controller)
+            throw new IllegalStateException("Setup activation retired");
+        if (!controller.activationId().equals(setupNameActivation)) {
+            setupNameActivation = controller.activationId(); setupName = new SetupVaultName();
+            String existing = selectedAssignedName(controller);
+            if (!existing.isEmpty()) setupName.edit(existing);
+        }
+        return setupName;
+    }
+    boolean saveSelectedName(AndroidVaultController controller, String value) {
+        try {
+            if (managementBusy || vaultController() != controller || !controller.selectedAuthority()) return false;
+            String label = VaultUiModel.optionalLabel(value);
+            if (!java.util.Objects.equals(registry.entry(controller.localId()).label(), label)) registry.rename(controller.localId(), label);
+            return true;
+        } catch (IllegalArgumentException invalid) {
+            managementNotice = "Use at most 128 UTF-16 code units without control characters or invalid encoding.";
+        } catch (Exception unavailable) {
+            managementNotice = "Name could not be saved. The same vault allocation is retained. Preserve app data and restart before retrying.";
+        }
+        return false;
+    }
+    void suggestJoinName(AndroidVaultController controller, android.net.Uri tree) {
+        SetupVaultName draft = setupName(controller);
+        metadataWorker.execute(() -> {
+            String display = null;
+            try {
+                var document = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree,
+                        android.provider.DocumentsContract.getTreeDocumentId(tree));
+                try (var cursor = getContentResolver().query(document, new String[]{
+                        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE}, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()
+                            && android.provider.DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(1))) display = cursor.getString(0);
+                }
+            } catch (Exception unavailable) { /* No trustworthy metadata: leave unnamed. */ }
+            String suggestion = display;
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (vaultController() != controller || !controller.selectedAuthority() || setupName != draft) return;
+                draft.suggest(suggestion); selection.presentationChanged();
+            });
+        });
+    }
     private final java.util.concurrent.ExecutorService metadataWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
     public boolean managementBusy() { return managementBusy; }
     public String managementNotice() { return managementNotice; }
@@ -82,7 +128,7 @@ public final class TotipoApplication extends Application {
         }
     }
     void renameEntry(String id, String label) {
-        try { requireUnselected(); registry.rename(id, label == null || label.isEmpty() ? null : label); managementNotice = "Local label saved."; }
+        try { requireUnselected(); registry.rename(id, VaultUiModel.optionalLabel(label)); managementNotice = "Local name saved."; }
         catch (IllegalArgumentException invalid) { managementNotice = "Use at most 128 characters without control characters or invalid encoding."; }
         catch (Exception unavailable) { managementNotice = "Label could not be saved. Preserve app data and restart before retrying."; }
         selection.presentationChanged();
@@ -120,6 +166,7 @@ public final class TotipoApplication extends Application {
     }
     void changeVault() {
         joinActivation = null;
+        setupName = null; setupNameActivation = null;
         selection.retire();
     }
     LocalReplicaOwner replicaOwner() { return selection.owner(); }
@@ -199,6 +246,12 @@ public final class TotipoApplication extends Application {
             return localName(registry.entry(selected.localId()));
         } catch (java.io.IOException unavailable) { /* presentation only */ }
         return "Selected vault";
+    }
+    String selectedAssignedName(AndroidVaultController controller) {
+        if (vaultController() == controller && controller.selectedAuthority()) try {
+            String label = registry.entry(controller.localId()).label(); return label == null ? "" : label;
+        } catch (java.io.IOException unavailable) { /* presentation only */ }
+        return "";
     }
     BiometricCredentials biometricCredentials(AndroidVaultController controller) throws java.io.IOException {
         var selected = selection.snapshot();
