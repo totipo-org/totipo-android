@@ -177,15 +177,41 @@ local headers, compressed bytes and uncompressed SHA-256. It permits signing-blo
 insertion and changed central-directory offsets; it does not claim whole-file
 identity. Downloaded APK whole-file SHA equality also preserves this payload proof.
 
-A failed remote verification leaves a draft unpublished. Any existing release or
-draft for the target tag fails closed; neither path adopts, overwrites or deletes it.
-The initial published-release lookup uses documented `gh api --include` HTTP status
-and headers, not human stderr. Only a well-formed HTTP 404 permits proceeding;
-401/403/429/5xx, malformed JSON/HTTP and process/transport failures remain fatal.
-A separate fully paginated release list also rejects drafts. After creating the
-draft, publication reads that draft from the list, never from the published-only
-tag endpoint. Before upload the publication job independently repeats signed acceptance across its artifact handoff.
-Downloaded whole-file hash equality then preserves that acceptance without another
+Publication rejects known existing releases through the published-tag endpoint
+and a fully paginated authenticated release list, including observable drafts.
+Only a well-formed tag-lookup HTTP 404 means absence. A list cannot prove that no
+draft exists; GitHub's duplicate-release rejection is an additional safeguard.
+Neither check authorizes adopting, overwriting or deleting an existing release.
+
+After independently repeating signed acceptance and source/tag checks, publication
+creates one draft through `gh api`, capturing its positive numeric release ID from
+the creation response. It uploads the three approved assets to that ID, capturing
+each numeric asset ID. It never looks for the new draft in the release listing or
+downloads by tag. ID-based release and asset queries must match the expected tag,
+draft state, asset IDs, names, uploaded state and sizes, with no extra assets.
+Every asset is downloaded by ID and compared to the qualified local file using
+whole-file SHA-256. Source identity and draft state are checked again before one
+PATCH publishes that release ID. Success requires a final published-state check
+and the same exact asset IDs and downloaded hashes.
+
+Read-only API calls allow at most three attempts, with 1s then 2s backoff on HTTP
+408/429/500/502/503/504, timeouts or interrupted transport. Known release/asset
+404s and temporarily incomplete expected asset listings are also bounded. Every
+download attempt starts afresh; partial bytes are discarded. There are no sleeps
+after success. Authorization failures (401/403), invalid identities, malformed
+successful responses, unexpected assets and incorrect hashes stop immediately.
+
+Creation and uploads are never retried. Ambiguous creation stops without adopting
+a draft or creating another; ambiguous/partial upload stops without replacement or
+cleanup. The created release ID is printed for diagnosis. Publication is never
+repeated: a transient/ambiguous PATCH response permits only read-only reconciliation
+of the known ID, published state and exact assets/bytes. A still-draft, conflicting
+or unverifiable result fails. Failure may leave an unpublished draft, or a published
+release if the final verification failed. Inspect the workflow evidence and remote
+state deliberately; rerunning publication does not resume or repair releases.
+Completed releases, including manually published v0.2.3, remain complete.
+
+Whole-file hash equality preserves the signed acceptance without another
 manifest/DEX/signature inspection of unchanged bytes.
 The workflow requires human-configured environment protections. Their setup is
 human-reported only; YAML cannot itself enforce required reviewers.
@@ -194,12 +220,16 @@ human-reported only; YAML cannot itself enforce required reviewers.
 
 The runner supplies GitHub CLI, outside Android secret scope. No third-party Python
 dependency was added. [`gh api`](https://cli.github.com/manual/gh_api) documents
-`--include`, `--paginate` and `--slurp`. GitHub documents
+`--include`, typed fields and raw `--input` uploads. GitHub documents
 [release-by-tag](https://docs.github.com/en/rest/releases/releases#get-a-release-by-tag-name)
 as a published-release lookup and
 [list releases](https://docs.github.com/en/rest/releases/releases#list-releases)
-as including drafts for callers with push authority. The implementation therefore
-uses different endpoints for published absence and draft retrieval.
+as including drafts for callers with push authority. [Create release](https://docs.github.com/en/rest/releases/releases#create-a-release)
+returns the ID used by [get/update release](https://docs.github.com/en/rest/releases/releases#get-a-release).
+[Release assets](https://docs.github.com/en/rest/releases/assets) supports upload,
+listing by release ID and metadata/binary retrieval by asset ID. `gh api` handles
+binary download redirects; upload content type and length are supplied explicitly.
+No new credentials, local CLI requirement or dependency is introduced.
 
 ## Support-tooling policy
 

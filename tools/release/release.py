@@ -2,6 +2,7 @@
 """No-secret source, public identity, bundle and publication operations."""
 import argparse
 import importlib.util
+import hashlib
 from functools import cache
 import json
 import os
@@ -9,6 +10,8 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
+from urllib.parse import quote
 from payload import require
 
 import source
@@ -155,45 +158,123 @@ def release_record(record, tag):
     return record
 
 
-def lookup_release(repo, github_repo, tag):
-    """Published release lookup: only machine-readable HTTP 404 is absence.
+class GitHubFailure(ValueError):
+    """An HTTP/transport failure, with retry eligibility only for reads."""
+    def __init__(self, message, transient=False):
+        super().__init__(message)
+        self.transient = transient
 
-    gh api --include prints the status line and headers even on HTTP errors.
-    Never inspect human stderr; CLI/transport failures without a valid response
-    remain fatal. Drafts require a separate paginated list below.
+
+def github_request(repo, endpoint, method='GET', fields=(), missing=False, binary=False, known=False):
+    """One mutation attempt; at most three read attempts with 1s/2s backoff.
+
+    No stderr matching, generic subprocess retries, or retries of invalid data.
+    Capturing bytes discards incomplete downloads before the next GET attempt.
     """
-    result = subprocess.run(['gh', 'api', '--include', '--method', 'GET',
-                             f'repos/{github_repo}/releases/tags/{tag}'], cwd=repo.root,
-                            text=True, capture_output=True, check=False, timeout=60)
-    response = result.stdout.replace('\r\n', '\n')
-    headers, separator, body = response.partition('\n\n')
-    status = re.fullmatch(r'HTTP/(?:1\.[01]|2(?:\.0)?) (\d{3})(?: [^\n]*)?',
-                          headers.split('\n')[0])
-    require(separator and status and all(':' in line for line in headers.split('\n')[1:]),
-            'Missing/malformed GitHub HTTP response')
-    code = int(status[1])
-    record = json.loads(body)
-    if code == 404:
-        require(result.returncode == 1 and type(record) is dict and
-                type(record.get('message')) is str and bool(record['message']) and
-                record.get('status', '404') == '404', 'Malformed GitHub 404 response')
-        return None
-    require(code == 200 and result.returncode == 0, f'GitHub release lookup failed: HTTP {code}')
-    return release_record(record, tag)
+    cmd = ['gh', 'api', '--include', '--method', method, endpoint,
+           '-H', 'Accept: ' + ('application/octet-stream' if binary else 'application/vnd.github+json')]
+    cmd.extend(fields)
+    for attempt in range(3 if method == 'GET' else 1):
+        try:
+            result = subprocess.run(cmd, cwd=repo.root, capture_output=True, check=False, timeout=60)
+        except subprocess.TimeoutExpired as error:
+            failure = GitHubFailure('GitHub request timed out: ' + endpoint, transient=True)
+            failure.__cause__ = error
+        else:
+            # gh follows binary download redirects and includes the final response.
+            raw = result.stdout
+            separator = re.search(rb'\r?\n\r?\n', raw)
+            headers = raw[:separator.start()] if separator else raw
+            body = raw[separator.end():] if separator else b''
+            lines = headers.replace(b'\r\n', b'\n').split(b'\n')
+            status = re.fullmatch(rb'HTTP/(?:1\.[01]|2(?:\.0)?) (\d{3})(?: [^\n]*)?', lines[0])
+            if not separator or not status:
+                require(result.returncode != 0, 'Missing/malformed GitHub HTTP response')
+                failure = GitHubFailure('GitHub transport/CLI failed: ' + endpoint,
+                                        transient=result.returncode == 1)
+            else:
+                require(all(b':' in line for line in lines[1:]), 'Malformed GitHub HTTP headers')
+                code = int(status[1])
+                if code == 404 and missing:
+                    record = json.loads(body)
+                    require(result.returncode == 1 and type(record) is dict and
+                            type(record.get('message')) is str and bool(record['message']) and
+                            record.get('status', '404') == '404', 'Malformed GitHub 404 response')
+                    return None
+                if code == (201 if method == 'POST' else 200) and result.returncode == 0:
+                    return body if binary else json.loads(body)
+                # Auth/permission failures (including secondary-limit 403) fail immediately.
+                failure = GitHubFailure(f'GitHub {method} failed: HTTP {code}: {endpoint}',
+                                        transient=(code == 200 and result.returncode != 0) or
+                                        code in (408, 429, 500, 502, 503, 504) or
+                                        (code == 404 and method == 'GET' and known))
+        if method != 'GET' or not failure.transient or attempt == 2:
+            raise failure
+        time.sleep(attempt + 1)
+
+
+def lookup_release(repo, github_repo, tag):
+    # Published-only endpoint: 404 is absence here, never for a known release ID.
+    record = github_request(repo, f'repos/{github_repo}/releases/tags/{tag}', missing=True)
+    return None if record is None else release_record(record, tag)
 
 
 def listed_release(repo, github_repo, tag):
-    # Tag lookup omits drafts. Contents-write publication token sees drafts here.
-    pages = json.loads(repo.run('gh', 'api', '--paginate', '--slurp',
-                          f'repos/{github_repo}/releases?per_page=100'))
-    require(type(pages) is list and pages and all(type(page) is list for page in pages),
-            'Malformed release list')
-    records = [r for page in pages for r in page]
-    require(all(type(r) is dict and type(r.get('tag_name')) is str for r in records),
-            'Malformed release list entry')
-    matching = [release_record(r, tag) for r in records if r['tag_name'] == tag]
-    require(len(matching) <= 1, 'Ambiguous releases for target tag')
-    return matching[0] if matching else None
+    # Preflight only. Draft absence is not guaranteed; creation can still reject it.
+    matching = []
+    page = 1
+    while True:
+        records = github_request(repo, f'repos/{github_repo}/releases?per_page=100&page={page}')
+        require(type(records) is list and all(type(r) is dict and
+                type(r.get('tag_name')) is str for r in records), 'Malformed release list')
+        matching.extend(release_record(r, tag) for r in records if r['tag_name'] == tag)
+        require(len(matching) <= 1, 'Ambiguous releases for target tag')
+        if len(records) < 100:
+            return matching[0] if matching else None
+        page += 1
+
+
+def exact_release(record, tag, release_id, draft):
+    release_record(record, tag)
+    require(record['id'] == release_id and record['draft'] is draft,
+            'Release ID/draft state differs')
+    return record
+
+
+def asset_record(record, local, asset_id=None):
+    require(type(record) is dict and type(record.get('id')) is int and record['id'] > 0 and
+            (asset_id is None or record['id'] == asset_id) and record.get('name') == local.name and
+            record.get('state') == 'uploaded' and type(record.get('size')) is int and
+            record['size'] == local.stat().st_size, 'Asset identity/state/size differs')
+    return record['id']
+
+
+def verify_remote(repo, base, tag, release_id, assets, draft):
+    endpoint = f'{base}/releases/{release_id}'
+    exact_release(github_request(repo, endpoint, known=True), tag, release_id, draft)
+    # Three approved assets fit on one page. Any extra entry fails immediately.
+    expected = {local.name: (local, asset_id) for local, asset_id in assets}
+    for attempt in range(3):
+        records = github_request(repo, endpoint + '/assets?per_page=100', known=True)
+        require(type(records) is list and all(type(r) is dict and
+                type(r.get('name')) is str for r in records), 'Malformed remote asset set')
+        names = [r['name'] for r in records]
+        require(len(names) == len(set(names)) and set(names) <= set(expected),
+                'Remote asset names differ')
+        for record in records:
+            local, asset_id = expected[record['name']]
+            asset_record(record, local, asset_id)
+        if set(names) == set(expected):
+            break
+        require(attempt < 2, 'Remote asset set incomplete')
+        time.sleep(attempt + 1)
+    for record in records:
+        local, asset_id = expected[record['name']]
+        asset_endpoint = f'{base}/releases/assets/{asset_id}'
+        asset_record(github_request(repo, asset_endpoint, known=True), local, asset_id)
+        data = github_request(repo, asset_endpoint, binary=True, known=True)
+        require(hashlib.sha256(data).hexdigest() == sha(local), 'Remote release bytes differ')
+    exact_release(github_request(repo, endpoint, known=True), tag, release_id, draft)
 
 
 def publish(repo, args):
@@ -203,30 +284,52 @@ def publish(repo, args):
     require(checksum.read_text() == sha(apk) + '  ' + apk.name + '\n', 'Signed checksum differs')
     verify_signed(repo, apk, args.bundle)
     github_repo = os.environ['GITHUB_REPOSITORY']
+    base = f'repos/{github_repo}'
     tag = p['tag']
-    # Fail on existing release, including drafts. No overwrite/resume ambiguity.
     require(lookup_release(repo, github_repo, tag) is None, 'Release already exists')
     require(listed_release(repo, github_repo, tag) is None, 'Release/draft already exists')
-    notes = args.bundle.parent / 'release-notes.txt'
-    notes.write_text(f"Totipo Android {args.version}\n\nSource: {args.commit}\nTag: {tag}\n"
-                     f"APK: {apk.name}\nSHA-256: {sha(apk)}\n"
-                     f"Signing certificate SHA-256: {p['certificate_sha256']}\n"
-                     "Java runtime: 0.2.0; protocol: v1/r19.\n")
-    repo.run('gh', 'release', 'create', tag, '--repo', github_repo, '--verify-tag', '--draft',
-        '--title', f'Totipo Android {args.version}', '--notes-file', str(notes),
-        str(apk), str(checksum), str(args.bundle / 'release-provenance.json'))
-    record = listed_release(repo, github_repo, tag)
-    require(record is not None and record['draft'], 'Expected newly created draft release')
-    downloaded = args.bundle.parent / 'remote-release'
-    downloaded.mkdir()
-    repo.run('gh', 'release', 'download', tag, '--repo', github_repo, '--dir', str(downloaded))
-    for local in (apk, checksum, args.bundle / 'release-provenance.json'):
-        require(sha(downloaded / local.name) == sha(local), 'Remote release bytes differ')
-    # Hosted whole-file equality preserves the signature, metadata and payload
-    # acceptance just established in this publication job.
+    notes = (f"Totipo Android {args.version}\n\nSource: {args.commit}\nTag: {tag}\n"
+             f"APK: {apk.name}\nSHA-256: {sha(apk)}\n"
+             f"Signing certificate SHA-256: {p['certificate_sha256']}\n"
+             "Java runtime: 0.2.0; protocol: v1/r19.\n")
+    # REST does not have --verify-tag: identity() supplies the stronger annotated
+    # local/remote tag-object and source checks immediately before this POST.
     identity(repo, args.version, args.commit)
-    repo.run('gh', 'api', '--method', 'PATCH', f"repos/{github_repo}/releases/{record['id']}",
-        '-F', 'draft=false')
+    record = release_record(github_request(repo, base + '/releases', 'POST',
+        ('-f', 'tag_name=' + tag, '-f', 'target_commitish=' + args.commit,
+         '-F', 'draft=true', '-F', 'prerelease=false',
+         '-f', 'name=Totipo Android ' + args.version, '-f', 'body=' + notes)), tag)
+    release_id = record['id']
+    exact_release(record, tag, release_id, True)
+    print(f'Created draft release ID {release_id}', flush=True)
+    endpoint = f'{base}/releases/{release_id}'
+    exact_release(github_request(repo, endpoint, known=True), tag, release_id, True)
+    assets = []
+    for local in (apk, checksum, args.bundle / 'release-provenance.json'):
+        # Fixed GitHub upload host/path, never an untrusted response URL. A failed
+        # or ambiguous upload stops; no replacement/deletion/repeated POST.
+        uploaded = github_request(repo,
+            f'https://uploads.github.com/{endpoint}/assets?name={quote(local.name, safe="")}',
+            'POST', ('-H', 'Content-Type: application/octet-stream',
+                     '-H', 'Content-Length: ' + str(local.stat().st_size), '--input', str(local)))
+        asset_id = asset_record(uploaded, local)
+        require(asset_id not in [i for _, i in assets], 'Duplicate uploaded asset ID')
+        assets.append((local, asset_id))
+    verify_remote(repo, base, tag, release_id, assets, True)
+    identity(repo, args.version, args.commit)
+    exact_release(github_request(repo, endpoint, known=True), tag, release_id, True)
+    try:
+        published = github_request(repo, endpoint, 'PATCH', ('-F', 'draft=false'))
+    except (GitHubFailure, json.JSONDecodeError) as error:
+        # Never repeat PATCH. A transient/ambiguous result can be accepted only
+        # after read-only reconciliation proves the exact published state/bytes.
+        if isinstance(error, GitHubFailure) and not error.transient:
+            raise
+        print(f'Publication response ambiguous for release ID {release_id}; verifying state', flush=True)
+    else:
+        exact_release(published, tag, release_id, False)
+    verify_remote(repo, base, tag, release_id, assets, False)
+    print(f'Published and verified release ID {release_id}', flush=True)
 
 
 def execute_source(repo, command, target, json_output=False):
