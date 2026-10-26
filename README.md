@@ -1,120 +1,48 @@
 # Totipo Android
 
-Totipo is an Android authenticator for time-based one-time passwords (TOTP).
-It keeps your tokens in password-protected encrypted vaults, generates login codes
-offline, and lets you manage multiple vaults on one device. Shared-folder
-synchronization and biometric unlocking are optional.
+## What is Totipo?
 
-## Install
+Totipo is an authenticator for time-based one-time passwords (TOTP), the short-lived codes used for two-factor authentication.
 
-Download the signed APK from
-[GitHub Releases](https://github.com/totipo-org/totipo-android/releases/latest).
-Expand **Assets** and select the signed **`totipo-android-<version>.apk`**;
-the adjacent `.apk.sha256` file is its checksum. Verify the APK as described below,
-then open it on your Android device and, if prompted, allow that browser or file
-manager to install apps from this source. For later updates, install the new signed
-APK over the existing app; avoid uninstalling or clearing app data.
+It stores your authenticator entries in password-protected, encrypted vaults that you control.
 
-**Requires Android 11 or newer (API 30+).** Android enforces this requirement
-when installing the APK. Biometric unlock requires available strong biometric
-hardware and enrollment. Arbitrary devices and shared-folder providers are not
-universally qualified; see the [user guide](docs/USER_GUIDE.md#compatibility).
+## Why use Totipo?
 
-Optionally, use [Obtainium](https://github.com/ImranR98/Obtainium) to follow
-[this repository](https://github.com/totipo-org/totipo-android) and manage updates
-from GitHub Releases. Verify the signing identity below when setting it up;
-following a repository alone does not establish the expected signer.
+**Your secrets stay encrypted.** The secret keys used to generate your one-time codes are encrypted while stored in your vault. You unlock the vault with your password when you need them.
 
-## Verify the APK
+**Your data is yours.** Totipo uses an [open-source, publicly documented vault format](https://github.com/totipo-org/totipo-spec). The format isn't tied to an online account or hosted service, and its encrypted files can be backed up independently.
 
-Production package ID: **`org.totipo.android`**. Signing certificate SHA-256:
+**Use your vault across devices.** Compatible Totipo clients share the same vault format. You can synchronize vault folders between devices using a file synchronization tool of your choice.
+
+Synchronization is optional and doesn't replace independent backups.
+
+## Getting started
+
+### Install Totipo
+
+Download the signed APK from the [latest release](https://github.com/totipo-org/totipo-android/releases/latest). Under **Assets**, choose `totipo-android-<version>.apk`. Totipo requires **Android 11 or newer**.
+
+Before installing, verify the APK's signing identity with [AppVerifier](https://github.com/soupslurpr/AppVerifier) or Android SDK's `apksigner`. The package ID is `org.totipo.android`, and the signing certificate's **SHA-256 fingerprint** is:
 
 ```text
 74fd4c313856e1773fd174fba4ecd2a12cc4fde85ae34a3d8a3e986353b01632
 ```
 
-This value is copied from the canonical [public fingerprint](release/signing/android-release-cert.sha256)
-for the committed [public certificate](release/signing/android-release-cert.pem).
+Compare this against the downloaded APK, not just the file checksum. The [public signing certificate](release/signing/android-release-cert.pem) and [fingerprint](release/signing/android-release-cert.sha256) are in this repository. [Obtainium](https://github.com/ImranR98/Obtainium) can optionally follow GitHub releases for updates, but following a repository alone does not verify its signer. See the [user guide](docs/USER_GUIDE.md) for installation and verification details.
 
-On Android, use [AppVerifier](https://github.com/soupslurpr/AppVerifier) to compare
-Totipo's package ID and signing certificate SHA-256 with the values above.
-Alternatively, on a computer with [Android SDK Build Tools](https://developer.android.com/tools/apksigner),
-run this command, replacing the filename with your downloaded APK:
+### Create your first vault
 
-```sh
-apksigner verify --print-certs "totipo-android-<version>.apk"
-```
+1. On **Vaults**, choose **Create Local Vault**, name it if you like, and set a strong password.
+2. Unlock the vault and choose **Add token** to enter an authenticator setup.
+3. Choose **Show code** to see a code, then **Copy code** if needed.
 
-The command must succeed and its **Signer #1 certificate SHA-256 digest** must
-match the fingerprint above (ignore letter case and colon separators). Stop if
-verification fails or the identity differs. The certificate fingerprint identifies
-the signer across releases; the release's `.apk.sha256` checksum identifies that
-specific APK file and is not a substitute for checking the signing certificate.
+You can also **Join Existing Vault** if its files are available through a folder on your device, or enable optional biometric unlocking. See the [user guide](docs/USER_GUIDE.md) for these workflows.
 
-## Start using Totipo
+**Important:** Local-only vaults live in Android's private app storage. Uninstalling Totipo or clearing its data can permanently remove them. **Totipo Android does not yet provide a standalone backup/export operation.** If you need a recoverable copy, arrange and verify an independent copy of the complete encrypted vault through the existing shared-folder workflow; keep your vault password and service recovery codes safe. [Details](docs/USER_GUIDE.md#shared-folder-synchronization).
 
-On the **Vaults** screen:
+## Learn more
 
-- Choose **Create Local Vault** to start a new vault. Give it an optional name and
-  a password; no shared folder or network is needed.
-- Choose **Join Existing Vault** to use a vault already available in a shared
-  folder. Select that vault's folder and unlock it with its existing password.
-  Creating a new vault does not join an existing one.
-
-Inside an unlocked vault, use **Add token** to enter the service's setup secret
-and TOTP settings. Totipo also accepts supported `otpauth://totp` links or text
-shared by another app; it has no built-in QR scanner. Search your tokens, choose
-**Show code** to view a code, and **Copy code** to copy it. Token menus let you
-edit issuer/account labels or confirm deletion. Codes hide when they expire;
-clipboard cleanup is best effort. Deletion can leave encrypted token history.
-
-Use **More options → Change Vault** to switch vaults, or rename and forget entries
-from **Vaults**. Each vault has its own password, optional biometric unlock and
-optional sync folder. Switching requires unlocking the chosen vault.
-
-Password unlock is always available. You can opt into biometric unlock on the
-password screen. This stores an **encrypted reusable vault password on this
-device**, protected by Android Keystore and a fresh strong-biometric authorization
-for each use. Keep your password for recovery. **Lock** locks immediately; Totipo
-also locks after **15 minutes without user interaction**, including time spent in
-the background. Backgrounding alone does not immediately lock it.
-
-## Optional synchronization
-
-Use **Manage sync folder** to choose a folder accessible through Android's folder
-picker. For a new empty folder, explicitly **Initialize sync folder**, then **Sync**.
-Use a separate folder for each independent vault.
-
-Totipo reads and writes encrypted vault files there. Tools such as **Syncthing**
-can separately replicate that folder between devices; they are not integrated
-into Totipo. Sync attempts run while the selected vault is open, after unlocking,
-returning to the foreground, and saving token changes. Manual **Sync** retries.
-There is no background sync or polling, and inactive vaults do not sync.
-
-A successful Sync describes the selected folder, **not receipt by another device**.
-Local changes survive folder failures; concurrent edits may need an explicit
-conflict choice. Follow the [user guide](docs/USER_GUIDE.md#shared-folder-synchronization)
-for setup, status meanings and troubleshooting.
-
-## Protect your vaults
-
-Vaults live in app-private no-backup storage. **Uninstalling or clearing app data
-can permanently destroy local-only and forgotten vaults.** Forget retains local
-encrypted data; it is not secure deletion. Synchronization does not replace backup:
-keep independent encrypted copies and verify that you can open them with your
-password. There is no password-change or legacy-vault migration workflow.
-Before resetting an older incompatible installation, preserve its vaults using the
-previous app and verify another usable copy.
-
-Biometric protection depends on Android's security model and cannot protect a
-decrypted password from a compromised app process. See the
-[security and backup limitations](docs/USER_GUIDE.md#security-and-backup).
-
-## More documentation
-
-- [User guide](docs/USER_GUIDE.md): vaults, tokens, biometrics, Sync and recovery.
-- [Development](docs/DEVELOPMENT.md): Nix, Gradle, Android SDK, IDE and qualification.
-- [Releases and signing](release/README.md): maintainer procedures and public identity.
-- [Vault and Sync internals](docs/ARCHITECTURE.md), [multi-vault architecture](MULTI_VAULT.md)
-  and [Java dependency provenance](TOTIPO_JAVA_DEPENDENCY.md).
-- [Review reports](review/): historical qualification evidence and its limits.
+- [User guide](docs/USER_GUIDE.md) — Vaults, biometrics, synchronization, security, and recovery.
+- **Totipo apps** — [Desktop](https://github.com/totipo-org/totipo-desktop) · iOS (planned).
+- [Development](docs/DEVELOPMENT.md) — Building, contributing, and testing.
+- [Release signing](release/signing/README.md) — Signing identity and verification details.
