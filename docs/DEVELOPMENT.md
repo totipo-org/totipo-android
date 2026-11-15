@@ -33,7 +33,7 @@ Android development environment without agent tooling, use `nix develop .#ci`.
 Both shells and jailed-codex share the same Nix Gradle/JDK/SDK derivations and
 Python. All supported command-line builds use `gradle` in this environment.
 
-The flake provides JDK 17, Gradle 9.8.0, Python and a composed Android SDK from
+The flake provides JDK 17, Gradle 9.8.2, Python and a composed Android SDK from
 its existing locked nixpkgs input: API 37.0, Build Tools 36.0.0, platform tools
 37.0.1, command-line tools 22.0. Compile/target SDK are 37; min SDK is 30.
 Requires Android 11 or newer (API 30+).
@@ -68,7 +68,7 @@ checkout; no project-local `.helix` files or launcher override are needed.
 `JDTLS_WORKSPACE` selects a different workspace when needed.
 
 JDTLS runs on a private JDK 21 while `JAVA_HOME`, command-line Gradle and Android
-compilation retain JDK 17. Buildship discovers pinned Gradle 9.8.0 through
+compilation retain JDK 17. Buildship discovers pinned Gradle 9.8.2 through
 `GRADLE_HOME` and uses this SDK's patched AAPT2. The editor model selects main/debug
 sources and their JVM tests, locked dependencies, SDK jars and generated debug R
 classes. IDE output stays under `app/build/eclipse`; release and device-test
@@ -189,7 +189,7 @@ bounded check does not prove universal reproducibility and is not a routine
 milestone gate.
 
 M0 package scope is x86_64-linux. It uses the same pinned JDK, SDK and Gradle
-9.8.0, strict dependency verification and nixpkgs Gradle `fetchDeps` MITM cache.
+9.8.2, strict dependency verification and nixpkgs Gradle `fetchDeps` MITM cache.
 Actual package builds obtain Maven responses only from the pinned download cache
 inside the Nix build sandbox; they do not fetch live Maven bytes.
 The derivation creates a writable temporary Android preferences directory and

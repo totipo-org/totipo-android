@@ -22,7 +22,7 @@ let
   ];
 in
 assert builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?" version != null;
-assert gradle.version == "9.8.0";
+assert gradle.version == "9.8.2";
 stdenv.mkDerivation (finalAttrs: {
   pname = "totipo-android";
   inherit version;
