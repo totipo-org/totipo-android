@@ -10,6 +10,12 @@ This guide describes the current app. Release procedures belong in the
 the vault library's Java Flow runtime requirement; Android enforces it when
 installing the APK.
 
+The installation minimum is not full runtime qualification: shared Java uses
+[`HexFormat`, available from Android API 34](https://developer.android.com/reference/java/util/HexFormat).
+API 30–33 compatibility remains unresolved and can fail at runtime. This export
+milestone does not establish support on those versions; physical backup/provider
+qualification is also still pending.
+
 Strong biometric support and enrolled biometrics are required for biometric unlock.
 Password unlock works without biometric enrollment. Folder access depends on the
 Android document provider selected in the system picker. Totipo has no Internet
@@ -228,6 +234,54 @@ can remain while another vault or an unfinished provider operation still needs
 them; deferred cleanup can be retried in folder management.
 
 ## Security and backup
+
+### Back up an open vault
+
+Unlock the intended vault, then choose **More options → Back up vault**. Read the
+short explanation and choose **Choose destination**. Totipo prepares a portable
+encrypted ZIP, then opens Android's document picker. Choose a location independent
+of the application and save the suggested neutral timestamped filename. This works
+for local-only vaults with no Sync folder. No new backup password is requested:
+the archive uses the vault's existing password, including an empty password if
+that is how the vault was created. Keep that password separately; biometric unlock
+does not replace it.
+
+The ZIP preserves locally available encrypted history, including historical
+revisions, deleted entries, conflicts and their metadata. It excludes biometric
+credentials, Keystore keys, the registry and private application settings. It
+represents the history available when prepared, not necessarily changes on other
+devices or changes made while choosing the destination. Missing ancestry is
+reported explicitly. Even without a reported gap, complete global history is not
+established. The current shared implementation supports at most 4,096 objects,
+8,192 observed directory entries and a 6 MiB ZIP; exceeding a limit fails rather
+than silently exporting a prefix. Do not delete history to fit the limit.
+
+**Backup saved and verified** means the provider returned the complete matching
+bytes after output closed. It does not prove durable remote storage or completed
+cloud upload. **Backup written, but verification unavailable** means output closed
+but readback could not be opened; check the copy independently. **Backup failed or
+could not be verified** means the file must not be relied on. A partial or incorrect
+document may remain after a failure. Use **More options → Cancel backup** to cancel;
+once output has started, cancellation may leave an empty, partial or complete file.
+Totipo does not delete destination documents as cleanup.
+
+Rotation can retain an in-memory picker request. Lock, inactivity expiry, vault
+switching or process restart revoke it. Leaving the app during preparation/output
+cancels further work; choosing a destination in the system picker is allowed, but
+writing requires returning to the same authenticated vault. A stuck provider may
+delay vault switching until its I/O actually returns or the process is restarted.
+After process interruption, an interrupted-output notice asks you to inspect the
+destination; nothing resumes automatically.
+
+Keep independent copies in more than one safe location, confirm provider-specific
+upload status separately, and retain service recovery codes. ZIP entry names and
+sizes reveal some metadata; the archive does not add an outer encryption layer.
+**This Android milestone exports ZIPs only. Android ZIP restoration and history
+import are not implemented yet.** Keep a verified usable complete vault copy
+through the existing folder workflow before resetting an installation; do not
+assume this export milestone alone completes Android disaster recovery.
+
+### Private storage and recovery limits
 
 Vaults use app-private no-backup storage and the manifest disables Android backup.
 Do not rely on Android backup or device transfer to preserve vaults:

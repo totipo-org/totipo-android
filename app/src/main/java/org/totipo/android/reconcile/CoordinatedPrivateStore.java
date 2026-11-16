@@ -130,6 +130,7 @@ final class CoordinatedPrivateStore implements AutoCloseable {
     private final class SessionView implements TotipoStore {
         public BoundedRead readVault(int size) { return ordinary(() -> delegate.readVault(size)); }
         public ObjectScan scanObjects() { return ordinary(delegate::scanObjects); }
+        public ObjectScan scanObjects(int maximumEntries) { return ordinary(() -> delegate.scanObjects(maximumEntries)); }
         public BoundedRead readObject(ObjectName name, int size) { return ordinary(() -> delegate.readObject(name, size)); }
         public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return ordinary(() -> delegate.publishObject(name, bytes)); }
         public VaultCreate createVault(byte[] bytes) {

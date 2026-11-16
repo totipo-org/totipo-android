@@ -68,7 +68,7 @@ try:
             # A second real immutable VAULT is independently created by released Java.
             cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
             jars = [next((cache / group / module / version).glob('*/*.jar')) for group, module, version in
-                    [('org.totipo', 'totipo-core', '0.2.0'), ('org.totipo', 'totipo-storage-nio', '0.2.0'), ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]]
+                    [('org.totipo', 'totipo-core', '0.3.1'), ('org.totipo', 'totipo-storage-nio', '0.3.1'), ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]]
             classpath = os.pathsep.join(str(p) for p in [output / 'classes', *jars])
             different = output / ('different-fixture-' + uuid.uuid4().hex)
             run([Path(os.environ['JAVA_HOME']) / 'bin/java', '-classpath', classpath, 'org.totipo.safqualification.InboundFixture', different])

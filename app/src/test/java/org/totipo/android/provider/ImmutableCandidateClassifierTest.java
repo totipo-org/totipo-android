@@ -350,6 +350,9 @@ public final class ImmutableCandidateClassifierTest {
         };
     }
     private static class SessionStub implements VaultSession {
+        public org.totipo.backup.BackupCapture captureBackup(org.totipo.backup.BackupLimits limits) { throw new AssertionError(); }
+        public org.totipo.backup.BackupImport prepareImport(java.io.InputStream input, org.totipo.backup.BackupLimits limits) { throw new AssertionError(); }
+        public ObjectCandidateValidation validateObject(RevisionId id, byte[] bytes) { throw new UnsupportedOperationException(); }
         public VaultId vaultId() { throw new AssertionError(); }
         public VaultState state() { throw new AssertionError(); }
         public Flow.Publisher<VaultState> states() { throw new AssertionError(); }

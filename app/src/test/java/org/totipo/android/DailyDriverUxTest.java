@@ -38,7 +38,7 @@ public final class DailyDriverUxTest {
         String diagnostics = controller.substring(controller.indexOf("public synchronized String diagnostics()"), controller.indexOf("private String productSyncError"));
         for (String forbidden : List.of("vault.", "providerIo", "requestRefresh", "credential", "secret", "password", "getMessage()", "Throwable"))
             assertFalse(forbidden, diagnostics.contains(forbidden));
-        assertTrue(diagnostics.contains("Vault ID:")); assertTrue(diagnostics.contains("Java/core: 0.2.0"));
+        assertTrue(diagnostics.contains("Vault ID:")); assertTrue(diagnostics.contains("Java/core: 0.3.1"));
     }
     @Test public void syncStatusAccessibilityIsNamedQuietAndDoesNotAnnounceCodes() throws Exception {
         String ui = read("MainActivity");

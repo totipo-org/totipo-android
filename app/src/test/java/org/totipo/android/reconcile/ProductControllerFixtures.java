@@ -15,6 +15,8 @@ public final class ProductControllerFixtures {
     public volatile java.util.function.Consumer<String> operationHook = name -> {};
     public volatile java.util.function.Consumer<org.totipo.spi.TotipoStore> beforeScan = store -> {};
     public volatile boolean incompleteChangeScan;
+    public volatile Runnable beforeBoundedScan = () -> {};
+    public volatile org.totipo.spi.ObjectScan boundedScan;
     public volatile org.totipo.spi.ObjectWrite tokenWriteFault;
     public volatile boolean persistBeforeTokenFault;
     public volatile SaveResult.Reason saveFailure;
@@ -56,6 +58,10 @@ public final class ProductControllerFixtures {
                         if (method.getName().equals("close") && failDomainClose.get()) throw new IllegalStateException("domain close fault");
                         if (method.getName().equals("readVault") && discoveryRead != null) return discoveryRead;
                         operationHook.accept(method.getName());
+                        if (method.getName().equals("scanObjects") && arguments != null && arguments.length == 1) {
+                            beforeBoundedScan.run();
+                            if (boundedScan != null) return boundedScan;
+                        }
                         if (method.getName().equals("scanObjects")) beforeScan.accept(delegate);
                         if (method.getName().equals("scanObjects") && incompleteChangeScan)
                             return new org.totipo.spi.ObjectScan.Incomplete(delegate.scanObjects().entries(), org.totipo.spi.StoreFailure.UNAVAILABLE);

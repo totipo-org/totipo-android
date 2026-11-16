@@ -79,7 +79,7 @@ Passwords remain mutable caller-owned buffers and are wiped on completion as bes
 effort rather than guaranteed JVM erasure. Empty-password Create/unlock/Join requires
 explicit confirmation.
 
-Production consumes released Java NIO/core 0.2.0 and Bouncy Castle 1.86 directly
+Production consumes released Java NIO/core 0.3.1 and Bouncy Castle 1.86 directly
 from Maven Central, targeting Totipo Vault Format v1/r19. One app-private local canonical
 store has one persistent `NioStoreComposition.coordinatedDelegate(root, new NioDurability())`
 wrapped by `CoordinatedPrivateStore`, whose fair gate owns whole-root exclusivity for
@@ -118,7 +118,7 @@ No monochrome variant is supplied; none is invented. No icon-generation dependen
 
 See [Java provenance](../TOTIPO_JAVA_DEPENDENCY.md) and the
 [0.2.0/r19 reconciliation report](../review/JAVA_0_2_0_R19_ANDROID_RECONCILIATION_REPORT.md)
-for current evidence. Historical M1/M3 reports remain unchanged.
+for historical evidence; [R4A](../review/BACKUP_RESTORE_R4A_ANDROID_EXPORT_REPORT.md) tracks the 0.3.1 export integration. Historical M1/M3 reports remain unchanged.
 
 
 ## Limitations
@@ -334,3 +334,50 @@ connected peers or a configured folder are insufficient evidence. Arbitrary SAF
 providers, OEMs and accessibility services are not universally qualified. The
 current native Activity theme is explicitly light; a dark system setting does
 not imply a dedicated dark application theme.
+
+## Explicit encrypted ZIP export
+
+The open selected vault offers **Back up vault**. Controller admission reserves the
+vault worker during shared Java authenticated capture, excluding local saves and
+Sync bridge publication. `CoordinatedPrivateStore.SessionView` forwards the bounded
+SPI enumeration without invoking its unbounded predecessor. Capture enters Java's
+provider gate before the private store gate, never under a bridge. No second root
+owner/delegate or Sync inventory is used. Java owns encrypted-object validation,
+complete supported-history membership, exact canonical bytes, capacity policy,
+ancestry diagnostics and the portable ZIP writer.
+
+`BackupExport` freezes the complete shared ZIP in at most 6 MiB of private memory,
+checks its digest against Java's summary and releases the capture before document
+selection. No archive staging files, plaintext, password or key enters task state.
+The picker uses ACTION_CREATE_DOCUMENT, CATEGORY_OPENABLE and application/zip with
+operation-scoped read/write permission; there is no persistent grant, broad storage
+permission, Internet permission or new manifest component. Provider output uses the
+existing bounded provider lane, independently of Sync configuration. Local UI and
+local authoring can continue after capture; they cannot regenerate the frozen ZIP.
+
+The controller binds the in-memory operation to its activation and authenticated
+session generation. A unique process-local picker request code is consumed once;
+nonconfiguration retention can carry its originating operation across rotation.
+No Bundle/persistent picker authority exists. Output is admitted only after resume,
+foreground/inactivity checks and matching controller/session. Duplicate/late results
+never retarget a new operation. Lock, retirement, inactivity and backgrounding during
+preparation/output revoke further work. System-picker waiting is exempt from ordinary
+background cancellation but authorizes no I/O. The session can close while detached
+output drains; complete selection retirement still waits for real provider return.
+Cancellation never interrupts canonical publication or treats a timeout as drain.
+
+Before provider open, `BackupExportJournal` forces a small fixed interrupted-output
+marker in no-backup storage, outside all canonical roots. It contains no URI,
+identity, password, key, token data or resume authority. Restart shows an uncertain
+output notice and never resumes. Normal completion removes only this recognized
+private marker. A failed marker acknowledgement refuses external output. Failed
+completion cleanup retains a warning. No destination deletion/rollback is attempted.
+
+Output, flush and close must all succeed before readback. Readback hashes every byte
+through EOF and requires exact prepared length and SHA-256. An unavailable readback
+open yields written/unverified; a failed read/close, mismatch or output failure yields
+failed/could-not-verify. Cancellation distinguishes no admitted output from uncertain
+output effects. Verified means matching provider-returned bytes, not durable cloud
+upload or remote receipt. A blocked SAF call retains the lane and may delay switching
+until actual return or process restart. Physical provider qualification is separate
+from JVM fault coverage. ZIP restore/history import remain future Android milestones.

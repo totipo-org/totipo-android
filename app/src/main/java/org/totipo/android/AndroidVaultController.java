@@ -78,6 +78,84 @@ public final class AndroidVaultController {
         for (Listener listener : new ArrayList<>(listeners)) deliver(listener);
     }
     private long sessionGeneration;
+    private BackupExport backup;
+    public synchronized boolean canBackUpVault() {
+        return foreground && selectedAuthority() && !lockRequested && !operating && !providerActive
+                && pendingChange == null && snapshot.state() == State.OPEN
+                && (backup == null || !backup.active());
+    }
+    synchronized BackupExport backup() { return backup; }
+    public synchronized String backupMessage() { return backup == null ? "" : backup.message(); }
+    public synchronized boolean beginBackup() {
+        dispatcher.assertDispatchThread();
+        if (!canBackUpVault()) return false;
+        BackupExport operation = new BackupExport(sessionGeneration); backup = operation;
+        boolean admitted = submit(State.BUSY, "Preparing encrypted backup…", () -> {
+            try {
+                synchronized (this) {
+                    if (!backupCurrent(operation)) { operation.cancel(); operation.failed(""); return; }
+                }
+                operation.prepare(vault.captureBackup());
+            } catch (org.totipo.backup.BackupException failure) {
+                operation.failed(switch (failure.reason()) {
+                    case CAPACITY -> "Backup exceeds the supported limit (4,096 objects, 8,192 observed entries or 6 MiB ZIP). No history was truncated and no output was written.";
+                    case SOURCE_UNAVAILABLE, UNSUPPORTED -> "Backup could not enumerate and read all supported local history. No output was written.";
+                    case INVALID_OBJECT -> "Backup found invalid encrypted history. No partial history was exported.";
+                    default -> "Backup capture failed. No output was written.";
+                });
+            } catch (IOException | RuntimeException failure) {
+                operation.failed("Backup capture failed. No output was written.");
+            } finally {
+                synchronized (this) {
+                    if (!backupCurrent(operation)) operation.cancel();
+                    if (!lockRequested && selectedAuthority()) render("Vault open");
+                    notifySync();
+                }
+            }
+        }, () -> operation.failed("Backup canceled before capture."));
+        if (!admitted) operation.failed("Vault worker busy. Choose Back up vault again.");
+        return admitted;
+    }
+    private boolean backupCurrent(BackupExport operation) {
+        return backup == operation && selectedAuthority() && !lockRequested
+                && operation.session == sessionGeneration && !operation.cancelled.get();
+    }
+    synchronized boolean launchBackupPicker(BackupExport operation) {
+        dispatcher.assertDispatchThread(); inactivity.check();
+        return foreground && backupCurrent(operation) && operation.picker();
+    }
+    synchronized void cancelBackup(BackupExport operation) {
+        dispatcher.assertDispatchThread();
+        if (backup == operation) { operation.cancel(); notifySync(); }
+    }
+    synchronized boolean writeBackup(BackupExport operation, BackupExport.Destination destination, BackupExport.Journal journal) {
+        dispatcher.assertDispatchThread(); inactivity.check();
+        if (operation == null || operation.phase() != BackupExport.Phase.PICKER) return false;
+        if (!foreground || !backupCurrent(operation) || providerActive || !operation.queue()) {
+            if (backup == operation) { operation.cancel(); notifySync(); }
+            return false;
+        }
+        providerActive = true;
+        try {
+            providerIo.document(() -> {
+                synchronized (AndroidVaultController.this) {
+                    if (!foreground || !backupCurrent(operation)) operation.cancel();
+                }
+                operation.write(destination, journal);
+                providerIo.dispatch(dispatcher::post, () -> {
+                    synchronized (AndroidVaultController.this) {
+                        providerActive = false;
+                        if (syncBinding != null && syncBinding.view().status() == SyncFolderBinding.Status.CHECKING) startProvider(false);
+                        notifySync(); queueSyncDrain();
+                    }
+                });
+            });
+        } catch (RejectedExecutionException unavailable) {
+            providerActive = false; operation.failed("Storage provider busy. No output was written.");
+        }
+        notifySync(); return true;
+    }
+    private void revokeBackup() { if (backup != null && backup.active()) backup.cancel(); }
     private SyncView syncView = new SyncView(new SyncFolderBinding.View(
             SyncFolderBinding.Status.NOT_CONFIGURED, false, false), "Not configured");
     // Explicit configuration outcomes must not disappear behind a later ordinary Sync.
@@ -871,7 +949,12 @@ public final class AndroidVaultController {
     /** Application-level foreground transitions, including enrollment Activities; rotation is coalesced. */
     public synchronized void foregroundChanged(boolean active) {
         dispatcher.assertDispatchThread();
-        if (active) inactivity.check(); else { biometricEpoch++; cancelBiometricEnrollment(); }
+        if (active) inactivity.check(); else {
+            biometricEpoch++; cancelBiometricEnrollment();
+            // The system picker is expected to background us. It permits no I/O.
+            // Its result still requires foreground and the originating live session.
+            if (backup != null && backup.phase() != BackupExport.Phase.PICKER) revokeBackup();
+        }
         boolean returned = active && !foreground;
         foreground = active;
         if (returned) requestAutomaticSync();
@@ -950,7 +1033,7 @@ public final class AndroidVaultController {
                 + "\nLast Sync: " + lastSyncResult + "\nLast operation detail: " + syncView.message()
                 + "\nPending local publication: " + pendingPublication + "\nConflicts: " + conflicts
                 + "\nLocal entry: " + localId()
-                + "\nJava/core: 0.2.0\nVault format: v1/r19";
+                + "\nJava/core: 0.3.1\nVault format: v1/r19";
     }
     private String productSyncError(String detail) {
         if (detail != null && detail.contains("different Totipo vault"))
@@ -1387,6 +1470,7 @@ public final class AndroidVaultController {
         if (shuttingDown) { retirement = Retirement.SHUTDOWN; notifyRetirement(); return retirement; }
         if (retiring) { notifyRetirement(); return retirement; }
         retiring = true;
+        revokeBackup();
         retirement = Retirement.WAITING_WORK;
         inactivity.stop(); cancelBiometricEnrollment(); biometricEpoch++;
         lockRequested = true; syncPending = false; pendingChange = null;
@@ -1468,6 +1552,7 @@ public final class AndroidVaultController {
     }
     private void requestLock() {
         if (lockRequested) return;
+        revokeBackup();
         inactivity.stop(); cancelBiometricEnrollment(); biometricEpoch++;
         lockRequested = true;
         syncPending = false; pendingChange = null;

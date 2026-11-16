@@ -254,10 +254,11 @@ If Java is unavailable locally, fetch/read this exact revision read-only from Gi
 Do not substitute Java `main` or only the earlier operation-model commit.
 
 The runtime artifact/source pin and guidance pin serve different purposes:
-Android executes Totipo Java 0.2.0 released source
-`d6310c177ae930df188fd4f5798622c935698b2e`; the guidance is a later reviewed
-clarification of those same semantics. A docs-only clarification requires no Java
-dependency upgrade. See [Java dependency provenance](TOTIPO_JAVA_DEPENDENCY.md)
+Android executes Totipo Java 0.3.1 released source
+`27cb53a1a5f2cc3d5f221ef790f694b26b90f8a8`. The pinned guidance clarifies
+the existing operation/observation semantics; also read the released 0.3.1
+API_DESIGN and docs/BACKUP_ARCHIVE for the new backup operations. A docs-only
+clarification requires no Java dependency upgrade. See [Java dependency provenance](TOTIPO_JAVA_DEPENDENCY.md)
 and [the Android operation audit](review/ANDROID_JAVA_OPERATION_MODEL_AUDIT.md).
 
 **A newer VaultState is not, by itself, a generic cancellation signal.**

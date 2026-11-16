@@ -26,6 +26,9 @@ public final class CoordinatedPrivateStoreTest {
         }
         public BoundedRead readVault(int size) { return call(BoundedRead.Absent::new); }
         public ObjectScan scanObjects() { return call(() -> new ObjectScan.Complete(java.util.List.of())); }
+        public ObjectScan scanObjects(int maximumEntries) {
+            return call(() -> new ObjectScan.Incomplete(java.util.List.of(), maximumEntries == 8192 ? StoreFailure.CAPACITY : StoreFailure.UNSUPPORTED));
+        }
         public BoundedRead readObject(ObjectName name, int size) { return call(BoundedRead.Absent::new); }
         public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return call(ObjectWrite.Written::new); }
         public VaultCreate createVault(byte[] bytes) { return call(VaultCreate.Created::new); }
@@ -46,6 +49,14 @@ public final class CoordinatedPrivateStoreTest {
         store.close(); store.close(); assertEquals(1, delegate.closes.get());
         assertThrows(IllegalStateException.class, store::bridge);
         assertThrows(IllegalStateException.class, store::transferSessionView);
+    }
+    @Test public void boundedBackupScanForwardsBudgetWithoutLegacyFallback() {
+        var delegate = new Delegate(); var store = new CoordinatedPrivateStore(delegate);
+        var view = store.transferSessionView();
+        assertEquals(StoreFailure.CAPACITY, ((ObjectScan.Incomplete) view.scanObjects(8192)).reason());
+        assertEquals(1, delegate.calls.get());
+        view.close(); store.close();
+        assertThrows(IllegalStateException.class, () -> view.scanObjects(8192));
     }
     @Test public void exclusiveWaitsForRunningSpiAndFairGatePausesNewSpi() throws Exception {
         var delegate = new Delegate(); var store = new CoordinatedPrivateStore(delegate); var view = store.transferSessionView();
@@ -70,7 +81,7 @@ public final class CoordinatedPrivateStoreTest {
         view.close(); store.close();
     }
     @Test public void bridgeScopePausesEveryOrdinaryOperation() throws Exception {
-        for (String operation : java.util.List.of("readVault", "createVault", "scanObjects", "readObject", "publishObject")) {
+        for (String operation : java.util.List.of("readVault", "createVault", "scanObjects", "boundedScan", "readObject", "publishObject")) {
             var delegate = new Delegate(); var store = new CoordinatedPrivateStore(delegate);
             var view = store.transferSessionView(); var error = new AtomicReference<Throwable>(); Thread next;
             try (var bridge = store.bridge()) {
@@ -79,6 +90,7 @@ public final class CoordinatedPrivateStoreTest {
                         case "readVault" -> view.readVault(87);
                         case "createVault" -> view.createVault(new byte[87]);
                         case "scanObjects" -> view.scanObjects();
+                        case "boundedScan" -> view.scanObjects(8192);
                         case "readObject" -> view.readObject(new ObjectName("opaque"), 1024);
                         case "publishObject" -> view.publishObject(new ObjectName("opaque"), new byte[1024]);
                     }

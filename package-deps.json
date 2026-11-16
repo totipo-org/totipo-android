@@ -713,15 +713,15 @@
    "jar": "sha256-6fGLikHwF+kDPLDthciiuiMHKSzf4l6uNlkj56MdKnA=",
    "pom": "sha256-D+MTJug7diLLzZx11GeykfAf/jzG4+dmUawFocHHo2A="
   },
-  "org/totipo#totipo-core/0.2.0": {
-   "jar": "sha256-Tx+0uxq18KeMDy2aHtMUZBPJT2Mef5uVR3lopmloUg8=",
-   "module": "sha256-40TMov4Cl8sG90rLpjgA+4XGmiS8FG8RZRQ6IymEM44=",
-   "pom": "sha256-Gmu9W02CwHnLYh1myJtEbAni3zPv5eDondWr/TXXwTY="
+  "org/totipo#totipo-core/0.3.1": {
+   "jar": "sha256-N9sx6VDx445dejPX+KSfHIFigS11O9mn0zI5PtWWDBs=",
+   "module": "sha256-pTV08UpQ310SP4u82LVPk4Y9Q+QAOs1VeVYTyoppFEA=",
+   "pom": "sha256-MEaKhKJGy1KpiHEfz0TEI0sPo0qFn2yAttMnW3dcvps="
   },
-  "org/totipo#totipo-storage-nio/0.2.0": {
-   "jar": "sha256-d2BoJJ5onpQTZ0j7j/2GyDfgr4u7bOyK5eeFxOykupM=",
-   "module": "sha256-M6QxV1Uju1RbV4drCf0EJV4EtgssZFQdcrLNpfBcevo=",
-   "pom": "sha256-Ss8XJax7tc16Qpn3KdXs64KqPqUk3KfJ1am1Zhbbh7I="
+  "org/totipo#totipo-storage-nio/0.3.1": {
+   "jar": "sha256-+I3dXWNbNsBKqXv1QfLOXusWzgSf1/gRPDqAPzmhqBM=",
+   "module": "sha256-7FaAX2kBUnTAOie2utCEc9jtqtOS1fSZ4iP0MxYHAlU=",
+   "pom": "sha256-RB35Bvx9l7IdDBT1zth1JMcM5cx33tAhMPzyU8EpS/k="
   }
  },
  "https://repo1.maven.org/maven2": {
@@ -735,8 +735,8 @@
   "org/totipo/totipo-storage-nio/maven-metadata": {
    "xml": {
     "groupId": "org.totipo",
-    "lastUpdated": "20261009184737",
-    "release": "0.2.0"
+    "lastUpdated": "20261116005802",
+    "release": "0.3.1"
    }
   }
  }

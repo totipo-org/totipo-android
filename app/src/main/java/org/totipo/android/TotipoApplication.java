@@ -14,6 +14,11 @@ public final class TotipoApplication extends Application {
     private org.totipo.android.sync.SyncGrantOwnership syncGrants;
     public org.totipo.android.sync.SyncGrantOwnership syncGrantOwnership() { return syncGrants; }
     private String startupDiagnostic;
+    private BackupExportJournal backupJournal;
+    private String interruptedBackup = "";
+    BackupExport.Journal backupJournal() { return backupJournal; }
+    BackupExport.Destination backupDestination(android.net.Uri uri) { return new AndroidBackupDocument(getContentResolver(), uri); }
+    String interruptedBackup() { return interruptedBackup; }
     private int started;
     private volatile boolean managementBusy;
     private volatile String managementNotice = "";
@@ -179,6 +184,8 @@ public final class TotipoApplication extends Application {
             // descendants must themselves remain real directories.
             java.io.File noBackup = getNoBackupFilesDir();
             java.nio.file.Path privateBase = noBackup.getParentFile().getCanonicalFile().toPath().resolve(noBackup.getName());
+            backupJournal = new BackupExportJournal(privateBase);
+            if (backupJournal.interrupted()) interruptedBackup = "A backup output was interrupted. Its document may be empty, partial or complete. Inspect the destination; Totipo will not resume it automatically.";
             java.security.KeyStore keys = java.security.KeyStore.getInstance("AndroidKeyStore");
             keys.load(null);
             if (keys.containsAlias(BiometricRecord.LEGACY_ALIAS))

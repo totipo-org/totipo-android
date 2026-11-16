@@ -195,6 +195,16 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
     /** Gate releases before structural identity/session access. */
     public org.totipo.VaultId sessionVaultId() { requireOpen(); return session.vaultId(); }
 
+    /** Caller holds controller admission excluding authoring and bridge publication.
+     * Java acquires its provider gate before the store gate, never under a Bridge.
+     * Background Java observation is read-only and uses those same gates.
+     * The returned ciphertext capture has no session ownership. */
+    public org.totipo.backup.BackupCapture captureBackup() throws IOException {
+        requireOpen();
+        if (store.exclusiveHeldByCurrentThread()) throw new IllegalStateException("Capture under bridge");
+        return session.captureBackup(org.totipo.backup.BackupLimits.DEFAULT);
+    }
+
     public byte[] snapshotVault() {
         requireOpen();
         byte[] exact;

@@ -80,6 +80,12 @@ public final class ProviderIoLane implements AutoCloseable {
         notifyDrained();
     }
     private synchronized boolean accepting() { return !retiring; }
+    /** Detached document work shares the bounded transport lane and actual-retirement
+     * accounting. It never obtains a Sync binding or persistent tree grant. */
+    public synchronized void document(Runnable action) {
+        if (retiring) throw new java.util.concurrent.RejectedExecutionException("Provider retired");
+        executor.execute(action);
+    }
     private <T> void deliver(Consumer<T> delivery, T result) {
         synchronized (this) { if (retiring) return; }
         try { delivery.accept(result); }

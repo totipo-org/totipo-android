@@ -14,7 +14,8 @@ public final class SyncSourceGuardTest {
                 String source = Files.readString(path);
                 for (String forbidden : List.of("deleteDocument", "renameDocument", "moveDocument", "removeDocument", "copyDocument"))
                     assertFalse(path + ": " + forbidden, source.contains(forbidden));
-                if (!path.equals(root.resolve("sync/AndroidSyncFolderPort.java")) && !path.equals(root.resolve("sync/AndroidProviderVaultPort.java"))) {
+                if (!path.equals(root.resolve("sync/AndroidSyncFolderPort.java")) && !path.equals(root.resolve("sync/AndroidProviderVaultPort.java"))
+                        && !path.equals(root.resolve("AndroidBackupDocument.java"))) {
                     assertFalse(path.toString(), source.contains("createDocument("));
                     assertFalse(path.toString(), source.contains("openOutputStream("));
                 }
@@ -23,6 +24,9 @@ public final class SyncSourceGuardTest {
         assertTrue(port.contains("new org.totipo.RevisionId(name)"));
         assertTrue(port.contains("isChildDocument"));
         assertTrue(writer.contains("writer.output(created)"));
+        String backup = Files.readString(root.resolve("AndroidBackupDocument.java"));
+        assertTrue(backup.contains("resolver.openOutputStream(uri, \"w\")"));
+        assertFalse(backup.contains("createDocument("));
         assertFalse(writer.contains("writer.output(parent)"));
         String outbound = controller.substring(controller.indexOf("public synchronized boolean publishLocalChanges()"),
                 controller.indexOf("private synchronized boolean startProvider(boolean importing)"));

@@ -28,6 +28,12 @@ import org.totipo.android.AndroidVaultController.State;
 public final class MainActivity extends Activity {
     private AndroidVaultController controller;
     private String pickerActivation;
+    private BackupExport backupPicker;
+    private int backupRequest;
+    private android.net.Uri backupDestination;
+    private static final java.util.concurrent.atomic.AtomicInteger BACKUP_REQUESTS = new java.util.concurrent.atomic.AtomicInteger(16384);
+    private record Pickers(String sync, BackupExport backup, int request, android.net.Uri destination) {}
+    private AlertDialog backupExplanation;
     private String boundActivation;
     private boolean replacing;
     private final java.util.function.Consumer<VaultSelection.Snapshot> selectionObserver = value -> {
@@ -57,6 +63,7 @@ public final class MainActivity extends Activity {
             label(diagnostic); label("Preserve application data. Do not clear data or uninstall to resolve this condition."); return;
         }
         label(application().managementNotice());
+        label(application().interruptedBackup());
         if (application().managementBusy()) { label("Please wait for cleanup to finish."); return; }
         var entries = application().localEntries();
         label("Your vaults").setTextSize(20);
@@ -138,11 +145,22 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onResume() {
         super.onResume(); resumed = true;
-        if (controller != null) { controller.checkInactivity(); render(controller.snapshot()); }
+        if (controller != null) {
+            controller.checkInactivity();
+            if (backupDestination != null) {
+                var uri = backupDestination; var operation = backupPicker;
+                backupDestination = null; backupPicker = null;
+                if (operation != null && controller.selectedAuthority() && !replacing) {
+                    controller.writeBackup(operation, application().backupDestination(uri), application().backupJournal());
+                }
+            }
+            render(controller.snapshot());
+        }
         else if (!replacing) renderSelection();
     }
     @Override protected void onPause() {
         resumed = false;
+        if (backupExplanation != null) { backupExplanation.dismiss(); backupExplanation = null; }
         if (biometric != null) biometric.close();
         if (controller != null) controller.cancelBiometricEnrollment();
         super.onPause();
@@ -182,7 +200,11 @@ public final class MainActivity extends Activity {
         // Retain only the picker activation across configuration recreation. Process
         // death loses this capability and rejects the outstanding result.
         Object retained = getLastNonConfigurationInstance();
-        pickerActivation = retained instanceof String activation ? activation : null;
+        if (retained instanceof Pickers pickers) {
+            pickerActivation = pickers.sync(); backupPicker = pickers.backup(); backupRequest = pickers.request();
+            backupDestination = pickers.destination();
+        }
+        if (controller == null || controller.backup() != backupPicker) { backupPicker = null; backupDestination = null; }
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
         joining = application().joining(controller);
@@ -235,6 +257,9 @@ public final class MainActivity extends Activity {
         if (managing && !joining && (state.state() == State.OPEN || state.state() == State.LOCKED || state.state() == State.NO_LOCAL_VAULT)) next = "manage";
         if (!next.equals(surface)) build(next);
         String message = next.equals("open") ? mainStatus(state) : state.message();
+        String backupNotice = controller.backupMessage();
+        if (!backupNotice.isEmpty() && !backupNotice.equals(message)) message += (message.isEmpty() ? "" : "\n") + backupNotice;
+        if (!application().interruptedBackup().isEmpty()) message += "\n" + application().interruptedBackup();
         if (!biometric.message().isEmpty() && (next.equals("unlock") || next.equals("open")))
             message = message.isEmpty() ? biometric.message() : message + "\n" + biometric.message();
         if (next.equals("open") || next.equals("manage") || next.equals("join") || next.equals("joinSetup")) {
@@ -290,6 +315,7 @@ public final class MainActivity extends Activity {
             }
         }
         maybeAutomaticBiometric();
+        maybeLaunchBackupPicker();
     }
     private void maybeAutomaticBiometric() {
         if (resumed && !replacing && !isFinishing() && !isDestroyed() && hasWindowFocus()
@@ -481,6 +507,12 @@ public final class MainActivity extends Activity {
     }
     private void showOverflow(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Back up vault").setEnabled(controller.canBackUpVault())
+                .setOnMenuItemClickListener(item -> { explainBackup(); return true; });
+        if (controller.backup() != null && controller.backup().active())
+            menu.getMenu().add("Cancel backup").setOnMenuItemClickListener(item -> {
+                controller.cancelBackup(controller.backup()); return true;
+            });
         menu.getMenu().add("Change Vault").setOnMenuItemClickListener(item -> { changeVault(); return true; });
         menu.getMenu().add("Rename Vault").setOnMenuItemClickListener(item -> {
             EditText field = new EditText(this); field.setSingleLine(true); field.setSaveEnabled(false);
@@ -507,7 +539,7 @@ public final class MainActivity extends Activity {
             menu.getMenu().add("Disable biometric unlock").setOnMenuItemClickListener(item -> {
                 if (!biometric.disable()) status.setText("Biometric unlock could not be disabled. Try again."); return true;
             });
-        menu.getMenu().add("Lock").setEnabled(controller.snapshot().state() == State.OPEN)
+        menu.getMenu().add("Lock").setEnabled(controller.snapshot().state() == State.OPEN || controller.snapshot().state() == State.BUSY)
                 .setOnMenuItemClickListener(item -> { managing = false; clearPasswords(); controller.lock(); return true; });
         menu.show();
     }
@@ -591,8 +623,46 @@ public final class MainActivity extends Activity {
         try { startActivityForResult(picker, SYNC_TREE_REQUEST); }
         catch (android.content.ActivityNotFoundException unavailable) { status.setText("Folder picker unavailable."); }
     }
+    private void explainBackup() {
+        controller.hideCode();
+        backupExplanation = new AlertDialog.Builder(this).setTitle("Back up vault")
+                .setMessage("The backup contains encrypted vault data, including historical and deleted entries. It uses the vault’s existing password. Keep that password separately and store the backup somewhere independent of this application. It includes locally available history, which may not include changes on other devices.")
+                .setNegativeButton("Cancel", null).setPositiveButton("Choose destination", (dialog, which) -> controller.beginBackup()).show();
+    }
+    private void maybeLaunchBackupPicker() {
+        if (!resumed || replacing || backupPicker != null) return;
+        var operation = controller.backup();
+        if (operation == null || operation.phase() != BackupExport.Phase.READY) return;
+        int request = BACKUP_REQUESTS.getAndIncrement();
+        if (request > 65535 || !controller.launchBackupPicker(operation)) {
+            controller.cancelBackup(operation); render(controller.snapshot()); return;
+        }
+        backupPicker = operation; backupRequest = request;
+        var picker = new android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(android.content.Intent.CATEGORY_OPENABLE).setType("application/zip")
+                .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                .putExtra(android.content.Intent.EXTRA_TITLE, "totipo-backup-" + java.time.format.DateTimeFormatter
+                        .ofPattern("uuuuMMdd-HHmmss", java.util.Locale.ROOT).withZone(java.time.ZoneOffset.UTC)
+                        .format(java.time.Instant.now()) + ".zip");
+        try { startActivityForResult(picker, backupRequest); }
+        catch (android.content.ActivityNotFoundException | SecurityException unavailable) {
+            backupPicker = null; controller.cancelBackup(operation);
+        }
+    }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
+        if (backupPicker != null && request == backupRequest) {
+            if (result != RESULT_OK || data == null || data.getData() == null
+                    || controller == null || !controller.selectedAuthority() || replacing) {
+                if (controller != null) controller.cancelBackup(backupPicker);
+                backupPicker = null;
+            } else {
+                // onActivityResult precedes resume: no external write until foreground admission.
+                backupDestination = data.getData();
+                backupRequest = 0; // Consume once; duplicate/late callbacks cannot replace the URI.
+            }
+            return;
+        }
         String origin = pickerActivation;
         if (request == SYNC_TREE_REQUEST) pickerActivation = null;
         if (request == SYNC_TREE_REQUEST && controller != null && controller.selectedAuthority()
@@ -707,6 +777,6 @@ public final class MainActivity extends Activity {
     private void clearCodeWidgets() {
         if (tokens != null) tokens.clearWidgets();
     }
-    @Override public Object onRetainNonConfigurationInstance() { return pickerActivation; }
+    @Override public Object onRetainNonConfigurationInstance() { return new Pickers(pickerActivation, backupPicker, backupRequest, backupDestination); }
     @Override protected void onDestroy() { clearPasswords(); clearCodeWidgets(); super.onDestroy(); }
 }

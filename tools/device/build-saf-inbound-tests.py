@@ -17,8 +17,8 @@ dex.mkdir(exist_ok=True)
 
 cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
 jars = []
-for group, module, version in [('org.totipo', 'totipo-core', '0.2.0'),
-                              ('org.totipo', 'totipo-storage-nio', '0.2.0'),
+for group, module, version in [('org.totipo', 'totipo-core', '0.3.1'),
+                              ('org.totipo', 'totipo-storage-nio', '0.3.1'),
                               ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
     candidates = list((cache / group / module / version).glob('*/*.jar'))
     assert len(candidates) == 1, 'Use the already-qualified Gradle cache'

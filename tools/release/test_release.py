@@ -33,7 +33,7 @@ class ReleaseTests(unittest.TestCase):
                  unsigned_sha256=release.sha(self.unsigned), **self.metadata(),
                  nix_derivation='/nix/store/' + 'a' * 32 + '-fixture.drv',
                  nix_output='/nix/store/' + 'b' * 32 + '-fixture',
-                 certificate_sha256='a' * 64, java_runtime='0.2.0', protocol='v1/r19')
+                 certificate_sha256='a' * 64, java_runtime='0.3.1', protocol='v1/r19')
         p.update(changes)
         path = self.root / 'release-provenance.json'
         path.write_text(json.dumps(p))
@@ -220,7 +220,7 @@ class ReleaseTests(unittest.TestCase):
                  application_id='org.totipo.android', version_code=42, version_name='1.0.0',
                  nix_derivation='/nix/store/' + 'a' * 32 + '-fixture.drv',
                  nix_output='/nix/store/' + 'b' * 32 + '-fixture',
-                 java_runtime='0.2.0', protocol='v1/r19', unsigned_sha256=release.sha(apk))
+                 java_runtime='0.3.1', protocol='v1/r19', unsigned_sha256=release.sha(apk))
         provenance = self.root / 'release-provenance.json'
         provenance.write_text(json.dumps(p))
         (self.root / 'unsigned-release.apk.sha256').write_text(p['unsigned_sha256'] + '  unsigned-release.apk\n')
