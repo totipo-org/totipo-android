@@ -12,9 +12,8 @@ installing the APK.
 
 The installation minimum is not full runtime qualification: shared Java uses
 [`HexFormat`, available from Android API 34](https://developer.android.com/reference/java/util/HexFormat).
-API 30–33 compatibility remains unresolved and can fail at runtime. This export
-milestone does not establish support on those versions; physical backup/provider
-qualification is also still pending.
+API 30–33 compatibility is a release blocker and can fail at runtime. Backup/restore
+does not establish support on those versions; physical qualification is pending.
 
 Strong biometric support and enrolled biometrics are required for biometric unlock.
 Password unlock works without biometric enrollment. Folder access depends on the
@@ -54,7 +53,7 @@ you can edit or clear it.
 
 ## Manage multiple vaults
 
-**Vaults** lists remembered vaults under **Your vaults** and Create/Join under
+**Vaults** lists remembered vaults under **Your vaults** and Create/Join/Restore under
 **Add vault**. Tap a row to reach that vault's locked screen. With one established
 vault and a valid last selection, startup goes directly to its locked screen;
 with several vaults, choose one explicitly. **Last selected** is a hint, not an
@@ -276,10 +275,72 @@ destination; nothing resumes automatically.
 Keep independent copies in more than one safe location, confirm provider-specific
 upload status separately, and retain service recovery codes. ZIP entry names and
 sizes reveal some metadata; the archive does not add an outer encryption layer.
-**This Android milestone exports ZIPs only. Android ZIP restoration and history
-import are not implemented yet.** Keep a verified usable complete vault copy
-through the existing folder workflow before resetting an installation; do not
-assume this export milestone alone completes Android disaster recovery.
+Android also provides new-local-vault ZIP restoration as described below. Additive
+history import is not implemented. **Backup/restore is not generally qualified:**
+physical API 30/current-release testing is pending, and shared Java's `HexFormat`
+use remains a release blocker on API 30–33. Do not rely on this feature as the sole
+disaster-recovery path or reset an installation based only on host test results.
+
+### Restore from a portable backup
+
+Finish **Change Vault** to return to Vaults, then choose **Add vault → Restore from
+backup → Choose backup ZIP**. If a provider mislabels ZIPs, use **Browse all files**.
+Totipo reads and validates the complete selected ZIP before asking for its original
+vault password. The provider document is frozen in private memory; changing it later
+does not change the candidate. Cancellation before confirmation allocates no vault.
+Wrong passwords, corrupt archives or invalid encrypted objects cannot authorize
+installation. Authentication failure does not prove the password is wrong.
+
+After authentication, review the history-object count and any unresolved ancestry
+warning, optionally enter a local name, and confirm. **Restore limited history**
+explicitly acknowledges missing ancestry; it cannot recover omitted history. A name
+changes only the local label. Restore keeps the original vault identity, password,
+encrypted historical assertions, tombstones and conflicts. It creates a new private
+allocation, with no Sync association, grants, publication settings or biometric
+credentials. No Sync configuration or network permission is required. A document
+provider may itself retrieve a ZIP from cloud storage.
+
+Installation completion offers **Open restored vault**. Enter the original password
+again through normal unlock to complete observation and registration. Biometric
+convenience can be enabled later through the normal workflow. Until installation
+and this authentication finish, the allocation appears in **Recovery**, rather
+than Your vaults. **Finish restore: open** completes this last step.
+
+If the authenticated identity is already retained, a second copy is refused.
+An established match offers **Open existing vault** without adding history. A
+forgotten match belongs to **Recover retained vault**; a Forget in progress needs
+its cleanup retry. Missing, unreadable or ambiguous retained identity evidence must
+be investigated before a new allocation can be authorized. No existing root is
+deleted, overwritten or replaced to make room.
+
+### Interrupted ZIP restoration
+
+Cancellation, backgrounding outside the picker, a fixed 15-minute journey deadline,
+provider failure or process termination may leave a reserved or partly installed
+allocation. Rotation preserves the in-memory journey and picker identity but clears
+password widgets; process restart does not resume work. Entered blocking I/O must
+retire before another journey or vault can take ownership. The deadline does not
+reset on provider callbacks or user interaction. It is stricter than normal vault
+inactivity policy.
+
+**PARTIAL** means bootstrap acknowledgement with incomplete history; **UNCERTAIN**
+means persistence acknowledgement is missing. **REJECTED** can still leave an owned
+allocation. None means completed restoration. Even opening a bootstrap cannot
+promote a partial restore. Existing canonical objects are always retained.
+
+Use **Vaults → Recovery → ⋮ → Restore interrupted backup**, reselect the **exact
+original ZIP bytes**, and authenticate again. Retry uses the original allocation,
+its durable Java intent and recorded archive digest, and acknowledges exact objects
+without replacing them. A repacked or different ZIP is refused. This action is also
+available after installation if subsequent normal opening detects lost data.
+A missing root after installation was marked attempted, missing/torn/mismatching
+provider intent, occupied incompatible objects, or an interrupted registry temporary require explicit storage investigation; Totipo
+preserves them and does not automatically repair or erase them.
+
+**Recover retained vault** uses encrypted private data already on this installation.
+**Restore interrupted backup** replays an authenticated portable ZIP into its owned
+restore allocation. Neither can recover app-private data removed by clearing data
+or uninstalling. Keep the original ZIP and password until recovery is verified.
 
 ### Private storage and recovery limits
 

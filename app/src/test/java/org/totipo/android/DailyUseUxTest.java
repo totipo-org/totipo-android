@@ -96,7 +96,8 @@ public final class DailyUseUxTest {
         assertTrue(ui.contains("title.setText(heading(next))"));
         assertTrue(ui.contains("getPackageInfo(getPackageName(), 0)")); assertTrue(ui.contains("info.getLongVersionCode()"));
         assertFalse(controller.contains("0.0.0-dev")); assertFalse(controller.contains("getPackageManager"));
-        assertTrue(ui.indexOf("!application().saveSelectedName") < ui.indexOf("char[] credential ="));
+        String authentication = ui.substring(ui.indexOf("private void authenticate(boolean"), ui.indexOf("private void clearPasswords()"));
+        assertTrue(authentication.indexOf("!application().saveSelectedName") < authentication.indexOf("char[] credential ="));
         assertTrue(app.contains("COLUMN_DISPLAY_NAME")); assertTrue(app.contains("MIME_TYPE_DIR"));
         String suggestion = app.substring(app.indexOf("void suggestJoinName"), app.indexOf("private final java.util.concurrent.ExecutorService"));
         assertFalse(suggestion.contains("getLastPathSegment")); assertFalse(suggestion.contains("split("));

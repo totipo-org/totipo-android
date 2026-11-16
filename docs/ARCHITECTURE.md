@@ -380,4 +380,33 @@ failed/could-not-verify. Cancellation distinguishes no admitted output from unce
 output effects. Verified means matching provider-returned bytes, not durable cloud
 upload or remote receipt. A blocked SAF call retains the lane and may delay switching
 until actual return or process restart. Physical provider qualification is separate
-from JVM fault coverage. ZIP restore/history import remain future Android milestones.
+from JVM fault coverage. ZIP restore uses the lifecycle below; additive history import remains deferred.
+
+## New-local-vault ZIP restore
+
+`BackupRestoreFlow` separates picker, bounded frozen ingress/structural inspection,
+password authentication, confirmation, installation and retired result phases.
+`BackupArchives.prepareRestore` authenticates every object before a durable
+allocation is reserved. It uses released NIO/core 0.3.1 and frozen profile 1; Android
+implements no ZIP codec, extraction, canonical object copier or cryptography.
+All passwords remain caller-owned mutable buffers, wiped after authentication;
+no URI, password, root or session enters registry metadata, Bundle or logs.
+
+The Application metadata worker performs blocking ingress, KDF, installation and
+plan closure. Its management admission remains occupied until the main-thread
+completion handoff. Picker requests use unique process-local codes and retain
+only their originating operation across recreation. Backgrounding outside the
+picker and a fixed 15-minute lifetime cancel further admission. Neither cancellation
+nor a late callback grants another selection access to still-entered work.
+
+The [registry/restore state model](../MULTI_VAULT.md#portable-zip-restore-admission)
+records durable intent before shared provider writes. `CoordinatedPrivateStore`
+wraps `NioStoreComposition.reserveRestore/recoverRestore` in the existing whole-root
+gate, forwarding bounded scans and restore-specific location/bootstrap barriers.
+Installation has no session; the plan and its sole persistent delegate close before
+normal controller opening. No session operation runs under a bridge or Application
+monitor. COMPLETE/PARTIAL/UNCERTAIN/REJECTED receipts remain distinct. Only COMPLETE
+can advance to INSTALLED, and normal authenticated observation plus full installed
+inventory authentication must precede ESTABLISHED. Sync settings and biometric
+credentials are never copied. API 30–33 HexFormat compatibility and physical-device
+qualification remain release blockers; JVM evidence is separate.

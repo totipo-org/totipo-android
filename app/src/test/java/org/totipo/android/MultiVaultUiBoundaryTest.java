@@ -10,7 +10,7 @@ public final class MultiVaultUiBoundaryTest {
     private String read(String name) throws Exception { return Files.readString(Path.of("src/main/java/org/totipo/android/" + name + ".java")); }
     @Test public void selectorUsesApplicationMetadataAndExplicitAuthenticationWithoutInactiveControllers() throws Exception {
         String activity = read("MainActivity"), app = read("TotipoApplication");
-        String selector = activity.substring(activity.indexOf("private void renderSelection()"), activity.indexOf("private void renameEntry"));
+        String selector = activity.substring(activity.indexOf("private void renderSelection()"), activity.indexOf("private void renderRestore"));
         for (String expected : List.of("localEntries()", "entrySummary(entry)", "lastSelected()", "selectFromUi(entry.id()", "Create Local Vault", "Join Existing Vault", "Your vaults", "Add vault", "Recovery", "entryMenu(more, entry)")) assertTrue(expected, selector.contains(expected));
         for (String forbidden : List.of("new AndroidVaultController", "new BiometricUnlock", "passwordField", "PasswordBuffer", "vaultController()", "session", "ACTION_OPEN_DOCUMENT_TREE")) assertFalse(forbidden, selector.contains(forbidden));
         assertTrue(activity.contains("selection().observe(selectionObserver)"));
@@ -40,7 +40,7 @@ public final class MultiVaultUiBoundaryTest {
         assertTrue(app.contains("if (!port.save(null)) throw"));
         assertTrue(app.contains("syncGrants.cleanup()"));
         for (String forbidden : List.of("Files.delete", "deleteRecursively", "releasePersistableUriPermission", "Totipo.open", "Totipo.create")) assertFalse(forbidden, transaction.contains(forbidden));
-        assertTrue(registry.contains("if (version != 1 && version != VERSION)"));
+        assertTrue(registry.contains("if (version != 1 && version != 2 && version != VERSION)"));
         assertTrue(registry.contains("State.FORGETTING"));
     }
 }

@@ -13,7 +13,7 @@ import org.totipo.spi.*;
  * The Java-owned facade and Android-owned bridge have distinct lifetimes.
  * Never call a VaultSession method while holding a Bridge. No task queue is installed.
  */
-final class CoordinatedPrivateStore implements AutoCloseable {
+public final class CoordinatedPrivateStore implements AutoCloseable {
     private final TotipoStore delegate;
     private final ReentrantLock gate = new ReentrantLock(true);
     private final SessionView session = new SessionView();
@@ -21,6 +21,43 @@ final class CoordinatedPrivateStore implements AutoCloseable {
 
     static CoordinatedPrivateStore open(Path root) throws IOException {
         return new CoordinatedPrivateStore(org.totipo.storage.nio.NioStoreComposition.coordinatedDelegate(root, new org.totipo.storage.nio.NioDurability()));
+    }
+    /** Restore owns the same root-wide domain as ordinary Android sessions. The caller
+     * reserves Application selection admission until this method and plan closure retire.
+     * No session exists during installation, and the reservation never escapes its gate. */
+    public static org.totipo.backup.RestoreResult restore(Path root, org.totipo.backup.BackupRestore plan,
+            boolean recover) throws IOException {
+        return restore(root, plan, recover, new org.totipo.storage.nio.NioDurability());
+    }
+    static org.totipo.backup.RestoreResult restore(Path root, org.totipo.backup.BackupRestore plan,
+            boolean recover, org.totipo.storage.nio.StorageDurability durability) throws IOException {
+        var digest = plan.summary().archiveSha256();
+        var reservation = recover
+                ? org.totipo.storage.nio.NioStoreComposition.recoverRestore(root, digest, durability)
+                : org.totipo.storage.nio.NioStoreComposition.reserveRestore(root.getParent(), root.getFileName().toString(), digest, durability);
+        var domain = new CoordinatedPrivateStore(reservation);
+        try {
+            var view = domain.new RestoreView(reservation);
+            domain.transferred = true;
+            return plan.install(view);
+        } finally {
+            // Plan close cancels/waits for entered work and closes only its gated facade.
+            plan.close(); domain.finishSessionClosure(); domain.close();
+        }
+    }
+    private final class RestoreView implements RestoreReservation {
+        private final RestoreReservation reservation;
+        RestoreView(RestoreReservation reservation) { this.reservation = reservation; }
+        public String archiveSha256() { return ordinary(reservation::archiveSha256); }
+        public boolean acknowledgeLocation() { return ordinary(reservation::acknowledgeLocation); }
+        public ObjectWrite installVault(byte[] bytes) { return ordinary(() -> reservation.installVault(bytes)); }
+        public BoundedRead readVault(int size) { return session.readVault(size); }
+        public ObjectScan scanObjects() { return session.scanObjects(); }
+        public ObjectScan scanObjects(int size) { return session.scanObjects(size); }
+        public BoundedRead readObject(ObjectName name, int size) { return session.readObject(name, size); }
+        public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return session.publishObject(name, bytes); }
+        public VaultCreate createVault(byte[] bytes) { throw new UnsupportedOperationException("Reserved restore only"); }
+        public void close() { session.close(); }
     }
     // Test instrumentation supplies an opaque SPI delegate; never a public injection API.
     CoordinatedPrivateStore(TotipoStore delegate) { this.delegate = java.util.Objects.requireNonNull(delegate); }

@@ -32,7 +32,11 @@ public final class MainActivity extends Activity {
     private int backupRequest;
     private android.net.Uri backupDestination;
     private static final java.util.concurrent.atomic.AtomicInteger BACKUP_REQUESTS = new java.util.concurrent.atomic.AtomicInteger(16384);
-    private record Pickers(String sync, BackupExport backup, int request, android.net.Uri destination) {}
+    private BackupRestoreFlow restorePicker;
+    private int restoreRequest;
+    private android.net.Uri restoreSource;
+    private record Pickers(String sync, BackupExport backup, int request, android.net.Uri destination,
+                           BackupRestoreFlow restore, int restoreRequest, android.net.Uri restoreSource) {}
     private AlertDialog backupExplanation;
     private String boundActivation;
     private boolean replacing;
@@ -64,6 +68,7 @@ public final class MainActivity extends Activity {
         }
         label(application().managementNotice());
         label(application().interruptedBackup());
+        if (application().restoreFlow() != null) { renderRestore(application().restoreFlow()); return; }
         if (application().managementBusy()) { label("Please wait for cleanup to finish."); return; }
         var entries = application().localEntries();
         label("Your vaults").setTextSize(20);
@@ -86,6 +91,7 @@ public final class MainActivity extends Activity {
         sectionGap(); label("Add vault").setTextSize(20);
         button("Create Local Vault", () -> application().beginSetup(false));
         button("Join Existing Vault", () -> application().beginSetup(true));
+        button("Restore from backup", () -> application().beginRestore(null));
         var recovery = entries.stream().filter(e -> e.state() != VaultRegistry.State.ESTABLISHED
                 && !(entries.size() == 1 && application().unusedReservation(e))).collect(java.util.stream.Collectors.toList());
         if (!recovery.isEmpty()) {
@@ -100,10 +106,67 @@ public final class MainActivity extends Activity {
             }
         }
     }
+    private void renderRestore(BackupRestoreFlow flow) {
+        label("Restore from backup").setTextSize(20);
+        label(flow.notice());
+        if (application().managementBusy()) {
+            label("Restoring or retiring work… Keep this screen open.");
+            button("Cancel restore", () -> application().cancelRestore(flow)); return;
+        }
+        switch (flow.stage()) {
+            case PICKING -> {
+                label("ZIP restoration is separate from Recover retained vault, which uses this installation's private data.");
+                button("Choose backup ZIP", () -> pickRestore(flow, "application/zip"));
+                button("Browse all files", () -> pickRestore(flow, "*/*"));
+            }
+            case PASSWORD -> {
+                password = passwordField("Original vault password");
+                password.setContentDescription("Original vault password");
+                button("Authenticate backup", () -> {
+                    char[] credential = new char[password.length()]; password.getText().getChars(0, password.length(), credential, 0);
+                    password.getText().clear(); application().authenticateRestore(flow, credential);
+                });
+            }
+            case CONFIRM -> {
+                if (flow.duplicate() != null) {
+                    if (flow.duplicate().state() == VaultRegistry.State.ESTABLISHED)
+                        button("Open existing vault", () -> application().finishRestoreSelection(flow, flow.duplicate().id()));
+                    else label("Close this journey and use the matching Recovery entry. No second copy will be allocated.");
+                } else {
+                    EditText name = new EditText(this); name.setSingleLine(true); name.setSaveEnabled(false);
+                    name.setHint("Local vault name (optional)"); name.setContentDescription("Restored local vault name"); content.addView(name);
+                    button(flow.summary().unresolvedReferences() == 0 ? "Confirm restore" : "Restore limited history", () -> application().installRestore(flow, name.getText().toString()));
+                }
+            }
+            case DONE -> button("Open restored vault", () -> application().finishRestoreSelection(flow, flow.localId()));
+            default -> { }
+        }
+        if (flow.active()) button("Cancel restore", () -> application().cancelRestore(flow));
+        else button("Back to Vaults", () -> application().dismissRestore(flow));
+    }
+    private void pickRestore(BackupRestoreFlow flow, String mime) {
+        if (flow != application().restoreFlow()) return;
+        if (restorePicker != flow) { restoreRequest = 0; restoreSource = null; }
+        if (!resumed || restoreRequest != 0 || flow != application().restoreFlow() || flow.stage() != BackupRestoreFlow.Stage.PICKING) return;
+        int request = BACKUP_REQUESTS.getAndIncrement();
+        if (request > 65535) { application().cancelRestore(flow); return; }
+        restorePicker = flow; restoreRequest = request;
+        var intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(android.content.Intent.CATEGORY_OPENABLE).setType(mime)
+                .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try { startActivityForResult(intent, request); }
+        catch (RuntimeException unavailable) { restoreRequest = 0; application().cancelRestore(flow); }
+    }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void sectionGap() { View gap = new View(this); content.addView(gap, new LinearLayout.LayoutParams(1, dp(24))); }
     private void entryMenu(View anchor, VaultRegistry.Entry entry) {
         PopupMenu menu = new PopupMenu(this, anchor);
+        if (entry.restore() != null) {
+            if (entry.restore().phase() == VaultRegistry.RestorePhase.INSTALLED)
+                menu.getMenu().add("Finish restore: open").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
+            menu.getMenu().add("Restore interrupted backup").setOnMenuItemClickListener(item -> { application().beginRestore(entry.id()); return true; });
+            menu.show(); return;
+        }
         menu.getMenu().add("Rename").setOnMenuItemClickListener(item -> { renameEntry(entry); return true; });
         if (entry.state() == VaultRegistry.State.PENDING && !entry.creationAttempted()) {
             menu.getMenu().add("Resume Create").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
@@ -156,7 +219,13 @@ public final class MainActivity extends Activity {
             }
             render(controller.snapshot());
         }
-        else if (!replacing) renderSelection();
+        else if (!replacing) {
+            if (restoreSource != null && restorePicker == application().restoreFlow()) {
+                var uri = restoreSource; restoreSource = null;
+                application().readRestore(restorePicker, uri);
+            }
+            renderSelection();
+        }
     }
     @Override protected void onPause() {
         resumed = false;
@@ -202,8 +271,10 @@ public final class MainActivity extends Activity {
         Object retained = getLastNonConfigurationInstance();
         if (retained instanceof Pickers pickers) {
             pickerActivation = pickers.sync(); backupPicker = pickers.backup(); backupRequest = pickers.request();
-            backupDestination = pickers.destination();
+            backupDestination = pickers.destination(); restorePicker = pickers.restore();
+            restoreRequest = pickers.restoreRequest(); restoreSource = pickers.restoreSource();
         }
+        if (restorePicker != application().restoreFlow() || controller != null) { restorePicker = null; restoreSource = null; restoreRequest = 0; }
         if (controller == null || controller.backup() != backupPicker) { backupPicker = null; backupDestination = null; }
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
@@ -651,6 +722,13 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
+        if (restorePicker != null && request == restoreRequest) {
+            restoreRequest = 0;
+            if (controller != null || replacing || restorePicker != application().restoreFlow()) return;
+            if (result != RESULT_OK || data == null || data.getData() == null) application().cancelRestore(restorePicker);
+            else restoreSource = data.getData();
+            return;
+        }
         if (backupPicker != null && request == backupRequest) {
             if (result != RESULT_OK || data == null || data.getData() == null
                     || controller == null || !controller.selectedAuthority() || replacing) {
@@ -777,6 +855,6 @@ public final class MainActivity extends Activity {
     private void clearCodeWidgets() {
         if (tokens != null) tokens.clearWidgets();
     }
-    @Override public Object onRetainNonConfigurationInstance() { return new Pickers(pickerActivation, backupPicker, backupRequest, backupDestination); }
+    @Override public Object onRetainNonConfigurationInstance() { return new Pickers(pickerActivation, backupPicker, backupRequest, backupDestination, restorePicker, restoreRequest, restoreSource); }
     @Override protected void onDestroy() { clearPasswords(); clearCodeWidgets(); super.onDestroy(); }
 }

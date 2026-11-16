@@ -11,16 +11,29 @@ import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
 import static java.nio.file.StandardOpenOption.*;
 
 /** Local-only metadata, never part of a Java protocol store. One Application-owned writer,
- * single process. Paths are derived, never deserialized. No credentials or protocol identity.
+ * single process. Paths are derived, never deserialized. No credentials; restore intent
+ * contains only non-secret expected identity and archive evidence.
  * A failed write poisons this instance: restart/recovery must inspect disk, never retry blind.
  */
 public final class VaultRegistry {
-    private static final int MAGIC = 0x544d5631, VERSION = 2, MAX_ENTRIES = 128, MAX_BYTES = 65536;
-    public enum State { PENDING, ESTABLISHED, FORGETTING, DETACHED }
-    public record Entry(String id, String label, State state, boolean creationAttempted) {
+    private static final int MAGIC = 0x544d5631, VERSION = 3, MAX_ENTRIES = 128, MAX_BYTES = 65536;
+    public enum State { PENDING, ESTABLISHED, FORGETTING, DETACHED, RESTORING }
+    public enum RestorePhase { RESERVED, ATTEMPTED, INSTALLED }
+    public record RestoreIntent(String vaultId, String archiveSha256, int objects, int gaps, RestorePhase phase) {
+        public RestoreIntent {
+            if (vaultId == null || !vaultId.matches("[0-9a-f]{64}") || archiveSha256 == null
+                    || !archiveSha256.matches("[0-9a-f]{64}") || objects < 0 || objects > 4096
+                    || gaps < 0 || gaps > 4 * objects || phase == null) throw new IllegalArgumentException("Invalid restore intent");
+        }
+        RestoreIntent phase(RestorePhase value) { return new RestoreIntent(vaultId, archiveSha256, objects, gaps, value); }
+    }
+    public record Entry(String id, String label, State state, boolean creationAttempted, RestoreIntent restore) {
+        public Entry(String id, String label, State state, boolean creationAttempted) { this(id, label, state, creationAttempted, null); }
         public Entry {
             validateId(id);
             Objects.requireNonNull(state);
+            if ((state == State.RESTORING) != (restore != null) || (restore != null && !creationAttempted))
+                throw new IllegalArgumentException("Restore intent/state mismatch");
             if (label != null && (label.isEmpty() || label.length() > 128
                     || label.codePoints().anyMatch(c -> Character.isISOControl(c) || (c >= 0xd800 && c <= 0xdfff))))
                 throw new IllegalArgumentException("Invalid local vault label");
@@ -164,6 +177,9 @@ public final class VaultRegistry {
         entry(id); Path root = root(id); directory(root); return root;
     }
     public synchronized void select(String id) throws IOException {
+        Entry selected = entry(id);
+        if (selected.restore() != null && selected.restore().phase() != RestorePhase.INSTALLED)
+            throw new RecoveryRequired("Restore incomplete. Select the original ZIP for exact recovery.");
         if (entry(id).state() == State.FORGETTING) throw new RecoveryRequired("Forget cleanup must finish before recovery.");
         validateRoot(id); persist(entries, id);
     }
@@ -178,15 +194,17 @@ public final class VaultRegistry {
     }
     synchronized void established(String id) throws IOException {
         Entry entry = entry(id); validateRoot(id);
+        if (entry.restore() != null) throw new RecoveryRequired("Restore requires complete installation and authenticated observation.");
         if (entry.state() != State.ESTABLISHED) replace(new Entry(id, entry.label(), State.ESTABLISHED, true));
     }
     public synchronized void rename(String id, String label) throws IOException {
         Entry old = entry(id);
-        replace(new Entry(id, label, old.state(), old.creationAttempted()));
+        replace(new Entry(id, label, old.state(), old.creationAttempted(), old.restore()));
     }
     /** Durable intent BEFORE any scoped cleanup. Retrying never removes canonical data. */
     synchronized void beginForget(String id) throws IOException {
         Entry old = entry(id);
+        if (old.restore() != null) throw new RecoveryRequired("Interrupted restore must be recovered with its exact ZIP.");
         if (old.state() == State.DETACHED || old.state() == State.FORGETTING) return;
         replace(new Entry(id, old.label(), State.FORGETTING, old.creationAttempted()));
     }
@@ -231,6 +249,94 @@ public final class VaultRegistry {
             return Arrays.copyOf(bytes, size);
         }
     }
+    /** Restore-specific reservation: registry intent precedes container/provider allocation.
+     * The canonical store child is exclusively created by shared Java, never allocatePending. */
+    synchronized Entry reserveRestore(String label, org.totipo.backup.BackupSummary summary) throws IOException {
+        healthy();
+        if (!summary.sourceAuthenticated()) throw new RecoveryRequired("Authenticated restore plan required.");
+        if (checkRestoreIdentity(null, summary.vaultId()) != null) throw new RecoveryRequired("Matching retained vault exists.");
+        if (entries.size() == MAX_ENTRIES) throw new RecoveryRequired("Local vault registry is full.");
+        String id = UUID.randomUUID().toString().replace("-", "");
+        if (exists(roots.resolve(id))) throw new RecoveryRequired("Allocation collision.");
+        var intent = new RestoreIntent(summary.vaultId().hex(), summary.archiveSha256(), summary.objects(),
+                summary.unresolvedReferences(), RestorePhase.RESERVED);
+        var entry = new Entry(id, label, State.RESTORING, true, intent);
+        var updated = new ArrayList<>(entries); updated.add(entry); persist(updated, lastSelected);
+        return entry;
+    }
+    synchronized Path beginRestore(String id, org.totipo.backup.BackupSummary summary) throws IOException {
+        Entry e = entry(id); var r = e.restore();
+        if (r == null || !r.archiveSha256().equals(summary.archiveSha256()) || !r.vaultId().equals(summary.vaultId().hex())
+                || r.objects() != summary.objects() || r.gaps() != summary.unresolvedReferences())
+            throw new RecoveryRequired("Select and authenticate the exact original backup ZIP.");
+        if (checkRestoreIdentity(id, summary.vaultId()) != null) throw new RecoveryRequired("Matching retained vault exists.");
+        if (r.phase() != RestorePhase.RESERVED) validateRoot(id); // Absence after attempted allocation is not freshness evidence.
+        // Persist attempted state before even the provider allocation/marker can be entered.
+        replace(new Entry(id, e.label(), State.RESTORING, true, r.phase(RestorePhase.ATTEMPTED)));
+        Path container = roots.resolve(id);
+        if (!exists(container)) { Files.createDirectory(container); forceDirectory(roots); }
+        directory(container);
+        try (var children = Files.list(container)) {
+            if (children.anyMatch(p -> !p.equals(root(id)))) throw new RecoveryRequired("Unexpected restore allocation evidence. Preserve data.");
+        }
+        return root(id);
+    }
+    synchronized void installedRestore(String id, org.totipo.backup.RestoreResult receipt) throws IOException {
+        Entry e = entry(id);
+        if (e.restore() == null || receipt.outcome() != org.totipo.backup.RestoreResult.Outcome.COMPLETE
+                || !receipt.locationAcknowledged() || receipt.bootstrap() != org.totipo.backup.RestoreResult.Bootstrap.ACKNOWLEDGED
+                || receipt.inventory().size() != e.restore().objects()) throw new RecoveryRequired("Restore not complete.");
+        validateRoot(id);
+        replace(new Entry(id, e.label(), State.RESTORING, true, e.restore().phase(RestorePhase.INSTALLED)));
+    }
+    synchronized void authenticatedRestore(String id, org.totipo.VaultId identity, org.totipo.backup.BackupSummary observed) throws IOException {
+        Entry e = entry(id); validateRoot(id);
+        if (e.restore() == null || e.restore().phase() != RestorePhase.INSTALLED
+                || !e.restore().vaultId().equals(identity.hex()) || observed == null || !observed.sourceAuthenticated()
+                || !observed.vaultId().equals(identity) || observed.objects() != e.restore().objects()
+                || observed.unresolvedReferences() != e.restore().gaps()) throw new RecoveryRequired("Restore completion evidence missing.");
+        replace(new Entry(id, e.label(), State.ESTABLISHED, true)); // Journal completion and promotion are one atomic update.
+    }
+    /** Strict restore admission differs from legacy Join's best-effort recognition.
+     * Missing, malformed or unrecognizable evidence cannot authorize a second allocation. */
+    synchronized Entry checkRestoreIdentity(String excluding, org.totipo.VaultId identity) throws IOException {
+        bindingEntries(); Entry matching = null;
+        for (Entry e : entries) {
+            if (e.id().equals(excluding)) continue;
+            if (e.restore() != null) {
+                if (e.restore().vaultId().equals(identity.hex())) {
+                    if (matching != null) throw new RecoveryRequired("Ambiguous retained vault identity.");
+                    matching = e;
+                }
+                Path pendingVault = root(e.id()).resolve("vault");
+                if (exists(root(e.id()))) validateRoot(e.id());
+                if (!exists(pendingVault) && e.restore().phase() != RestorePhase.RESERVED)
+                    throw new RecoveryRequired("Interrupted restore identity evidence unavailable. Recover it before another allocation.");
+                if (exists(pendingVault)) {
+                    validateRoot(e.id()); regular(pendingVault);
+                    try {
+                        if (!org.totipo.Totipo.vaultId(recognitionBytes(pendingVault)).hex().equals(e.restore().vaultId()))
+                            throw new RecoveryRequired("Restore identity evidence differs. Preserve data for recovery.");
+                    } catch (IllegalArgumentException invalid) { throw new RecoveryRequired("Restore identity evidence unavailable."); }
+                }
+                continue;
+            }
+            Path root = root(e.id());
+            // Only a positively empty, never-attempted ordinary reservation is identity-free.
+            validateRoot(e.id());
+            if (e.state() == State.PENDING && !e.creationAttempted()) {
+                try (var children = Files.list(root)) { if (children.findAny().isEmpty()) continue; }
+            }
+            Path vault = root.resolve("vault"); regular(vault);
+            try {
+                if (org.totipo.Totipo.vaultId(recognitionBytes(vault)).equals(identity)) {
+                    if (matching != null) throw new RecoveryRequired("Ambiguous retained vault identity.");
+                    matching = e;
+                }
+            } catch (IllegalArgumentException invalid) { throw new RecoveryRequired("Retained vault identity unavailable. Preserve app data for recovery."); }
+        }
+        return matching;
+    }
     private void replace(Entry entry) throws IOException {
         var updated = new ArrayList<>(entries);
         for (int i = 0; i < updated.size(); i++) if (updated.get(i).id().equals(entry.id())) updated.set(i, entry);
@@ -269,10 +375,17 @@ public final class VaultRegistry {
                 out.writeUTF(entry.id()); out.writeBoolean(entry.label() != null);
                 if (entry.label() != null) out.writeUTF(entry.label());
                 out.writeByte(entry.state().ordinal()); out.writeBoolean(entry.creationAttempted());
+                out.writeBoolean(entry.restore() != null);
+                if (entry.restore() != null) {
+                    var r = entry.restore(); out.writeUTF(r.vaultId()); out.writeUTF(r.archiveSha256());
+                    out.writeInt(r.objects()); out.writeInt(r.gaps()); out.writeByte(r.phase().ordinal());
+                }
             }
             out.writeBoolean(selected != null); if (selected != null) out.writeUTF(selected);
         }
-        byte[] payload = buffer.toByteArray(); buffer.write(digest(payload)); return buffer.toByteArray();
+        byte[] payload = buffer.toByteArray();
+        if (payload.length + 32 > MAX_BYTES) throw new RecoveryRequired("Local registry capacity reached. No data was changed.");
+        buffer.write(digest(payload)); return buffer.toByteArray();
     }
     private void decode(byte[] bytes) throws IOException {
         try {
@@ -281,13 +394,19 @@ public final class VaultRegistry {
             if (!MessageDigest.isEqual(digest(payload), Arrays.copyOfRange(bytes, payload.length, bytes.length))) throw new IOException();
             try (var in = new DataInputStream(new ByteArrayInputStream(payload))) {
                 if (in.readInt() != MAGIC) throw new IOException();
-                int version = in.readInt(); if (version != 1 && version != VERSION) throw new IOException();
+                int version = in.readInt(); if (version != 1 && version != 2 && version != VERSION) throw new IOException();
                 int count = in.readInt(); if (count < 0 || count > MAX_ENTRIES) throw new IOException();
                 var decoded = new ArrayList<Entry>();
                 for (int i = 0; i < count; i++) {
                     String id = in.readUTF(); String label = bool(in) ? in.readUTF() : null;
-                    int state = in.readUnsignedByte(); if (state > (version == 1 ? 1 : 3)) throw new IOException();
-                    decoded.add(new Entry(id, label, State.values()[state], bool(in)));
+                    int state = in.readUnsignedByte(); if (state > (version == 1 ? 1 : version == 2 ? 3 : 4)) throw new IOException();
+                    boolean attempted = bool(in); RestoreIntent restore = null;
+                    if (version >= 3 && bool(in)) {
+                        String identity = in.readUTF(), archive = in.readUTF(); int objects = in.readInt(), gaps = in.readInt();
+                        int phase = in.readUnsignedByte(); if (phase >= RestorePhase.values().length) throw new IOException();
+                        restore = new RestoreIntent(identity, archive, objects, gaps, RestorePhase.values()[phase]);
+                    }
+                    decoded.add(new Entry(id, label, State.values()[state], attempted, restore));
                 }
                 String selected = bool(in) ? in.readUTF() : null;
                 if (in.read() != -1) throw new IOException();

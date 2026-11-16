@@ -97,6 +97,17 @@ public final class LocalReplicaOwner {
         public void authenticated() throws IOException {
             synchronized (admission) { held(); registry.established(id); }
         }
+        public boolean restoring() throws IOException {
+            synchronized (admission) { held(); return registry.entry(id).restore() != null; }
+        }
+        /** No Java operation occurs under admission/registry monitors. */
+        public void authenticated(org.totipo.VaultId identity, org.totipo.backup.BackupSummary observed) throws IOException {
+            synchronized (admission) {
+                held();
+                if (registry.entry(id).restore() != null) registry.authenticatedRestore(id, identity, observed);
+                else registry.established(id);
+            }
+        }
         @Override public void close() {
             synchronized (admission) { if (admission.active == this) admission.active = null; }
         }

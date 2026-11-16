@@ -89,7 +89,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
             var vault = new ForegroundVaultCoordinator(owner.acquire(), operations);
             try {
                 OpenResult failure = vault.establish(credential);
-                if (failure == null) { vault.lease.authenticated(); vault.transition(State.OPEN); }
+                if (failure == null) { vault.authenticateObserved(); vault.transition(State.OPEN); }
                 return new Opening(vault, failure, null);
             } catch (Exception failure) {
                 vault.failClosed(failure);
@@ -182,7 +182,7 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
             OpenResult failure = vault.establish(credential);
             if (failure == null && !id.equals(vault.session.vaultId()))
                 throw new IllegalStateException("Enrollment identity mismatch");
-            if (failure == null) { vault.lease.authenticated(); vault.transition(State.OPEN); }
+            if (failure == null) { vault.authenticateObserved(); vault.transition(State.OPEN); }
             return new Opening(vault, failure, null);
         } catch (Exception failure) {
             vault.failClosed(failure);
@@ -564,6 +564,15 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
                           List<Item> items, List<Selection> plan, Refresh refresh, Throwable failure) {
         return new Report(completion, evidence, items, remaining(plan, items, null), null, refresh,
                 refresh == Refresh.SKIPPED_UNSAFE ? null : session.state().observation(), failure);
+    }
+    private void authenticateObserved() throws IOException {
+        org.totipo.backup.BackupSummary observed = null;
+        if (lease.restoring()) {
+            // Initial observation has finished; independently authenticate the full installed
+            // inventory before promotion. Missing ancestry is compared with acknowledged gaps.
+            try (var capture = session.captureBackup(org.totipo.backup.BackupLimits.DEFAULT)) { observed = capture.summary(); }
+        }
+        lease.authenticated(session.vaultId(), observed);
     }
     private OpenResult establish(char[] credential) throws Exception {
         if (store == null) store = operations.storage(lease);

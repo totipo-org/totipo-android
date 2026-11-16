@@ -30,7 +30,8 @@ Back from selection exits; it never reconstructs an old activation implicitly.
 ## Metadata lifecycle
 
 The bounded checksummed atomic registry keeps its layout and ordered immutable
-entries. Schema 2 adds two explicit enum values after schema-1 PENDING/ESTABLISHED:
+entries. Schema 3 reads schemas 1/2 and adds RESTORING plus a bounded restore intent. Earlier
+states retain their ordinal values:
 
 | State | Ordinary selection | Meaning |
 | --- | --- | --- |
@@ -38,8 +39,9 @@ entries. Schema 2 adds two explicit enum values after schema-1 PENDING/ESTABLISH
 | ESTABLISHED | Select, or single-entry startup | Promoted only after authenticated Java success |
 | FORGETTING | Cleanup retry only | Durable intent; scoped cleanup may be partially complete |
 | DETACHED | Explicit recovery only | Hidden; root/ID remain reserved and in SAF inventory |
+| RESTORING | Exact ZIP recovery; normal open only after INSTALLED | Original identity/digest, object/gap counts and RESERVED/ATTEMPTED/INSTALLED phase |
 
-Schema 1 reads without rewriting; the next successful metadata update writes schema 2.
+Schemas 1 and 2 read without rewriting; the next successful metadata update writes schema 3.
 Unsupported versions and invalid states remain fail-closed. A stale last-selection
 hint is discarded in memory without rewriting metadata; it never authorizes another
 entry. Checksums, entry membership, paths and root inventory still fail closed. The unchanged registry
@@ -170,3 +172,32 @@ TalkBack must be reported separately from accessibility node/layout inspection.
 Device/process compromise, best-effort JVM wiping, conditional clipboard clearing,
 lack of rollback protection and unbounded third-party SAF calls retain their
 documented limits. Passing host gates is not integrated release qualification.
+
+## Portable ZIP restore admission
+
+Restore begins only while unselected. Application management admission covers the
+entire worker task and its completion handoff; entered ingress cannot transfer to
+another journey. Installation additionally reserves VaultSelection maintenance,
+which excludes controller selection, before reserving a registry entry. Java's
+coordinated restore reservation is wrapped in the existing fair whole-root domain,
+then closed completely before normal selected-controller construction/opening.
+There is no second live canonical delegate or session.
+
+RESTORING intent is in the same atomic checksummed registry transaction as its
+local ID. Expected VaultId, exact ZIP digest, object count and computed gap count
+are non-secret recognition evidence, never authentication capabilities. RESERVED
+precedes container allocation. ATTEMPTED precedes shared Java allocation/marker and
+all canonical writes. Only a Java COMPLETE receipt allows INSTALLED. Ordinary
+Create/Join, allocatePending, Forget and generic authenticated promotion reject
+RESTORING. Exact replay requires fresh full ZIP authentication and the same digest.
+Missing/torn Java intent and missing attempted roots require investigation; neither
+absence nor emptiness authorizes reallocation after ATTEMPTED.
+
+INSTALLED remains in Recovery until normal password open finishes Java observation
+and an authenticated full local capture matches expected identity/object/gap counts.
+The prior COMPLETE receipt established exact planned bytes and durable barriers;
+the capture detects subsequent unavailable/invalid/lost inventory. Promotion and
+journal completion are one atomic update. No canonical rollback occurs after any
+failure. Matching retained identities across every state block another allocation;
+unknown or ambiguous evidence fails closed. The provider intent marker remains
+local after completion and is excluded by the shared portable archive profile.

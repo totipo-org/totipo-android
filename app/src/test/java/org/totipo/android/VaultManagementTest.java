@@ -57,14 +57,21 @@ public final class VaultManagementTest {
         assertEquals("Personal", registry().entry(a.id()).label());
         registry.rename(a.id(), null); assertEquals(a.id().substring(0, 6).toUpperCase(Locale.ROOT) + " · Unnamed", VaultUiModel.name(registry.entries(), registry.entry(a.id())));
     }
-    @Test public void schemaOneRemainsReadableAndNextWriteIsExplicitlyVersionTwo() throws Exception {
-        var registry = registry(); var entry = registry.reserve("v1");
-        Path file = base().resolve("totipo-local-v1/registry"); byte[] bytes = Files.readAllBytes(file);
-        byte[] payload = Arrays.copyOf(bytes, bytes.length - 32); payload[7] = 1;
-        var output = new ByteArrayOutputStream(); output.write(payload);
-        output.write(java.security.MessageDigest.getInstance("SHA-256").digest(payload)); Files.write(file, output.toByteArray());
-        var restart = registry(); assertEquals(entry, restart.entry(entry.id()));
-        restart.rename(entry.id(), "v2"); assertEquals(2, Files.readAllBytes(file)[7]);
+    @Test public void olderSchemasRemainReadableAndNextWriteIsVersionThree() throws Exception {
+        var registry = registry(); var entry = registry.reserve("old");
+        Path file = base().resolve("totipo-local-v1/registry");
+        for (int version : new int[]{1, 2}) {
+            var payload = new ByteArrayOutputStream();
+            try (var out = new DataOutputStream(payload)) {
+                out.writeInt(0x544d5631); out.writeInt(version); out.writeInt(1);
+                out.writeUTF(entry.id()); out.writeBoolean(true); out.writeUTF("old");
+                out.writeByte(0); out.writeBoolean(false); out.writeBoolean(false);
+            }
+            var output = new ByteArrayOutputStream(); output.write(payload.toByteArray());
+            output.write(java.security.MessageDigest.getInstance("SHA-256").digest(payload.toByteArray())); Files.write(file, output.toByteArray());
+            var restart = registry(); assertEquals(entry, restart.entry(entry.id()));
+            restart.rename(entry.id(), "v3"); assertEquals(3, Files.readAllBytes(file)[7]);
+        }
     }
     @Test public void invalidLastSelectionIsDiscardedWithoutChangingOtherwiseValidRegistryData() throws Exception {
         var registry = registry(); var entry = registry.reserve(null); registry.established(entry.id()); registry.select(entry.id());

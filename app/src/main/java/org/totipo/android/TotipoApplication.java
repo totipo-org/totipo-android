@@ -19,6 +19,74 @@ public final class TotipoApplication extends Application {
     BackupExport.Journal backupJournal() { return backupJournal; }
     BackupExport.Destination backupDestination(android.net.Uri uri) { return new AndroidBackupDocument(getContentResolver(), uri); }
     String interruptedBackup() { return interruptedBackup; }
+    private BackupRestoreFlow restoreFlow;
+    private BackupRestoreFlow restoreOpenIntent;
+    BackupRestoreFlow restoreFlow() { return restoreFlow; }
+    void beginRestore(String recoveryId) {
+        try {
+            requireUnselected();
+            if (recoveryId != null && registry.entry(recoveryId).restore() == null) return;
+            restoreFlow = new BackupRestoreFlow(recoveryId, SystemClock::elapsedRealtime);
+            var origin = restoreFlow;
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (restoreFlow == origin && origin.active()) cancelRestore(origin);
+            }, 15 * 60 * 1000L);
+            selection.presentationChanged();
+        } catch (Exception unavailable) { managementNotice = "Finish retirement or recovery before restoring."; selection.presentationChanged(); }
+    }
+    void readRestore(BackupRestoreFlow origin, android.net.Uri uri) {
+        if (origin != restoreFlow || managementBusy || selection.owner() != null || !origin.reading()) return;
+        restoreWork(origin, () -> origin.freeze(() -> getContentResolver().openInputStream(uri)));
+    }
+    void authenticateRestore(BackupRestoreFlow origin, char[] password) {
+        if (origin != restoreFlow || managementBusy || !origin.authenticating()) { java.util.Arrays.fill(password, '\0'); return; }
+        restoreWork(origin, () -> origin.authenticate(password, registry));
+    }
+    void installRestore(BackupRestoreFlow origin, String name) {
+        String label = VaultUiModel.optionalLabel(name);
+        try { new VaultRegistry.Entry("00000000000000000000000000000000", label, VaultRegistry.State.PENDING, false); }
+        catch (IllegalArgumentException invalid) { managementNotice = "Use a local name of at most 128 UTF-16 units without controls."; selection.presentationChanged(); return; }
+        if (origin != restoreFlow || managementBusy || !origin.installing()) return;
+        restoreWork(origin, () -> origin.install(label, registry, selection));
+    }
+    private void restoreWork(BackupRestoreFlow origin, Runnable action) {
+        managementBusy = true; selection.presentationChanged();
+        metadataWorker.execute(() -> {
+            try { action.run(); }
+            finally {
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    if (restoreFlow != origin) return;
+                    if (origin.cancelled() && origin.stage() != BackupRestoreFlow.Stage.CANCELLED) {
+                        restoreWork(origin, origin::dispose); return;
+                    }
+                    managementBusy = false; selection.presentationChanged();
+                });
+            }
+        });
+    }
+    void cancelRestore(BackupRestoreFlow origin) {
+        if (origin == null || restoreFlow != origin) return;
+        restoreOpenIntent = null; origin.cancel();
+        if (!managementBusy) restoreWork(origin, origin::dispose);
+    }
+    void dismissRestore(BackupRestoreFlow origin) {
+        if (restoreFlow != origin || managementBusy || origin.active()) return;
+        restoreFlow = null; selection.presentationChanged();
+    }
+    void finishRestoreSelection(BackupRestoreFlow origin, String id) {
+        if (restoreFlow != origin || managementBusy) return;
+        restoreOpenIntent = origin;
+        origin.cancel(); managementBusy = true; selection.presentationChanged();
+        metadataWorker.execute(() -> {
+            origin.dispose();
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (restoreFlow != origin) return;
+                managementBusy = false;
+                if (restoreOpenIntent != origin) { selection.presentationChanged(); return; }
+                restoreOpenIntent = null; restoreFlow = null; selectFromUi(id, false);
+            });
+        });
+    }
     private int started;
     private volatile boolean managementBusy;
     private volatile String managementNotice = "";
@@ -83,6 +151,9 @@ public final class TotipoApplication extends Application {
     }
     String entrySummary(VaultRegistry.Entry entry) {
         try {
+            if (entry.restore() != null) return entry.restore().phase() == VaultRegistry.RestorePhase.INSTALLED
+                    ? "Backup installed. Open with original password to finish registration."
+                    : "Interrupted ZIP restore. Retry with the exact original ZIP and password; this is separate from retained-vault recovery.";
             registry.validateRoot(entry.id());
             if (entry.state() == VaultRegistry.State.FORGETTING) return "Forget incomplete. Retry scoped cleanup.";
             if (entry.state() == VaultRegistry.State.DETACHED) return "Forgotten · encrypted data retained on this installation. "
@@ -99,7 +170,7 @@ public final class TotipoApplication extends Application {
         } catch (Exception unavailable) { return "Local storage unavailable. Preserve app data for recovery."; }
     }
     private void requireUnselected() {
-        if (managementBusy || selection.snapshot() != null || selection.owner() != null || registry == null)
+        if (restoreFlow != null || managementBusy || selection.snapshot() != null || selection.owner() != null || registry == null)
             throw new IllegalStateException("Selection or cleanup still owned");
     }
     void selectFromUi(String id, boolean join) {
@@ -209,7 +280,11 @@ public final class TotipoApplication extends Application {
                 }
             }
             public void onActivityStopped(android.app.Activity activity) {
-                if (--started == 0 && !activity.isChangingConfigurations() && vaultController() != null) vaultController().foregroundChanged(false);
+                if (--started == 0 && !activity.isChangingConfigurations()) {
+                    if (vaultController() != null) vaultController().foregroundChanged(false);
+                    var restore = restoreFlow;
+                    if (restore != null && ((restore.stage() != BackupRestoreFlow.Stage.PICKING && restore.active()) || restoreOpenIntent == restore)) cancelRestore(restore);
+                }
             }
             public void onActivityCreated(android.app.Activity activity, android.os.Bundle state) {}
             public void onActivityResumed(android.app.Activity activity) {}

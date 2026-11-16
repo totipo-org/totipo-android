@@ -29,8 +29,8 @@ rule or a requirement to put every Java operation behind Android global BUSY.
 0.3.1 adds required session capture/import methods, validated parent projections
 and opt-in bounded store enumeration; `StoreFailure` adds CAPACITY. Android forwards
 `scanObjects(int)` through its coordinated facade and updates the JVM stub.
-Android implements export only; presence of Java import/restore APIs is not an
-Android restore feature. No new runtime dependency or protocol is introduced.
+Android implements export and new-local-vault restore using the released APIs;
+additive history import remains absent. No new runtime dependency or protocol is introduced.
 
 ## Android composition and ownership
 

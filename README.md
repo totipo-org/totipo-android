@@ -38,7 +38,7 @@ Compare this against the downloaded APK, not just the file checksum. The [public
 
 You can also **Join Existing Vault** if its files are available through a folder on your device, or enable optional biometric unlocking. See the [user guide](docs/USER_GUIDE.md) for these workflows.
 
-**Important:** Local-only vaults live in Android's private app storage. Uninstalling Totipo or clearing its data can permanently remove them. An open vault offers **More options → Back up vault** for encrypted ZIP export, including local-only vaults. **Android ZIP restoration is not implemented yet.** Before resetting an installation, retain a verified usable independent copy of the complete encrypted vault through the existing shared-folder workflow. Keep your vault password and service recovery codes safe. [Backup details and limitations](docs/USER_GUIDE.md#back-up-an-open-vault).
+**Important:** Local-only vaults live in Android's private app storage. Uninstalling Totipo or clearing its data can permanently remove them. An open vault offers **More options → Back up vault** for encrypted ZIP export, including local-only vaults. **Vaults → Add vault → Restore from backup** restores a portable ZIP as a local-only vault. Backup/restore device qualification is pending; shared Java compatibility remains blocked on API 30–33. Before resetting an installation, retain a verified usable independent copy of the complete encrypted vault through the existing shared-folder workflow. Keep your vault password and service recovery codes safe. [Backup details and limitations](docs/USER_GUIDE.md#back-up-an-open-vault).
 
 ## Learn more
 

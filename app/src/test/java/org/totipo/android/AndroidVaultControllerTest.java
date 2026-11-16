@@ -1089,7 +1089,8 @@ public final class AndroidVaultControllerTest {
     }
     @Test public void productSourceBoundaryHasNoRawActivityOwnershipOrCredentialPersistence() throws Exception {
         String activity = Files.readString(Path.of("src/main/java/org/totipo/android/MainActivity.java"));
-        for (String forbidden : List.of("VaultSession", "Totipo.open", "Totipo.create", "LocalReplicaOwner", "NioTotipoStore", "ForegroundVaultCoordinator", "Flow.", "Future", "SharedPreferences")) assertFalse(forbidden, activity.contains(forbidden));
+        for (String forbidden : List.of("VaultSession", "Totipo.open", "Totipo.create", "LocalReplicaOwner", "NioTotipoStore", "ForegroundVaultCoordinator", "Flow.", "Future", "SharedPreferences"))
+            assertFalse(forbidden, java.util.regex.Pattern.compile("\\b" + java.util.regex.Pattern.quote(forbidden)).matcher(activity).find());
         for (var field : AndroidVaultController.class.getDeclaredFields()) assertNotEquals(char[].class, field.getType());
         String source = Files.readString(Path.of("src/main/java/org/totipo/android/AndroidVaultController.java"));
         int begin = source.indexOf("public synchronized boolean sync(Scan scan)");

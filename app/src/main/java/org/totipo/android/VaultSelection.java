@@ -60,6 +60,10 @@ public final class VaultSelection {
             throw new IllegalStateException("Entry cleanup already owned");
         maintenanceThread = Thread.currentThread(); maintenanceId = id; maintenanceDepth++;
     }
+    synchronized void beginRestoreMaintenance(String id) {
+        if (selected != null || owner != null) throw new IllegalStateException("Selection must retire before restore");
+        beginMaintenance(id);
+    }
     synchronized void endMaintenance(String id) {
         if (maintenanceThread != Thread.currentThread() || !id.equals(maintenanceId))
             throw new IllegalStateException("Entry cleanup ownership mismatch");
