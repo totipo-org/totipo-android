@@ -72,7 +72,7 @@ def adb(*command, **kwargs):
 if args.build_only or args.prepare or args.update_harness:
     cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
     jars = []
-    for group, module, version in [('org.totipo', 'totipo-core', '0.3.1'), ('org.totipo', 'totipo-storage-nio', '0.3.1'), ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
+    for group, module, version in [('org.totipo', 'totipo-core', '0.3.2'), ('org.totipo', 'totipo-storage-nio', '0.3.2'), ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
         candidates = list((cache / group / module / version).glob('*/*.jar'))
         assert len(candidates) == 1
         jars.extend(candidates)
@@ -160,7 +160,7 @@ if args.phase:
             fixture_classes.mkdir(exist_ok=True)
             fixture_cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
             fixture_jars = []
-            for group, module, version in [('org.totipo', 'totipo-core', '0.3.1'), ('org.totipo', 'totipo-storage-nio', '0.3.1'), ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
+            for group, module, version in [('org.totipo', 'totipo-core', '0.3.2'), ('org.totipo', 'totipo-storage-nio', '0.3.2'), ('org.bouncycastle', 'bcprov-jdk18on', '1.86')]:
                 candidates = list((fixture_cache / group / module / version).glob('*/*.jar'))
                 assert len(candidates) == 1
                 fixture_jars.extend(candidates)

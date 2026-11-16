@@ -79,7 +79,7 @@ Passwords remain mutable caller-owned buffers and are wiped on completion as bes
 effort rather than guaranteed JVM erasure. Empty-password Create/unlock/Join requires
 explicit confirmation.
 
-Production consumes released Java NIO/core 0.3.1 and Bouncy Castle 1.86 directly
+Production consumes released Java NIO/core 0.3.2 and Bouncy Castle 1.86 directly
 from Maven Central, targeting Totipo Vault Format v1/r19. One app-private local canonical
 store has one persistent `NioStoreComposition.coordinatedDelegate(root, new NioDurability())`
 wrapped by `CoordinatedPrivateStore`, whose fair gate owns whole-root exclusivity for
@@ -387,7 +387,7 @@ from JVM fault coverage. ZIP restore uses the lifecycle below; additive history 
 `BackupRestoreFlow` separates picker, bounded frozen ingress/structural inspection,
 password authentication, confirmation, installation and retired result phases.
 `BackupArchives.prepareRestore` authenticates every object before a durable
-allocation is reserved. It uses released NIO/core 0.3.1 and frozen profile 1; Android
+allocation is reserved. It uses released NIO/core 0.3.2 and frozen profile 1; Android
 implements no ZIP codec, extraction, canonical object copier or cryptography.
 All passwords remain caller-owned mutable buffers, wiped after authentication;
 no URI, password, root or session enters registry metadata, Bundle or logs.
@@ -408,5 +408,7 @@ normal controller opening. No session operation runs under a bridge or Applicati
 monitor. COMPLETE/PARTIAL/UNCERTAIN/REJECTED receipts remain distinct. Only COMPLETE
 can advance to INSTALLED, and normal authenticated observation plus full installed
 inventory authentication must precede ESTABLISHED. Sync settings and biometric
-credentials are never copied. API 30–33 HexFormat compatibility and physical-device
-qualification remain release blockers; JVM evidence is separate.
+credentials are never copied. Java 0.3.2 removes the known newer-library API
+references; actual API 30/current-device and SAF qualification remains pending.
+See [R4D](../review/BACKUP_RESTORE_R4D_ANDROID_FINAL_QUALIFICATION_REPORT.md);
+JVM and static evidence do not establish Android execution.

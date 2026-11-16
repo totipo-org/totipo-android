@@ -10,10 +10,10 @@ This guide describes the current app. Release procedures belong in the
 the vault library's Java Flow runtime requirement; Android enforces it when
 installing the APK.
 
-The installation minimum is not full runtime qualification: shared Java uses
-[`HexFormat`, available from Android API 34](https://developer.android.com/reference/java/util/HexFormat).
-API 30–33 compatibility is a release blocker and can fail at runtime. Backup/restore
-does not establish support on those versions; physical qualification is pending.
+The installation minimum is not full runtime qualification. Java 0.3.2 removes
+the known newer-library API references. Scoped Android 17/local-provider tests
+have passed; actual API 30 and remaining device qualification is pending. See the
+[R4D qualification report](../review/BACKUP_RESTORE_R4D_ANDROID_FINAL_QUALIFICATION_REPORT.md).
 
 Strong biometric support and enrolled biometrics are required for biometric unlock.
 Password unlock works without biometric enrollment. Folder access depends on the
@@ -277,13 +277,15 @@ upload status separately, and retain service recovery codes. ZIP entry names and
 sizes reveal some metadata; the archive does not add an outer encryption layer.
 Android also provides new-local-vault ZIP restoration as described below. Additive
 history import is not implemented. **Backup/restore is not generally qualified:**
-physical API 30/current-release testing is pending, and shared Java's `HexFormat`
-use remains a release blocker on API 30–33. Do not rely on this feature as the sole
-disaster-recovery path or reset an installation based only on host test results.
+actual API 30 and remaining device/provider testing is pending. Scoped physical
+Android 17/local-provider results are recorded in the R4D qualification report.
+Do not rely on this feature as the sole disaster-recovery path or reset an installation based only on host test results.
 
 ### Restore from a portable backup
 
-Finish **Change Vault** to return to Vaults, then choose **Add vault → Restore from
+On a fresh installation after reinstalling or moving devices, use the independently
+stored ZIP and its original vault password. On an existing installation, finish
+**Change Vault** to return to Vaults, then choose **Add vault → Restore from
 backup → Choose backup ZIP**. If a provider mislabels ZIPs, use **Browse all files**.
 Totipo reads and validates the complete selected ZIP before asking for its original
 vault password. The provider document is frozen in private memory; changing it later
@@ -353,7 +355,7 @@ data and password remain available.
 
 Synchronization is not backup. Maintain independent encrypted copies of the
 vault files, retain the password separately and verify you can open another usable
-copy before any reset. Preserve the complete vault folder, including `VAULT` and
+copy before any reset. Preserve the complete vault folder, including `vault` and
 `objects-v1`; the password or identity file alone does not back up tokens. A folder association, a successful local save or a connected
 replication peer is insufficient evidence. Biometric records are device-local
 and do not travel with the vault; another installation needs its password.

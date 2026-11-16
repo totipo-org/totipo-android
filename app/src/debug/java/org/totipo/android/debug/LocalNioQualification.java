@@ -17,8 +17,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /** Uses released public APIs with default durability, never injected/replaced operations.
- * Newer Java library calls are deliberately exercised at runtime: a LinkageError is evidence,
- * not a reason to add a compatibility implementation or silently skip released code paths. */
+ * Primitive probes use API 30 calls. A LinkageError from a released workflow is evidence,
+ * not a reason to replace or silently skip released code paths. */
 @SuppressLint("NewApi")
 final class LocalNioQualification {
     private final StringBuilder report = new StringBuilder();
@@ -31,7 +31,7 @@ final class LocalNioQualification {
         LocalNioQualification probe = new LocalNioQualification();
         probe.line("M1C local NIO qualification v2 (private mode)");
         probe.line("API level=" + Build.VERSION.SDK_INT);
-        probe.line("Java boundary=core 0.2.0 + storage-nio 0.2.0; default NioDurability");
+        probe.line("Java boundary=core 0.3.2 + storage-nio 0.3.2; default NioDurability");
         probe.line("Storage=noBackupFilesDir/m1c-nio-qualification/<run-id>; disposable only");
         probe.line("Mode=coordinatedDelegate with NioDurability; harness exclusively owns root and serializes runs/handles");
         probe.line("No independent writer, Syncthing, SAF or cloud process writes into this root.");
@@ -89,7 +89,13 @@ final class LocalNioQualification {
         primitive("bounded actual-byte read with NOFOLLOW_LINKS", true, () -> {
             Path file = Files.write(root.resolve("bounded"), new byte[] {1, 2, 3, 4});
             try (InputStream in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
-                require(Arrays.equals(new byte[] {1, 2, 3}, in.readNBytes(3)));
+                byte[] prefix = new byte[3];
+                for (int offset = 0; offset < prefix.length;) {
+                    int count = in.read(prefix, offset, prefix.length - offset);
+                    if (count <= 0) throw new java.io.IOException("Bounded read made no progress");
+                    offset += count;
+                }
+                require(Arrays.equals(new byte[] {1, 2, 3}, prefix));
                 require(in.read() == 4 && in.read() == -1);
             }
         });

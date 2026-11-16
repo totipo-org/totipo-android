@@ -1033,7 +1033,7 @@ public final class AndroidVaultController {
                 + "\nLast Sync: " + lastSyncResult + "\nLast operation detail: " + syncView.message()
                 + "\nPending local publication: " + pendingPublication + "\nConflicts: " + conflicts
                 + "\nLocal entry: " + localId()
-                + "\nJava/core: 0.3.1\nVault format: v1/r19";
+                + "\nJava/core: 0.3.2\nVault format: v1/r19";
     }
     private String productSyncError(String detail) {
         if (detail != null && detail.contains("different Totipo vault"))

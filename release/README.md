@@ -137,7 +137,7 @@ installed into it. The original unsigned file is never signed in place.
 The prepared bundle consists of `unsigned-release.apk`, its SHA-256 file, and
 deterministic `release-provenance.json`. Provenance records source/tag/version,
 application ID/versionName/versionCode, unsigned hash, Nix derivation/output, expected public
-certificate digest, Java 0.3.1 and protocol v1/r19. Provenance remains byte-identical
+certificate digest, Java 0.3.2 and protocol v1/r19. Provenance remains byte-identical
 from qualification through publication; the signed hash lives in the APK checksum file.
 The internal verified bundle retains unsigned APK/checksum for publish revalidation;
 only the three assets below are uploaded to the release.

@@ -254,9 +254,9 @@ If Java is unavailable locally, fetch/read this exact revision read-only from Gi
 Do not substitute Java `main` or only the earlier operation-model commit.
 
 The runtime artifact/source pin and guidance pin serve different purposes:
-Android executes Totipo Java 0.3.1 released source
-`27cb53a1a5f2cc3d5f221ef790f694b26b90f8a8`. The pinned guidance clarifies
-the existing operation/observation semantics; also read the released 0.3.1
+Android executes Totipo Java 0.3.2 released source
+`af11553659dd8bd4157064c7e3de27bed8980ac5`. The pinned guidance clarifies
+the existing operation/observation semantics; also read the released 0.3.2
 API_DESIGN and docs/BACKUP_ARCHIVE for the new backup operations. A docs-only
 clarification requires no Java dependency upgrade. See [Java dependency provenance](TOTIPO_JAVA_DEPENDENCY.md)
 and [the Android operation audit](review/ANDROID_JAVA_OPERATION_MODEL_AUDIT.md).

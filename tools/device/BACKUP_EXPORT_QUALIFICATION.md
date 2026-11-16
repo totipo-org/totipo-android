@@ -1,7 +1,7 @@
 # R4A physical SAF qualification
 
 This is an execution procedure, **not a recorded device PASS**. Record actual
-results in `review/BACKUP_RESTORE_R4A_ANDROID_EXPORT_REPORT.md`. JVM fake-provider
+R4D results in `review/BACKUP_RESTORE_R4D_ANDROID_FINAL_QUALIFICATION_REPORT.md`. JVM fake-provider
 and controller passes do not establish physical SAF behavior. Use a disposable
 device/profile/installation with only public test vaults. Never reset, uninstall,
 overwrite or inspect a user's real vault. No Android release is authorized.
@@ -67,6 +67,6 @@ disposable test entries; do not capture real passwords, seeds or codes in logs.
    durability/upload limitations. Successful readback is matching returned bytes,
    never proof of cloud upload, durable remote storage or peer receipt.
 
-Do not attempt ZIP restoration/history import in this milestone. Preserve usable
-independent fixture copies and original passwords; R4B must qualify new-local-vault
-restore before the combined recovery feature ships.
+For R4D, continue with [restore qualification](BACKUP_RESTORE_QUALIFICATION.md)
+using the saved independent ZIP and original password. Additive history import
+is outside scope. Both procedures require actual execution before release readiness.

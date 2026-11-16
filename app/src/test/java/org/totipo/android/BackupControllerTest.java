@@ -189,6 +189,10 @@ public final class BackupControllerTest {
         assertArrayEquals(golden("history"), doc.bytes.toByteArray());
     }
     @Test public void incompleteEnumerationAndMissingSupportedObjectRefuseCapture() throws Exception {
+        // This test owns the bounded-scan faults, not asynchronous presentation.
+        // Hold unrelated initial observation delivery out of the sole pending worker
+        // slot so capture admission cannot race a queued projection after open.
+        fixtures.observationCallback = (terminal, callback) -> () -> {};
         var c = open("empty");
         fixtures.boundedScan = new ObjectScan.Incomplete(List.of(), StoreFailure.UNAVAILABLE);
         assertTrue(c.beginBackup()); var incomplete = c.backup(); await(() -> !incomplete.active());

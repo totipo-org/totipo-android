@@ -1,10 +1,11 @@
 # R4B disposable-device restore qualification
 
 Procedure only: no device execution is claimed. Run on API 30 and a current
-supported Android release, with final strict-clean APKs. Java 0.3.1 uses
-java.util.HexFormat (API 34+): API 30–33 compatibility is an explicit release
-blocker. Record actual failure if encountered; do not increase minSdk or add an
-Android hex/crypto workaround. Host passes cannot qualify either device.
+supported Android release, with final strict-clean Java 0.3.2 APKs. The shared
+release removes known newer-library calls; actual API 30 execution is still
+required. Record any failure; do not increase minSdk or add an Android hex/crypto
+workaround. Host passes cannot qualify either device. Record R4D results in
+`review/BACKUP_RESTORE_R4D_ANDROID_FINAL_QUALIFICATION_REPORT.md`.
 
 Use only a disposable device/profile and disposable vaults, never production
 secrets or existing personal app data. Record source HEAD + working-tree diff,
@@ -15,6 +16,17 @@ app data; preserve the exact original ZIP for every retry. Do not clear app data
 as a recovery step. A separate fresh disposable profile can test another fixture
 with the same protocol identity without deleting a retained root as a shortcut.
 
+0. Before restore, create a disposable local-only vault with a known public test
+   password. Add dummy tokens, show/copy a code, edit labels, delete a test token,
+   Lock, reopen and update again. Record expected TOTP against the dummy setup
+   and clock. Back up through the real local document picker; inspect the archive
+   with shared Java and compare identity and every canonical encrypted history
+   byte. Make a controlled source change after backup and confirm the saved ZIP
+   stays unchanged. Preserve it outside app data. Use a separate fresh disposable
+   profile to simulate loss; never clear a real installation. Restore the saved ZIP,
+   then compare original identity/history, displayed live/deleted/conflicting tokens
+   and TOTP behavior after normal opening. Confirm Local only and absent biometric
+   credentials/Sync configuration. Repeat export for a disposable synchronized vault.
 1. On each API, local-only fresh profile: Vaults → Add vault → Restore from backup.
    Select empty.zip from local Documents, authenticate, name and confirm. Confirm
    completion remains in Recovery until ordinary password opening; then Lock and

@@ -20,7 +20,7 @@ dex.mkdir(exist_ok=True)
 tc = AndroidToolchain.discover()
 sdk, bt, platform, java = tc.sdk, tc.bt, tc.platform, tc.java
 cache = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))) / 'caches/modules-2/files-2.1'
-core = list((cache / 'org.totipo/totipo-core/0.3.1').glob('*/*.jar'))
+core = list((cache / 'org.totipo/totipo-core/0.3.2').glob('*/*.jar'))
 assert len(core) == 1
 app = root / 'app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes'
 app_apk = Path(os.environ.get('ROW_REVEAL_APP_APK', str(root / 'app/build/outputs/apk/debug/app-debug.apk')))

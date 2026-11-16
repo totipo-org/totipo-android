@@ -61,7 +61,7 @@ def validate_provenance(p):
                 'Invalid provenance ' + field)
     require(p['nix_derivation'].endswith('.drv') and not p['nix_output'].endswith('.drv'),
             'Invalid provenance Nix paths')
-    require(p['java_runtime'] == '0.3.1' and p['protocol'] == 'v1/r19',
+    require(p['java_runtime'] == '0.3.2' and p['protocol'] == 'v1/r19',
             'Provenance runtime/protocol differs')
     return p
 
@@ -102,7 +102,7 @@ def qualified_provenance(apk, version, commit, cert, drv, output):
     require(metadata['version_name'] == version, 'Unsigned versionName differs from VERSION')
     return validate_provenance(dict(version=version, source_commit=commit, tag='v' + version,
         unsigned_sha256=sha(apk), **metadata, nix_derivation=drv, nix_output=output,
-        certificate_sha256=cert, java_runtime='0.3.1', protocol='v1/r19'))
+        certificate_sha256=cert, java_runtime='0.3.2', protocol='v1/r19'))
 
 
 def prepare(repo, args):
@@ -291,7 +291,7 @@ def publish(repo, args):
     notes = (f"Totipo Android {args.version}\n\nSource: {args.commit}\nTag: {tag}\n"
              f"APK: {apk.name}\nSHA-256: {sha(apk)}\n"
              f"Signing certificate SHA-256: {p['certificate_sha256']}\n"
-             "Java runtime: 0.3.1; protocol: v1/r19.\n")
+             "Java runtime: 0.3.2; protocol: v1/r19.\n")
     # REST does not have --verify-tag: identity() supplies the stronger annotated
     # local/remote tag-object and source checks immediately before this POST.
     identity(repo, args.version, args.commit)

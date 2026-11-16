@@ -40,7 +40,7 @@ android {
 java { toolchain.languageVersion.set(JavaLanguageVersion.of(17)) }
 tasks.withType<JavaCompile>().configureEach { options.encoding = "UTF-8" }
 dependencies {
-    implementation("org.totipo:totipo-storage-nio:0.3.1")
+    implementation("org.totipo:totipo-storage-nio:0.3.2")
     testImplementation("junit:junit:4.13.2")
 }
 dependencyLocking {
@@ -69,7 +69,7 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                     val requested = dependency.requested as? ModuleComponentSelector
                     if (requested != null && (requested.group == "org.totipo" || requested.group.startsWith("org.totipo."))) {
                         val selected = dependency.selected.id as? ModuleComponentIdentifier
-                        check(requested.version == "0.3.1" && selected != null &&
+                        check(requested.version == "0.3.2" && selected != null &&
                             selected.group == requested.group && selected.module == requested.module &&
                             selected.version == requested.version) {
                             "Mixed/substituted Totipo edge: $requested -> ${dependency.selected.id}"
@@ -85,7 +85,7 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 component.id as ModuleComponentIdentifier
             }
             val totipo = modules.filter { it.group == "org.totipo" || it.group.startsWith("org.totipo.") }
-            val expected = setOf("org.totipo:totipo-core:0.3.1", "org.totipo:totipo-storage-nio:0.3.1")
+            val expected = setOf("org.totipo:totipo-core:0.3.2", "org.totipo:totipo-storage-nio:0.3.2")
             check(totipo.map { "${it.group}:${it.module}:${it.version}" }.toSet() == expected) {
                 "Unexpected Totipo modules in ${productionConfigurations[index]}: $totipo"
             }
@@ -96,7 +96,7 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 .mapNotNull { it.selected.id as? ModuleComponentIdentifier }
                 .filter { it.group == "org.totipo" || it.group.startsWith("org.totipo.") }
             check(direct.map { "${it.group}:${it.module}:${it.version}" } ==
-                listOf("org.totipo:totipo-storage-nio:0.3.1")) {
+                listOf("org.totipo:totipo-storage-nio:0.3.2")) {
                 "App must declare only the direct external NIO dependency: $direct"
             }
             val nio = components.single { (it.id as? ModuleComponentIdentifier)?.let { id ->
@@ -106,10 +106,10 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 val requested = edge.requested as? ModuleComponentSelector
                 val selected = edge.selected.id as? ModuleComponentIdentifier
                 edge.isConstraint.not() && requested?.group == "org.totipo" &&
-                    requested.module == "totipo-core" && requested.version == "0.3.1" &&
+                    requested.module == "totipo-core" && requested.version == "0.3.2" &&
                     selected?.group == "org.totipo" && selected.module == "totipo-core" &&
-                    selected.version == "0.3.1"
-            }) { "Expected NIO 0.3.1 -> core 0.3.1 external Maven edge" }
+                    selected.version == "0.3.2"
+            }) { "Expected NIO 0.3.2 -> core 0.3.2 external Maven edge" }
             // File dependencies do not appear in ResolutionResult; inspect artifacts too.
             configurations.getByName(productionConfigurations[index]).incoming.artifacts.artifacts.forEach { artifact ->
                 check(artifact.id.componentIdentifier is ModuleComponentIdentifier) {
@@ -127,7 +127,7 @@ val verifyMavenBoundary = tasks.register("verifyMavenBoundary") {
                 }) { "Expected core -> BC 1.86 Maven runtime relationship" }
             }
         }
-        logger.lifecycle("Verified production NIO/core 0.3.1 and BC 1.86; external Maven boundary")
+        logger.lifecycle("Verified production NIO/core 0.3.2 and BC 1.86; external Maven boundary")
     }
 }
 tasks.named("check") { dependsOn(verifyMavenBoundary, "testDebugUnitTest", "lint") }
