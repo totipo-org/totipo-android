@@ -380,7 +380,8 @@ failed/could-not-verify. Cancellation distinguishes no admitted output from unce
 output effects. Verified means matching provider-returned bytes, not durable cloud
 upload or remote receipt. A blocked SAF call retains the lane and may delay switching
 until actual return or process restart. Physical provider qualification is separate
-from JVM fault coverage. ZIP restore uses the lifecycle below; additive history import remains deferred.
+from JVM fault coverage. ZIP restore uses the lifecycle below; additive history import
+uses the selected authenticated session as described below.
 
 ## New-local-vault ZIP restore
 
@@ -412,3 +413,32 @@ credentials are never copied. Java 0.3.2 removes the known newer-library API
 references; actual API 30/current-device and SAF qualification remains pending.
 See [R4D](../review/BACKUP_RESTORE_R4D_ANDROID_FINAL_QUALIFICATION_REPORT.md);
 JVM and static evidence do not establish Android execution.
+
+
+## Additive history from backup
+
+The selected controller reserves archive admission across SAF selection, Java
+preparation, confirmation and apply. One `HistoryImport` captures the controller
+and session generation; ordinary state emissions do not retire it. The existing
+worker owns ingress, `prepareImport`, the `BackupImport` handle, `apply` and close.
+The session provider gate precedes `CoordinatedPrivateStore`'s fair whole-root gate;
+no session or handle call runs under a bridge. Presentation projection coalesces
+while archive admission is reserved. Token heads and conflicts always come from
+ordinary Java observation. No import result patches token rows or reveals codes.
+
+Before apply, the per-entry private preferences durably record the authenticated
+archive digest independently of folder settings. A partial/uncertain/unfinished
+import blocks every outbound Sync admission across Lock, restart and folder changes.
+Only fresh authentication of that original ZIP, Java COMPLETE/NO_OP and the existing
+two-pass diagnostic-free observation check can clear the marker. The digest is
+recognition evidence, never authority; Java authenticates every new plan. Marker
+write failure prevents application; clearing failure retains the block. There is
+no automatic retry, ignored marker or provider-event completion shortcut.
+
+A successful import uses `localMutationSaved` after observation, preserving normal
+retry hints and import-before-publish Sync. Local-only imports acquire no tree
+grant and start no transport. Lock, backgrounding outside the picker and retirement
+revoke future ingress/publication. A scoped cancellation check in the coordinated
+session facade refuses future object publications with a definite no-write result;
+entered filesystem calls finish normally and Java accounts for their receipts.
+All terminal plans close on the worker, after entered work, without rollback.

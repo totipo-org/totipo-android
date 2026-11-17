@@ -19,6 +19,10 @@ public final class TotipoApplication extends Application {
     BackupExport.Journal backupJournal() { return backupJournal; }
     BackupExport.Destination backupDestination(android.net.Uri uri) { return new AndroidBackupDocument(getContentResolver(), uri); }
     String interruptedBackup() { return interruptedBackup; }
+    HistoryImport.Source historySource(android.net.Uri uri) {
+        var resolver = getContentResolver();
+        return () -> resolver.openInputStream(uri);
+    }
     private BackupRestoreFlow restoreFlow;
     private RestoreJourney restoreJourney;
     private String restoredActivation;

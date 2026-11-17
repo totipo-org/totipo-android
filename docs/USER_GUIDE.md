@@ -273,11 +273,48 @@ destination; nothing resumes automatically.
 Keep independent copies in more than one safe location, confirm provider-specific
 upload status separately, and retain service recovery codes. ZIP entry names and
 sizes reveal some metadata; the archive does not add an outer encryption layer.
-Android also provides new-local-vault ZIP restoration as described below. Additive
-history import is not implemented. **Backup/restore is not generally qualified:**
+Android also provides new-local-vault ZIP restoration and Add History from Backup,
+as described below. **Backup/restore is not generally qualified:**
 actual API 30 and remaining device/provider testing is pending. Scoped physical
 Android 17/local-provider results are recorded in the R4D qualification report.
 Do not rely on this feature as the sole disaster-recovery path or reset an installation based only on host test results.
+
+### Add History from Backup
+
+With the current vault unlocked, choose **More options → Add History from Backup**
+and select a Totipo backup ZIP in the system picker. Totipo verifies the complete
+backup using the authenticated vault, then asks **Add missing history to this vault?
+Existing data will be kept, but older versions or conflicts may appear.** Choose
+**Cancel** or **Add History**. No additional password is needed.
+
+These operations have different purposes:
+
+- **Back up vault:** create an independent encrypted copy of locally available history.
+- **Restore from backup:** reconstruct the vault as a new local allocation.
+- **Add History from Backup:** add missing historical evidence to the current vault.
+
+Add History is not a rollback to the backup date. It keeps newer objects and all
+existing data. Added history may change the current visible token state, expose
+older or deleted alternatives, or reveal conflicts. Review conflicts through the
+ordinary Resolve controls; importing never automatically reveals or copies codes.
+A backup belonging to another vault is refused.
+
+**History added.** and **No new history to add.** appear in the usual status area.
+A partial or uncertain import keeps any objects already stored. Keep the original
+ZIP and the app’s data; unlock this vault and select the original ZIP again to
+retry explicitly. Nothing retries automatically. After Lock, switching vaults or
+process restart, select and verify the ZIP again. Leaving the app during checking,
+confirmation or application cancels future work; entered storage work may finish.
+The system picker itself is allowed to background Totipo.
+
+Local-only vaults stay local-only. For a vault with Sync configured, import excludes
+Sync while active. Only a fully acknowledged import followed by ordinary successful
+local observation makes imported evidence eligible for the existing Sync workflow.
+Interrupted, partial, uncertain or unobserved application blocks outbound Sync,
+including after restart or changing folders. Retry the original backup to complete
+recovery. If storage or observation still needs attention, preserve the evidence
+and investigate it; do not clear app data or uninstall. Completion confirms local
+history, not delivery to another device.
 
 ### Restore from a portable backup
 

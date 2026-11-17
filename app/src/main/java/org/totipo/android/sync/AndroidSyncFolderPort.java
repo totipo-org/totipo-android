@@ -62,6 +62,10 @@ public final class AndroidSyncFolderPort implements SyncFolderBinding.Port, Prov
     public org.totipo.android.provider.ProviderSnapshot.Document vaultMetadata(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultMetadata(created); }
     public java.io.OutputStream vaultOutput(org.totipo.android.provider.ProviderSnapshot.Document created) throws Exception { return bootstrap().vaultOutput(created); }
     public org.totipo.android.provider.ProviderSnapshot.Bytes vaultReadBack(org.totipo.android.provider.ProviderSnapshot.Document created) { return bootstrap().vaultReadBack(created); }
+    public String historyRecovery() { return preferences.getString("history_import_recovery", ""); }
+    public boolean historyRecovery(String digest) {
+        return preferences.edit().putString("history_import_recovery", digest).commit();
+    }
     public boolean pendingPublication() {
         return preferences.getBoolean("binding_recovery", false)
                 ? preferences.getBoolean("recovery_pending", false) : preferences.getBoolean("pending_publication", false);

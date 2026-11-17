@@ -205,6 +205,21 @@ public final class ForegroundVaultCoordinator implements AutoCloseable {
         return session.captureBackup(org.totipo.backup.BackupLimits.DEFAULT);
     }
 
+    /** Session gate precedes the whole-root store gate, as for capture. */
+    public org.totipo.backup.BackupImport prepareHistory(java.io.InputStream input) throws IOException {
+        requireOpen();
+        if (store.exclusiveHeldByCurrentThread()) throw new IllegalStateException("Import under bridge");
+        return session.prepareImport(input, org.totipo.backup.BackupLimits.DEFAULT);
+    }
+    /** Refuse future publication after revocation without interrupting entered filesystem I/O.
+     * The shared result accounts for the definite no-write refusal and any earlier writes. */
+    public org.totipo.backup.ImportResult applyHistory(org.totipo.backup.BackupImport plan, Cancellation cancellation) {
+        requireOpen();
+        store.publicationCancellation(cancellation::requested);
+        try { return plan.apply(); }
+        finally { store.publicationCancellation(() -> false); }
+    }
+
     public byte[] snapshotVault() {
         requireOpen();
         byte[] exact;

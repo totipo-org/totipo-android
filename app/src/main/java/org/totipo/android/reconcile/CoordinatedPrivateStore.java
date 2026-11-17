@@ -17,6 +17,12 @@ public final class CoordinatedPrivateStore implements AutoCloseable {
     private final TotipoStore delegate;
     private final ReentrantLock gate = new ReentrantLock(true);
     private final SessionView session = new SessionView();
+    private java.util.function.BooleanSupplier publicationCancelled = () -> false;
+    void publicationCancellation(java.util.function.BooleanSupplier cancellation) {
+        gate.lock();
+        try { usable(); publicationCancelled = cancellation; }
+        finally { gate.unlock(); }
+    }
     private boolean transferred, sessionClosed, closed, unsafe;
 
     static CoordinatedPrivateStore open(Path root) throws IOException {
@@ -169,7 +175,8 @@ public final class CoordinatedPrivateStore implements AutoCloseable {
         public ObjectScan scanObjects() { return ordinary(delegate::scanObjects); }
         public ObjectScan scanObjects(int maximumEntries) { return ordinary(() -> delegate.scanObjects(maximumEntries)); }
         public BoundedRead readObject(ObjectName name, int size) { return ordinary(() -> delegate.readObject(name, size)); }
-        public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return ordinary(() -> delegate.publishObject(name, bytes)); }
+        public ObjectWrite publishObject(ObjectName name, byte[] bytes) { return ordinary(() -> publicationCancelled.getAsBoolean()
+                ? new ObjectWrite.Failed(StoreFailure.UNAVAILABLE) : delegate.publishObject(name, bytes)); }
         public VaultCreate createVault(byte[] bytes) {
             return ordinary(() -> delegate.createVault(bytes));
         }

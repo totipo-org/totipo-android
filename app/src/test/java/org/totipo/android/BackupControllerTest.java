@@ -64,7 +64,7 @@ public final class BackupControllerTest {
         await(c::canBackUpVault); return c;
     }
     private BackupExport prepare(AndroidVaultController c) throws Exception {
-        assertTrue(c.beginBackup());
+        await(c::beginBackup); // A queued observation can transiently occupy the bounded worker slot.
         var op = c.backup(); await(() -> op.phase() != BackupExport.Phase.PREPARING);
         assertEquals(op.message(), BackupExport.Phase.READY, op.phase());
         assertTrue(c.launchBackupPicker(op)); return op;

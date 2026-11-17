@@ -12,6 +12,9 @@ public final class SyncFolderBinding {
     public record View(Status status, boolean readable, boolean writable) {}
     public interface Port {
         Stored load();
+        /** Durable archive recovery evidence, independent of folder configuration/grants. */
+        default String historyRecovery() { return ""; }
+        default boolean historyRecovery(String digest) { return false; }
         default Object configurationLock() { return this; }
         default SyncGrantOwnership.Use retain(String uri) { return () -> {}; }
         default String configurationNotice() { return ""; }
@@ -37,6 +40,14 @@ public final class SyncFolderBinding {
     private View view = new View(Status.NOT_CONFIGURED, false, false);
     public SyncFolderBinding(Port port) { this.port = port; }
     /** UI retry hint only, never an authority for deciding which immutable objects to publish. */
+    public synchronized String historyRecovery() {
+        try { return java.util.Objects.requireNonNull(port.historyRecovery()); }
+        catch (RuntimeException unavailable) { return "unavailable"; }
+    }
+    public synchronized boolean historyRecovery(String digest) {
+        try { return port.historyRecovery(digest); }
+        catch (RuntimeException unavailable) { return false; }
+    }
     public synchronized boolean pendingPublication() {
         try { return port.pendingPublication(); } catch (RuntimeException unavailable) { return true; }
     }

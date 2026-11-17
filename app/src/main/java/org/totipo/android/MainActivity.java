@@ -32,11 +32,17 @@ public final class MainActivity extends Activity {
     private int backupRequest;
     private android.net.Uri backupDestination;
     private static final java.util.concurrent.atomic.AtomicInteger BACKUP_REQUESTS = new java.util.concurrent.atomic.AtomicInteger(16384);
+    private HistoryImport historyPicker;
+    private int historyRequest;
+    private android.net.Uri historySource;
+    private AlertDialog historyDialog;
+    private HistoryImport confirmedHistory;
     private BackupRestoreFlow restorePicker;
     private int restoreRequest;
     private android.net.Uri restoreSource;
     private record Pickers(String sync, BackupExport backup, int request, android.net.Uri destination,
-                           BackupRestoreFlow restore, int restoreRequest, android.net.Uri restoreSource) {}
+                           BackupRestoreFlow restore, int restoreRequest, android.net.Uri restoreSource,
+                           HistoryImport history, int historyRequest, android.net.Uri historySource) {}
     private BackupRestoreFlow renderedRestore;
     private BackupRestoreFlow.Stage renderedRestoreStage;
     private boolean renderedRestoreBusy, renderedRestoreCancelled;
@@ -237,6 +243,11 @@ public final class MainActivity extends Activity {
         super.onResume(); resumed = true;
         if (controller != null) {
             controller.checkInactivity();
+            if (historySource != null) {
+                var uri = historySource; var operation = historyPicker;
+                historySource = null; historyPicker = null;
+                if (!replacing) controller.prepareHistory(operation, application().historySource(uri));
+            }
             if (backupDestination != null) {
                 var uri = backupDestination; var operation = backupPicker;
                 backupDestination = null; backupPicker = null;
@@ -299,9 +310,11 @@ public final class MainActivity extends Activity {
             pickerActivation = pickers.sync(); backupPicker = pickers.backup(); backupRequest = pickers.request();
             backupDestination = pickers.destination(); restorePicker = pickers.restore();
             restoreRequest = pickers.restoreRequest(); restoreSource = pickers.restoreSource();
+            historyPicker = pickers.history(); historyRequest = pickers.historyRequest(); historySource = pickers.historySource();
         }
         if (restorePicker != application().restoreFlow() || controller != null) { restorePicker = null; restoreSource = null; restoreRequest = 0; }
         if (controller == null || controller.backup() != backupPicker) { backupPicker = null; backupDestination = null; }
+        if (controller == null || controller.historyImport() != historyPicker) { historyPicker = null; historySource = null; historyRequest = 0; }
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
         joining = application().joining(controller);
@@ -356,6 +369,8 @@ public final class MainActivity extends Activity {
         String message = next.equals("open") ? mainStatus(state) : state.message();
         String restoreNotice = application().restoreOpeningNotice(controller);
         if (!restoreNotice.isEmpty()) message += (message.isEmpty() ? "" : "\n") + restoreNotice;
+        String historyNotice = controller.historyMessage();
+        if (!historyNotice.isEmpty()) message += (message.isEmpty() ? "" : "\n") + historyNotice;
         String backupNotice = controller.backupMessage();
         if (!backupNotice.isEmpty() && !backupNotice.equals(message)) message += (message.isEmpty() ? "" : "\n") + backupNotice;
         if (!application().interruptedBackup().isEmpty()) message += "\n" + application().interruptedBackup();
@@ -415,6 +430,7 @@ public final class MainActivity extends Activity {
         }
         maybeAutomaticBiometric();
         maybeLaunchBackupPicker();
+        maybeConfirmHistory();
     }
     private void maybeAutomaticBiometric() {
         if (resumed && !replacing && !isFinishing() && !isDestroyed() && hasWindowFocus()
@@ -606,6 +622,12 @@ public final class MainActivity extends Activity {
     }
     private void showOverflow(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Add History from Backup").setEnabled(controller.canAddHistory())
+                .setOnMenuItemClickListener(item -> { pickHistory(); return true; });
+        if (controller.historyImport() != null && controller.historyImport().active())
+            menu.getMenu().add("Cancel history import").setOnMenuItemClickListener(item -> {
+                controller.cancelHistory(controller.historyImport()); return true;
+            });
         menu.getMenu().add("Back up vault").setEnabled(controller.canBackUpVault())
                 .setOnMenuItemClickListener(item -> { controller.hideCode(); controller.beginBackup(); return true; });
         if (controller.backup() != null && controller.backup().active())
@@ -722,6 +744,38 @@ public final class MainActivity extends Activity {
         try { startActivityForResult(picker, SYNC_TREE_REQUEST); }
         catch (android.content.ActivityNotFoundException unavailable) { status.setText("Folder picker unavailable."); }
     }
+    private void pickHistory() {
+        if (!resumed || replacing) return;
+        var operation = controller.beginHistoryImport();
+        if (operation == null) return;
+        int request = BACKUP_REQUESTS.getAndIncrement();
+        if (request > 65535) { controller.cancelHistory(operation); return; }
+        historyPicker = operation; historyRequest = request;
+        var intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(android.content.Intent.CATEGORY_OPENABLE).setType("application/zip")
+                .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try { startActivityForResult(intent, request); }
+        catch (android.content.ActivityNotFoundException unavailable) {
+            try { startActivityForResult(intent.setType("*/*"), request); }
+            catch (RuntimeException failure) { historyRequest = 0; controller.cancelHistory(operation); }
+        } catch (RuntimeException failure) { historyRequest = 0; controller.cancelHistory(operation); }
+    }
+    private void maybeConfirmHistory() {
+        var operation = controller.historyImport();
+        if (historyDialog != null && (operation != confirmedHistory || operation.cancelled.get()
+                || operation.phase != HistoryImport.Phase.CONFIRM)) {
+            historyDialog.dismiss(); historyDialog = null; confirmedHistory = null;
+        }
+        if (!resumed || replacing || historyDialog != null || operation == null || operation.cancelled.get()
+                || !controller.canConfirmHistory(operation)) return;
+        confirmedHistory = operation;
+        historyDialog = new AlertDialog.Builder(this).setTitle("Add History from Backup")
+                .setMessage("Add missing history to this vault? Existing data will be kept, but older versions or conflicts may appear.")
+                .setNegativeButton("Cancel", (dialog, which) -> controller.cancelHistory(operation))
+                .setPositiveButton("Add History", (dialog, which) -> controller.applyHistory(operation))
+                .setOnCancelListener(dialog -> controller.cancelHistory(operation)).create();
+        historyDialog.show();
+    }
     private void maybeLaunchBackupPicker() {
         if (!resumed || replacing || backupPicker != null) return;
         var operation = controller.backup();
@@ -744,6 +798,14 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
+        if (historyPicker != null && historyRequest != 0 && request == historyRequest) {
+            historyRequest = 0;
+            if (controller == null || replacing || controller.historyImport() != historyPicker) return;
+            if (result != RESULT_OK || data == null || data.getData() == null) {
+                controller.cancelHistory(historyPicker); historyPicker = null;
+            } else historySource = data.getData();
+            return;
+        }
         if (restorePicker != null && request == restoreRequest) {
             restoreRequest = 0;
             if (controller != null || replacing || restorePicker != application().restoreFlow()) return;
@@ -877,6 +939,6 @@ public final class MainActivity extends Activity {
     private void clearCodeWidgets() {
         if (tokens != null) tokens.clearWidgets();
     }
-    @Override public Object onRetainNonConfigurationInstance() { return new Pickers(pickerActivation, backupPicker, backupRequest, backupDestination, restorePicker, restoreRequest, restoreSource); }
-    @Override protected void onDestroy() { clearPasswords(); clearCodeWidgets(); super.onDestroy(); }
+    @Override public Object onRetainNonConfigurationInstance() { return new Pickers(pickerActivation, backupPicker, backupRequest, backupDestination, restorePicker, restoreRequest, restoreSource, historyPicker, historyRequest, historySource); }
+    @Override protected void onDestroy() { if (historyDialog != null) historyDialog.dismiss(); clearPasswords(); clearCodeWidgets(); super.onDestroy(); }
 }

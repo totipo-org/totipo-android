@@ -8,6 +8,10 @@ import static org.junit.Assert.*;
 
 public final class SyncFolderBindingTest {
     public static class MemoryPort implements Port {
+        public volatile String recovery = "";
+        public boolean failRecovery;
+        public String historyRecovery() { return recovery; }
+        public boolean historyRecovery(String digest) { if (failRecovery) return false; recovery = digest; return true; }
         public Stored stored;
         public boolean pending;
         public boolean pendingPublication() { return pending; }

@@ -79,8 +79,132 @@ public final class AndroidVaultController {
     }
     private long sessionGeneration;
     private BackupExport backup;
+    private HistoryImport history;
+    private volatile String historyRecovery = "";
+    private boolean historyAdmission;
+    private boolean historyActive() { return history != null && history.active(); }
+    synchronized HistoryImport historyImport() { return history; }
+    public synchronized String historyMessage() {
+        String message = history == null ? "" : history.message;
+        if (!historyRecovery.isEmpty() && (history == null || !history.active()) && !message.contains(HistoryImport.RECOVERY))
+            message += "History import needs recovery." + HistoryImport.RECOVERY;
+        return message;
+    }
+    public synchronized boolean canAddHistory() { return canBackUpVault() && !viewQueued; }
+    synchronized boolean canConfirmHistory(HistoryImport operation) {
+        return foreground && historyCurrent(operation) && operation.phase == HistoryImport.Phase.CONFIRM
+                && !operating && !providerActive;
+    }
+    synchronized HistoryImport beginHistoryImport() {
+        dispatcher.assertDispatchThread(); inactivity.check();
+        if (!canAddHistory()) return null;
+        clearPresentation(); presentationChanged();
+        history = new HistoryImport(sessionGeneration); notifySync(); return history;
+    }
+    private boolean historyCurrent(HistoryImport operation) {
+        return operation != null && history == operation && selectedAuthority() && !lockRequested
+                && operation.session == sessionGeneration && !operation.cancelled.get();
+    }
+    private boolean submitHistory(String message, Runnable task) {
+        historyAdmission = true;
+        try { return submit(State.BUSY, message, task, this::disposeRevokedHistory); }
+        finally { historyAdmission = false; }
+    }
+    synchronized boolean prepareHistory(HistoryImport operation, HistoryImport.Source source) {
+        dispatcher.assertDispatchThread(); inactivity.check();
+        if (!foreground || !historyCurrent(operation) || operation.phase != HistoryImport.Phase.PICKER) return false;
+        operation.phase = HistoryImport.Phase.PREPARING;
+        boolean admitted = submitHistory("Checking backup…", () -> {
+            try {
+                try (var input = operation.ingress(source)) { operation.plan = vault.prepareHistory(input); }
+                operation.digest = operation.plan.summary().archiveSha256();
+                synchronized (this) {
+                    if (!historyCurrent(operation)) return;
+                    if (!historyRecovery.isEmpty() && !historyRecovery.equals(operation.digest)) {
+                        operation.message = "Choose the original backup to recover this import." + HistoryImport.RECOVERY;
+                        operation.revoke(); return;
+                    }
+                    operation.phase = HistoryImport.Phase.CONFIRM;
+                }
+            } catch (org.totipo.backup.BackupException failure) {
+                operation.message = failure.reason() == org.totipo.backup.BackupException.Reason.VAULT_CHANGED
+                        ? "This backup belongs to a different vault." : "This backup couldn't be verified.";
+                operation.revoke();
+            } catch (IOException | RuntimeException failure) {
+                operation.message = "This backup couldn't be verified."; operation.revoke();
+            } finally {
+                if (operation.cancelled.get()) disposeRevokedHistory();
+                synchronized (this) { if (!lockRequested && selectedAuthority()) render("Vault open"); notifySync(); }
+            }
+        });
+        if (!admitted) { operation.revoke(); wakeHistoryDisposal(); }
+        return admitted;
+    }
+    synchronized boolean applyHistory(HistoryImport operation) {
+        dispatcher.assertDispatchThread(); inactivity.check();
+        if (!canConfirmHistory(operation)) return false;
+        operation.phase = HistoryImport.Phase.APPLYING;
+        boolean admitted = submitHistory("Adding history…", () -> {
+            boolean entered = false;
+            org.totipo.backup.ImportResult result = null;
+            try {
+                synchronized (this) { if (!historyCurrent(operation)) return; }
+                // Write-ahead recovery marker survives Lock, process death and folder changes.
+                if (syncBinding != null && !syncBinding.historyRecovery(operation.digest)) {
+                    operation.message = "History couldn't be added. Recovery information could not be saved."; return;
+                }
+                historyRecovery = operation.digest;
+                synchronized (this) { if (!historyCurrent(operation)) return; }
+                entered = true;
+                result = vault.applyHistory(operation.plan, operation.cancelled::get);
+                operation.message = HistoryImport.outcome(result);
+                // Even cancellation/partial application needs ordinary local observation.
+                vault.requestRefresh();
+                boolean complete = result.outcome() == org.totipo.backup.ImportResult.Outcome.COMPLETE
+                        || result.outcome() == org.totipo.backup.ImportResult.Outcome.NO_OP;
+                if (complete && !operation.cancelled.get() && vault.observeForSync(operation.cancelled::get)) {
+                    synchronized (this) { if (!historyCurrent(operation)) return; }
+                    if (syncBinding == null || syncBinding.historyRecovery("")) {
+                        historyRecovery = "";
+                        synchronized (this) { if (historyCurrent(operation)) localMutationSaved(); }
+                    }
+                }
+                if (!historyRecovery.isEmpty()) operation.message += HistoryImport.RECOVERY;
+            } catch (RuntimeException failure) {
+                operation.message = result != null ? HistoryImport.outcome(result) + " Local observation could not be confirmed." + HistoryImport.RECOVERY
+                        : entered ? "History import needs recovery. Completion could not be confirmed." + HistoryImport.RECOVERY
+                        : "History couldn't be added.";
+                if (entered) { try { vault.requestRefresh(); } catch (RuntimeException ignored) { } }
+            } finally {
+                operation.dispose(); operation.phase = HistoryImport.Phase.DONE;
+                synchronized (this) { if (!lockRequested && selectedAuthority()) render("Vault open"); notifySync(); }
+            }
+        });
+        if (!admitted) { operation.revoke(); wakeHistoryDisposal(); }
+        return admitted;
+    }
+    synchronized void cancelHistory(HistoryImport operation) {
+        dispatcher.assertDispatchThread();
+        if (operation != history || !operation.active()) return;
+        operation.revoke(); wakeHistoryDisposal(); notifySync();
+    }
+    private void revokeHistory() {
+        if (historyActive()) { history.revoke(); wakeHistoryDisposal(); }
+    }
+    private void wakeHistoryDisposal() {
+        try { worker.execute(() -> {}); }
+        catch (RejectedExecutionException occupied) { /* afterExecute disposes on the same worker */ }
+    }
+    private void disposeRevokedHistory() {
+        HistoryImport operation;
+        synchronized (this) { operation = history; }
+        if (operation != null && operation.active() && operation.cancelled.get()) {
+            operation.dispose(); operation.phase = HistoryImport.Phase.DONE;
+            synchronized (this) { scheduleView(); notifySync(); queueSyncDrain(); }
+        }
+    }
     public synchronized boolean canBackUpVault() {
-        return foreground && selectedAuthority() && !lockRequested && !operating && !providerActive
+        return !historyActive() && foreground && selectedAuthority() && !lockRequested && !operating && !providerActive
                 && pendingChange == null && snapshot.state() == State.OPEN
                 && (backup == null || !backup.active());
     }
@@ -239,6 +363,7 @@ public final class AndroidVaultController {
             }, new ThreadPoolExecutor.AbortPolicy()) {
                 @Override protected void afterExecute(Runnable task, Throwable failure) {
                     super.afterExecute(task, failure);
+                    disposeRevokedHistory();
                     drainProviderFinish();
                     persistPublicationHint();
                     retireRequestedLock();
@@ -260,7 +385,7 @@ public final class AndroidVaultController {
     /** Reserve the existing foreground admission slot; retain only detached public metadata. */
     public synchronized TokenChange beginTokenChange(TokenId id, TokenChange.Kind kind) {
         dispatcher.assertDispatchThread();
-        if (operating || providerActive || pendingChange != null || snapshot.state() != State.OPEN
+        if (historyActive() || operating || providerActive || pendingChange != null || snapshot.state() != State.OPEN
                 || snapshot.view() == null
                 || !(snapshot.view().observation() instanceof org.totipo.ObservationProgress.Finished)
                 || !snapshot.view().diagnostics().isEmpty() || !snapshot.view().integrityProblems().isEmpty()) return null;
@@ -336,7 +461,7 @@ public final class AndroidVaultController {
         presentation = new TotpPresentation(time, (delay, action) -> dispatcher.after(delay,
                 () -> { synchronized (this) { action.run(); } }), marshalled, this::presentationChanged);
         submit(State.STARTING, "Checking local vault…", () -> {
-            if (syncBinding != null) { syncBinding.restore(); pendingPublication = syncBinding.initialUri() != null && syncBinding.pendingPublication(); updateBinding(null); startProvider(false); }
+            if (syncBinding != null) { historyRecovery = syncBinding.historyRecovery(); syncBinding.restore(); pendingPublication = syncBinding.initialUri() != null && syncBinding.pendingPublication(); updateBinding(null); startProvider(false); }
             discover();
         });
     }
@@ -388,7 +513,7 @@ public final class AndroidVaultController {
     }
     public synchronized boolean copyShownCode() {
         dispatcher.assertDispatchThread();
-        if (operating || (unifiedSync && providerActive) || pendingChange != null || snapshot.state() != State.OPEN) return false;
+        if (historyActive() || operating || (unifiedSync && providerActive) || pendingChange != null || snapshot.state() != State.OPEN) return false;
         boolean copied = presentation.copy();
         if (snapshot.remainingSeconds() != presentation.display().seconds()) presentationChanged();
         return copied;
@@ -396,7 +521,7 @@ public final class AndroidVaultController {
     /** Presentation work shares the bounded worker, but does not reserve vault admission. */
     public synchronized boolean showCode(TokenId id) {
         dispatcher.assertDispatchThread();
-        if (revealing || viewQueued || operating || (unifiedSync && providerActive)
+        if (historyActive() || revealing || viewQueued || operating || (unifiedSync && providerActive)
                 || pendingChange != null || snapshot.state() != State.OPEN || snapshot.view() == null) return false;
         var expected = snapshot.view().tokens().stream().filter(token -> token.id().equals(id)).findFirst().orElse(null);
         if (expected == null || !TokenListAdapter.usable(expected)) return false;
@@ -442,7 +567,8 @@ public final class AndroidVaultController {
         return submit(state, message, operation, () -> {});
     }
     private synchronized boolean submit(State state, String message, Runnable operation, Runnable cancelled) {
-        if (retiring || shuttingDown || lockRequested || operating || pendingChange != null) return false;
+        if (retiring || shuttingDown || lockRequested || operating || pendingChange != null
+                || historyActive() && !historyAdmission) return false;
         retireQueuedReveal();
         operating = true;
         Snapshot before = snapshot;
@@ -633,7 +759,7 @@ public final class AndroidVaultController {
         dirty = true; observationFailed |= failed; scheduleView();
     }
     private synchronized void scheduleView() {
-        if (retiring || shuttingDown || !dirty || operating || revealing || viewQueued || unifiedSync) return;
+        if (retiring || shuttingDown || historyActive() || !dirty || operating || revealing || viewQueued || unifiedSync) return;
         viewQueued = true;
         try {
             worker.execute(() -> {
@@ -662,7 +788,7 @@ public final class AndroidVaultController {
                 diagnostics && !message.contains(attention) ? message + " " + attention : message, view);
     }
     /** Admission observation only; addToken still rechecks atomically and owns every rejection. */
-    public synchronized boolean canAddToken() { return snapshot.state() == State.OPEN && !operating && !unifiedSync && pendingChange == null; }
+    public synchronized boolean canAddToken() { return !historyActive() && snapshot.state() == State.OPEN && !operating && !unifiedSync && pendingChange == null; }
     /** Takes ownership on every path. Uses existing bounded admission and the live session. */
     public synchronized boolean addToken(AddTokenRequest request) {
         dispatcher.assertDispatchThread();
@@ -954,6 +1080,7 @@ public final class AndroidVaultController {
             // The system picker is expected to background us. It permits no I/O.
             // Its result still requires foreground and the originating live session.
             if (backup != null && backup.phase() != BackupExport.Phase.PICKER) revokeBackup();
+            if (history != null && history.phase != HistoryImport.Phase.PICKER) revokeHistory();
         }
         boolean returned = active && !foreground;
         foreground = active;
@@ -992,7 +1119,7 @@ public final class AndroidVaultController {
         dispatcher.post(() -> {
             synchronized (this) {
                 syncDrainQueued = false;
-                if (!syncPending || operating || viewQueued || providerActive || pendingChange != null) return;
+                if (!syncPending || historyActive() || !historyRecovery.isEmpty() || operating || viewQueued || providerActive || pendingChange != null) return;
                 if (snapshot.state() != State.OPEN || syncBinding == null || initialTreeUri == null) {
                     syncPending = false; return;
                 }
@@ -1002,7 +1129,7 @@ public final class AndroidVaultController {
         });
     }
     public synchronized boolean canSync() {
-        return snapshot.state() == State.OPEN && syncBinding != null && initialTreeUri != null
+        return !historyActive() && historyRecovery.isEmpty() && snapshot.state() == State.OPEN && syncBinding != null && initialTreeUri != null
                 && !operating && pendingChange == null && !providerActive;
     }
     /** One active operation plus one pending request. Failed attempts never schedule their own retry. */
@@ -1015,6 +1142,7 @@ public final class AndroidVaultController {
         return startSync();
     }
     public synchronized String dailySyncStatus() {
+        if (!historyRecovery.isEmpty()) return "History import needs recovery before Sync.";
         if (unifiedSync) return "Syncing…";
         if (!syncStatus.isEmpty()) return syncStatus;
         if (initialTreeUri == null) return "Local only";
@@ -1103,7 +1231,7 @@ public final class AndroidVaultController {
     public synchronized String folderConfigurationNotice() { return folderConfigurationNotice; }
     /** Private picker hint only; never rendered in product status. */
     public synchronized String initialTreeUri() { return initialTreeUri; }
-    public synchronized boolean canManageSyncFolder() { return !retiring && !shuttingDown && syncBinding != null && !operating && pendingChange == null; }
+    public synchronized boolean canManageSyncFolder() { return !historyActive() && !retiring && !shuttingDown && syncBinding != null && !operating && pendingChange == null; }
     public synchronized boolean canImportProviderChanges() {
         return canManageSyncFolder() && !providerActive && snapshot.state() == State.OPEN
                 && syncView.binding().status() == SyncFolderBinding.Status.READY;
@@ -1191,7 +1319,7 @@ public final class AndroidVaultController {
         });
     }
     public synchronized boolean canPublishLocalChanges() {
-        return canImportProviderChanges() && syncView.binding().writable();
+        return historyRecovery.isEmpty() && canImportProviderChanges() && syncView.binding().writable();
     }
     /** Foreground sync admission only. Preserve revealed code and global OPEN state. */
     public synchronized boolean publishLocalChanges() {
@@ -1251,7 +1379,7 @@ public final class AndroidVaultController {
     }
     private synchronized boolean localRequestCurrent(SyncFolderBinding.Request request, long session,
             java.util.concurrent.atomic.AtomicBoolean cancelled, boolean joining) {
-        return !retiring && !shuttingDown && !cancelled.get() && session == sessionGeneration
+        return !historyActive() && historyRecovery.isEmpty() && !retiring && !shuttingDown && !cancelled.get() && session == sessionGeneration
                 && syncBinding.current(request) && (joining
                     ? snapshot.state() == State.NO_LOCAL_VAULT && vault == null
                     : snapshot.state() == State.OPEN && vault != null);
@@ -1330,7 +1458,7 @@ public final class AndroidVaultController {
         if (finish != null) finish.run();
     }
     private synchronized boolean startProvider(boolean importing) {
-        if (retiring || shuttingDown || providerActive || syncBinding.view().status() != SyncFolderBinding.Status.CHECKING) return false;
+        if (historyActive() || retiring || shuttingDown || providerActive || syncBinding.view().status() != SyncFolderBinding.Status.CHECKING) return false;
         var request = syncBinding.request();
         long session = sessionGeneration;
         providerActive = true;
@@ -1470,7 +1598,7 @@ public final class AndroidVaultController {
         if (shuttingDown) { retirement = Retirement.SHUTDOWN; notifyRetirement(); return retirement; }
         if (retiring) { notifyRetirement(); return retirement; }
         retiring = true;
-        revokeBackup();
+        revokeBackup(); revokeHistory();
         retirement = Retirement.WAITING_WORK;
         inactivity.stop(); cancelBiometricEnrollment(); biometricEpoch++;
         lockRequested = true; syncPending = false; pendingChange = null;
@@ -1552,7 +1680,7 @@ public final class AndroidVaultController {
     }
     private void requestLock() {
         if (lockRequested) return;
-        revokeBackup();
+        revokeBackup(); revokeHistory();
         inactivity.stop(); cancelBiometricEnrollment(); biometricEpoch++;
         lockRequested = true;
         syncPending = false; pendingChange = null;

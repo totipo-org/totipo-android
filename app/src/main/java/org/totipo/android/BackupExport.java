@@ -149,7 +149,6 @@ final class BackupExport {
         }
     }
     private synchronized void finish(Outcome result) {
-        phase = Phase.FINISHED;
         message = switch (result) {
             case VERIFIED -> "Backup saved.";
             case WRITTEN_UNVERIFIED -> "Backup saved, but couldn't be verified. Check the file before relying on it.";
@@ -160,6 +159,7 @@ final class BackupExport {
         if (gaps > 0) message += " Some earlier history is missing from this backup.";
         if (archive != null) { Arrays.fill(archive, (byte) 0); archive = null; }
         digest = null;
+        phase = Phase.FINISHED; // Publish the complete outcome after its message and cleanup.
     }
     private static MessageDigest sha256() {
         try { return MessageDigest.getInstance("SHA-256"); }
