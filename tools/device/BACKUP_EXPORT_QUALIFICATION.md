@@ -1,7 +1,8 @@
 # R4A physical SAF qualification
 
-This is an execution procedure, **not a recorded device PASS**. Record actual
-R4D results in `review/BACKUP_RESTORE_R4D_ANDROID_FINAL_QUALIFICATION_REPORT.md`. JVM fake-provider
+This is an execution procedure, **not a recorded device PASS**. Record UX1 execution
+results in `review/ANDROID_BACKUP_RESTORE_UX1_REPORT.md`;
+historical R4D results remain in their original report. JVM fake-provider
 and controller passes do not establish physical SAF behavior. Use a disposable
 device/profile/installation with only public test vaults. Never reset, uninstall,
 overwrite or inspect a user's real vault. No Android release is authorized.
@@ -22,14 +23,15 @@ disposable test entries; do not capture real passwords, seeds or codes in logs.
 
 1. **Local-only empty and populated:** create two independent vaults with distinct
    passwords, no folder or tree grant. Back up each through More options. Confirm
-   the native explanation, ZIP MIME picker, neutral UTC timestamped name, native
+   direct preparation without an explanation/confirmation dialog, then the ZIP MIME
+   picker only after capture freezes, neutral UTC timestamped name, native
    cancel, accessible menu/button labels, large fonts and TalkBack where available.
    Export an empty vault, then one containing edits and deleted entries. Confirm
    no Sync/configuration request appears. Repeat after ordinary biometric unlock
    if that disposable entry has already been enrolled; do not change real keys.
 2. **Real local DocumentsProvider:** save to new uniquely named disposable files.
-   Require the saved/verified message and independently compare the full exported
-   bytes/digest with a second export made without source changes. Inspect through
+   Require **Backup saved.** in the vault status, with no success dialog, and
+   independently compare the full exported bytes/digest with a second export made without source changes. Inspect through
    shared Java `BackupArchives.inspect` (or shared client tooling), not another
    archive writer. Confirm exact lowercase `vault`, supported encrypted objects,
    manifest and no registry/biometric/private metadata. With a shared golden fixture
@@ -52,8 +54,11 @@ disposable test entries; do not capture real passwords, seeds or codes in logs.
    available, revoke access/disconnect/fill storage during output and readback.
    Record output-open, write, flush, close and readback behavior actually induced;
    do not claim branches the provider cannot expose. Missing readback-open support
-   must report written/unverified; truncated/changed/read-failed data must refuse
-   verified success. Cancel during output. Inspect any remaining file manually;
+   must report **Backup saved, but couldn't be verified. Check the file before
+   relying on it.**; truncated/changed/read-failed data must refuse
+   verified success: require **Backup failed. The file may be incomplete.**
+   Cancel before output: no extra dialog. Cancel during output: a partial-file
+   warning must remain in status. Inspect any remaining file manually;
    Totipo must not delete unrelated destination files. A hung provider must retain
    selection retirement until actual return or process restart.
 6. **Process interruption:** kill only the disposable process during a slowed
@@ -67,6 +72,6 @@ disposable test entries; do not capture real passwords, seeds or codes in logs.
    durability/upload limitations. Successful readback is matching returned bytes,
    never proof of cloud upload, durable remote storage or peer receipt.
 
-For R4D, continue with [restore qualification](BACKUP_RESTORE_QUALIFICATION.md)
+For UX1, continue with [restore qualification](BACKUP_RESTORE_QUALIFICATION.md)
 using the saved independent ZIP and original password. Additive history import
 is outside scope. Both procedures require actual execution before release readiness.

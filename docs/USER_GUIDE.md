@@ -236,10 +236,9 @@ them; deferred cleanup can be retried in folder management.
 
 ### Back up an open vault
 
-Unlock the intended vault, then choose **More options → Back up vault**. Read the
-short explanation and choose **Choose destination**. Totipo prepares a portable
-encrypted ZIP, then opens Android's document picker. Choose a location independent
-of the application and save the suggested neutral timestamped filename. This works
+Unlock the intended vault, then choose **More options → Back up vault**. Totipo
+prepares a portable encrypted ZIP, then opens Android's save picker. Choose a location
+independent of the application and save the suggested neutral timestamped filename. This works
 for local-only vaults with no Sync folder. No new backup password is requested:
 the archive uses the vault's existing password, including an empty password if
 that is how the vault was created. Keep that password separately; biometric unlock
@@ -255,12 +254,11 @@ established. The current shared implementation supports at most 4,096 objects,
 8,192 observed directory entries and a 6 MiB ZIP; exceeding a limit fails rather
 than silently exporting a prefix. Do not delete history to fit the limit.
 
-**Backup saved and verified** means the provider returned the complete matching
-bytes after output closed. It does not prove durable remote storage or completed
-cloud upload. **Backup written, but verification unavailable** means output closed
-but readback could not be opened; check the copy independently. **Backup failed or
-could not be verified** means the file must not be relied on. A partial or incorrect
-document may remain after a failure. Use **More options → Cancel backup** to cancel;
+**Backup saved.** means the provider returned the complete matching bytes after output closed. It does not prove durable remote storage or completed
+cloud upload. **Backup saved, but couldn't be verified. Check the file before relying
+on it.** means output closed but readback could not be opened; check the copy
+independently. **Backup failed. The file may be incomplete.** means the file must not
+be relied on. A partial or incorrect document may remain after a failure. Use **More options → Cancel backup** to cancel;
 once output has started, cancellation may leave an empty, partial or complete file.
 Totipo does not delete destination documents as cleanup.
 
@@ -289,24 +287,31 @@ stored ZIP and its original vault password. On an existing installation, finish
 backup → Choose backup ZIP**. If a provider mislabels ZIPs, use **Browse all files**.
 Totipo reads and validates the complete selected ZIP before asking for its original
 vault password. The provider document is frozen in private memory; changing it later
-does not change the candidate. Cancellation before confirmation allocates no vault.
+does not change the candidate. Canceling before submitting **Restore** creates no new vault.
 Wrong passwords, corrupt archives or invalid encrypted objects cannot authorize
 installation. Authentication failure does not prove the password is wrong.
 
-After authentication, review the history-object count and any unresolved ancestry
-warning, optionally enter a local name, and confirm. **Restore limited history**
-explicitly acknowledges missing ancestry; it cannot recover omitted history. A name
-changes only the local label. Restore keeps the original vault identity, password,
-encrypted historical assertions, tombstones and conflicts. It creates a new private
-allocation, with no Sync association, grants, publication settings or biometric
-credentials. No Sync configuration or network permission is required. A document
-provider may itself retrieve a ZIP from cloud storage.
+Enter **Original vault password** and, if wanted, **Vault name (optional)** on the
+same screen, then choose **Restore**. A name changes only the local label. Totipo
+checks the complete encrypted archive and existing vaults before installation.
+If authenticated history has gaps, **Some history is missing** explains:
+“This backup is missing some earlier history. Restoring it won't recover that history.”
+Choose **Cancel** or **Restore anyway**. Ordinary backups need no separate confirmation.
 
-Installation completion offers **Open restored vault**. Enter the original password
-again through normal unlock to complete observation and registration. Biometric
-convenience can be enabled later through the normal workflow. Until installation
-and this authentication finish, the allocation appears in **Recovery**, rather
-than Your vaults. **Finish restore: open** completes this last step.
+Restore keeps the original vault identity, password, encrypted historical assertions,
+tombstones and conflicts. It creates a new private allocation, with no Sync association,
+grants, publication settings or biometric credentials. No Sync configuration or network
+permission is required. A document provider may itself retrieve a ZIP from cloud storage.
+
+When installation finishes in the same foreground journey, Totipo continues to the
+normal locked vault screen. Enter the original password again through ordinary
+**Unlock** to finish checking the installed vault. The password submitted to **Restore**
+is wiped and never reused for unlock. After successful opening, a short non-modal
+**Vault restored.** status appears. Biometric convenience can be enabled later through
+the normal workflow. Until installation and this authentication finish, the vault
+remains in **Recovery**, rather than Your vaults. **Finish restoring** opens an already
+installed backup for this last step. If canceled, backgrounded, expired or restarted,
+the restore journey does not automatically open or retry; use Recovery explicitly.
 
 If the authenticated identity is already retained, a second copy is refused.
 An established match offers **Open existing vault** without adding history. A
@@ -330,8 +335,10 @@ means persistence acknowledgement is missing. **REJECTED** can still leave an ow
 allocation. None means completed restoration. Even opening a bootstrap cannot
 promote a partial restore. Existing canonical objects are always retained.
 
-Use **Vaults → Recovery → ⋮ → Restore interrupted backup**, reselect the **exact
-original ZIP bytes**, and authenticate again. Retry uses the original allocation,
+Use **Vaults → Recovery → ⋮ → Resume restore from backup**, reselect the **exact
+original ZIP bytes**, enter its original password and choose **Restore**. Retry has no
+optional name field; the existing local name stays unchanged. Retry uses the original
+allocation,
 its durable Java intent and recorded archive digest, and acknowledges exact objects
 without replacing them. A repacked or different ZIP is refused. This action is also
 available after installation if subsequent normal opening detects lost data.
@@ -340,9 +347,11 @@ provider intent, occupied incompatible objects, or an interrupted registry tempo
 preserves them and does not automatically repair or erase them.
 
 **Recover retained vault** uses encrypted private data already on this installation.
-**Restore interrupted backup** replays an authenticated portable ZIP into its owned
+**Resume restore from backup** replays an authenticated portable ZIP into its owned
 restore allocation. Neither can recover app-private data removed by clearing data
-or uninstalling. Keep the original ZIP and password until recovery is verified.
+or uninstalling. When restore is unfinished, **keep the app’s data and original
+backup**, as well as the password, until recovery is verified. Do not clear app data or uninstall to try
+to fix an interrupted restore.
 
 ### Private storage and recovery limits
 

@@ -20,74 +20,70 @@ public final class TotipoApplication extends Application {
     BackupExport.Destination backupDestination(android.net.Uri uri) { return new AndroidBackupDocument(getContentResolver(), uri); }
     String interruptedBackup() { return interruptedBackup; }
     private BackupRestoreFlow restoreFlow;
-    private BackupRestoreFlow restoreOpenIntent;
+    private RestoreJourney restoreJourney;
+    private String restoredActivation;
+    private String restoreOpeningNotice = "";
+    String restoreOpeningNotice(AndroidVaultController controller) {
+        return controller != null && controller.activationId().equals(restoredActivation) ? restoreOpeningNotice : "";
+    }
     BackupRestoreFlow restoreFlow() { return restoreFlow; }
     void beginRestore(String recoveryId) {
         try {
             requireUnselected();
             if (recoveryId != null && registry.entry(recoveryId).restore() == null) return;
+            managementNotice = "";
             restoreFlow = new BackupRestoreFlow(recoveryId, SystemClock::elapsedRealtime);
             var origin = restoreFlow;
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (restoreFlow == origin && origin.active()) cancelRestore(origin);
+                if (restoreFlow == origin && (origin.active() || origin.stage() == BackupRestoreFlow.Stage.DONE)) cancelRestore(origin);
             }, 15 * 60 * 1000L);
             selection.presentationChanged();
-        } catch (Exception unavailable) { managementNotice = "Finish retirement or recovery before restoring."; selection.presentationChanged(); }
+        } catch (Exception unavailable) { managementNotice = "Wait for the current operation to finish before restoring."; selection.presentationChanged(); }
     }
     void readRestore(BackupRestoreFlow origin, android.net.Uri uri) {
         if (origin != restoreFlow || managementBusy || selection.owner() != null || !origin.reading()) return;
         restoreWork(origin, () -> origin.freeze(() -> getContentResolver().openInputStream(uri)));
     }
-    void authenticateRestore(BackupRestoreFlow origin, char[] password) {
-        if (origin != restoreFlow || managementBusy || !origin.authenticating()) { java.util.Arrays.fill(password, '\0'); return; }
-        restoreWork(origin, () -> origin.authenticate(password, registry));
+    boolean authenticateRestore(BackupRestoreFlow origin, char[] password, String name) {
+        try { return restoreJourney.submit(origin, password, name); }
+        catch (IllegalArgumentException invalid) {
+            managementNotice = "Use a vault name of at most 128 characters without control characters.";
+            return false;
+        }
     }
-    void installRestore(BackupRestoreFlow origin, String name) {
-        String label = VaultUiModel.optionalLabel(name);
-        try { new VaultRegistry.Entry("00000000000000000000000000000000", label, VaultRegistry.State.PENDING, false); }
-        catch (IllegalArgumentException invalid) { managementNotice = "Use a local name of at most 128 UTF-16 units without controls."; selection.presentationChanged(); return; }
-        if (origin != restoreFlow || managementBusy || !origin.installing()) return;
-        restoreWork(origin, () -> origin.install(label, registry, selection));
+    void installRestore(BackupRestoreFlow origin) { restoreJourney.confirm(origin); }
+    private void restoreWork(BackupRestoreFlow origin, Runnable action) { restoreJourney.work(origin, action); }
+    void cancelRestore(BackupRestoreFlow origin) { restoreJourney.cancel(origin); }
+    void dismissRestore(BackupRestoreFlow origin) {
+        if (restoreFlow != origin || managementBusy || origin.active()) return;
+        restoreFlow = null; managementNotice = ""; selection.presentationChanged();
     }
-    private void restoreWork(BackupRestoreFlow origin, Runnable action) {
-        managementBusy = true; selection.presentationChanged();
-        metadataWorker.execute(() -> {
-            try { action.run(); }
-            finally {
-                new Handler(Looper.getMainLooper()).post(() -> {
-                    if (restoreFlow != origin) return;
-                    if (origin.cancelled() && origin.stage() != BackupRestoreFlow.Stage.CANCELLED) {
-                        restoreWork(origin, origin::dispose); return;
-                    }
-                    managementBusy = false; selection.presentationChanged();
-                });
+    void finishRestoreSelection(BackupRestoreFlow origin, String id) { restoreJourney.finish(origin, id, false); }
+    private void restoredSelection(String id) {
+        var controller = vaultController();
+        if (controller == null || !controller.localId().equals(id)) return;
+        restoredActivation = controller.activationId();
+        restoreOpeningNotice = "Backup installed. Enter the original vault password to finish restoring.";
+        controller.attach(new AndroidVaultController.Listener() {
+            public void changed(AndroidVaultController.Snapshot state) {
+                if (!controller.activationId().equals(restoredActivation) || !controller.selectedAuthority()) {
+                    controller.detach(this); return;
+                }
+                if (state.state() == AndroidVaultController.State.OPEN) {
+                    // OPEN follows normal observation, authenticated inventory and registry promotion.
+                    restoreOpeningNotice = "Vault restored."; controller.detach(this);
+                    selection.presentationChanged();
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        if (!controller.activationId().equals(restoredActivation)) return;
+                        restoreOpeningNotice = ""; selection.presentationChanged();
+                    }, 6000);
+                }
             }
         });
     }
-    void cancelRestore(BackupRestoreFlow origin) {
-        if (origin == null || restoreFlow != origin) return;
-        restoreOpenIntent = null; origin.cancel();
-        if (!managementBusy) restoreWork(origin, origin::dispose);
-    }
-    void dismissRestore(BackupRestoreFlow origin) {
-        if (restoreFlow != origin || managementBusy || origin.active()) return;
-        restoreFlow = null; selection.presentationChanged();
-    }
-    void finishRestoreSelection(BackupRestoreFlow origin, String id) {
-        if (restoreFlow != origin || managementBusy) return;
-        restoreOpenIntent = origin;
-        origin.cancel(); managementBusy = true; selection.presentationChanged();
-        metadataWorker.execute(() -> {
-            origin.dispose();
-            new Handler(Looper.getMainLooper()).post(() -> {
-                if (restoreFlow != origin) return;
-                managementBusy = false;
-                if (restoreOpenIntent != origin) { selection.presentationChanged(); return; }
-                restoreOpenIntent = null; restoreFlow = null; selectFromUi(id, false);
-            });
-        });
-    }
     private int started;
+    // Rotation retains foreground authorization through the temporary zero-Activity gap.
+    private boolean foregroundAuthorized;
     private volatile boolean managementBusy;
     private volatile String managementNotice = "";
     private String joinActivation;
@@ -152,11 +148,11 @@ public final class TotipoApplication extends Application {
     String entrySummary(VaultRegistry.Entry entry) {
         try {
             if (entry.restore() != null) return entry.restore().phase() == VaultRegistry.RestorePhase.INSTALLED
-                    ? "Backup installed. Open with original password to finish registration."
-                    : "Interrupted ZIP restore. Retry with the exact original ZIP and password; this is separate from retained-vault recovery.";
+                    ? "Backup installed. Enter the original password to finish restoring."
+                    : "Restore unfinished. Keep the app’s data and original backup. Choose the exact original ZIP and enter its password to continue.";
             registry.validateRoot(entry.id());
             if (entry.state() == VaultRegistry.State.FORGETTING) return "Forget incomplete. Retry scoped cleanup.";
-            if (entry.state() == VaultRegistry.State.DETACHED) return "Forgotten · encrypted data retained on this installation. "
+            if (entry.state() == VaultRegistry.State.DETACHED) return "Encrypted vault data is kept on this device. You’ll need the vault password. "
                     + new org.totipo.android.sync.AndroidSyncFolderPort(this, entry.id()).configurationNotice();
             if (entry.state() == VaultRegistry.State.PENDING) return !unusedReservation(entry)
                     ? "Creation or Join interrupted. Open retained data; never recreate it."
@@ -256,13 +252,26 @@ public final class TotipoApplication extends Application {
             java.io.File noBackup = getNoBackupFilesDir();
             java.nio.file.Path privateBase = noBackup.getParentFile().getCanonicalFile().toPath().resolve(noBackup.getName());
             backupJournal = new BackupExportJournal(privateBase);
-            if (backupJournal.interrupted()) interruptedBackup = "A backup output was interrupted. Its document may be empty, partial or complete. Inspect the destination; Totipo will not resume it automatically.";
+            if (backupJournal.interrupted()) interruptedBackup = "A backup was interrupted. Check the chosen location; the file may be empty, incomplete or complete. Start a new backup if needed.";
             java.security.KeyStore keys = java.security.KeyStore.getInstance("AndroidKeyStore");
             keys.load(null);
             if (keys.containsAlias(BiometricRecord.LEGACY_ALIAS))
                 throw new VaultRegistry.RecoveryRequired(VaultRegistry.LEGACY_DIAGNOSTIC);
             registry = new VaultRegistry(privateBase);
             syncGrants = org.totipo.android.sync.AndroidSyncFolderPort.ownership(this, registry);
+            restoreJourney = new RestoreJourney(new RestoreJourney.Host() {
+                public BackupRestoreFlow current() { return restoreFlow; }
+                public boolean busy() { return managementBusy; }
+                public void busy(boolean value) { managementBusy = value; }
+                public boolean foregroundUnselected() {
+                    return foregroundAuthorized && selection.snapshot() == null && selection.owner() == null;
+                }
+                public void changed() { selection.presentationChanged(); }
+                public void selected(BackupRestoreFlow origin, String id, boolean restored) {
+                    restoreFlow = null; selectFromUi(id, false);
+                    if (restored) restoredSelection(id);
+                }
+            }, registry, selection, metadataWorker, action -> new Handler(Looper.getMainLooper()).post(action));
             // Keep the initial durable reservation, but setup begins only on explicit action.
             if (registry.entries().isEmpty()) registry.reserve(null);
         } catch (Exception failure) {
@@ -275,15 +284,16 @@ public final class TotipoApplication extends Application {
         registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
             public void onActivityStarted(android.app.Activity activity) {
                 if (++started == 1) {
+                    foregroundAuthorized = true;
                     var controller = vaultController();
                     if (controller != null) controller.foregroundChanged(true);
                 }
             }
             public void onActivityStopped(android.app.Activity activity) {
                 if (--started == 0 && !activity.isChangingConfigurations()) {
+                    foregroundAuthorized = false;
                     if (vaultController() != null) vaultController().foregroundChanged(false);
-                    var restore = restoreFlow;
-                    if (restore != null && ((restore.stage() != BackupRestoreFlow.Stage.PICKING && restore.active()) || restoreOpenIntent == restore)) cancelRestore(restore);
+                    restoreJourney.background();
                 }
             }
             public void onActivityCreated(android.app.Activity activity, android.os.Bundle state) {}

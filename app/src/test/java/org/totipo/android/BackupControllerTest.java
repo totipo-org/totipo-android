@@ -86,8 +86,8 @@ public final class BackupControllerTest {
             var c = open(name); var op = prepare(c); var doc = new Document();
             assertTrue(c.writeBackup(op, doc, JOURNAL)); await(() -> !op.active());
             assertArrayEquals(name, golden(name), doc.bytes.toByteArray());
-            assertTrue(op.message(), op.message().startsWith("Backup saved and verified."));
-            assertEquals(name.equals("missing-parent"), op.message().contains("unresolved ancestry"));
+            assertTrue(op.message(), op.message().startsWith("Backup saved."));
+            assertEquals(name.equals("missing-parent"), op.message().contains("Some earlier history is missing"));
             assertEquals(0, fixtures.refreshes); assertEquals("Local only", c.dailySyncStatus());
             c.retire(null); await(() -> c.retirement() == AndroidVaultController.Retirement.SUCCESS);
         }
@@ -132,7 +132,7 @@ public final class BackupControllerTest {
         assertFalse(c.writeBackup(op, doc, JOURNAL)); assertEquals(0, doc.opens);
         var fresh = prepare(c); assertTrue(c.writeBackup(fresh, doc, JOURNAL));
         assertFalse(c.writeBackup(fresh, doc, JOURNAL)); await(() -> !fresh.active());
-        assertTrue(fresh.message(), fresh.message().startsWith("Backup saved and verified."));
+        assertTrue(fresh.message(), fresh.message().startsWith("Backup saved."));
     }
     @Test public void pickerBackgroundSurvivesButOutputBackgroundCancels() throws Exception {
         var c = open("empty"); var op = prepare(c);
@@ -154,7 +154,7 @@ public final class BackupControllerTest {
             assertTrue(next.active());
         } finally { leave.countDown(); }
         await(() -> !next.active()); assertEquals(0, blocked.bytes.size());
-        assertTrue(next.message().contains("empty, partial or complete"));
+        assertTrue(next.message().contains("empty, incomplete or complete"));
     }
     @Test public void independentSelectionRejectsOriginatingPickerAfterCompleteRetirement() throws Exception {
         Path base = temporary.newFolder().toPath(); var registry = new VaultRegistry(base);

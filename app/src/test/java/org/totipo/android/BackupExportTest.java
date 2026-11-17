@@ -66,7 +66,7 @@ public final class BackupExportTest {
         for (String fault : new String[]{"", "zero"}) {
             var op = ready(); var doc = new Document(); doc.fault = fault;
             assertTrue(op.queue()); op.write(doc, JOURNAL);
-            assertTrue(op.message(), op.message().startsWith("Backup saved and verified."));
+            assertTrue(op.message(), op.message().startsWith("Backup saved."));
             assertArrayEquals(ZIP, doc.bytes.toByteArray());
             assertFalse(op.queue()); assertFalse(op.picker());
         }
@@ -75,14 +75,14 @@ public final class BackupExportTest {
         for (String fault : new String[]{"unavailable", "readNull"}) {
             var op = ready(); var doc = new Document(); doc.fault = fault;
             assertTrue(op.queue()); op.write(doc, JOURNAL);
-            assertTrue(op.message(), op.message().startsWith("Backup written, but verification unavailable."));
+            assertTrue(op.message(), op.message().startsWith("Backup saved, but couldn't be verified."));
         }
     }
     @Test public void failedOpenWriteFlushCloseReadAndMismatchesNeverVerify() throws Exception {
         for (String fault : new String[]{"open", "null", "write", "flush", "close", "read", "readClose", "short", "extra", "wrong"}) {
             var op = ready(); var doc = new Document(); doc.fault = fault;
             assertTrue(op.queue()); op.write(doc, JOURNAL);
-            assertTrue(fault + ": " + op.message(), op.message().startsWith("Backup failed or could not be verified."));
+            assertTrue(fault + ": " + op.message(), op.message().startsWith("Backup failed."));
             assertFalse(op.active()); assertFalse(op.message().contains("private provider text"));
         }
     }
@@ -91,14 +91,14 @@ public final class BackupExportTest {
             var op = ready(); var doc = new Document(); if (queued) assertTrue(op.queue());
             op.cancel(); op.write(doc, JOURNAL);
             assertEquals(0, doc.opens); assertFalse(op.writeStarted());
-            assertTrue(op.message().startsWith("Backup canceled. No output"));
+            assertTrue(op.message().startsWith("Backup canceled."));
         }
     }
     @Test public void cancellationAfterWriteRetainsUncertainVisiblePrefix() throws Exception {
         var op = ready(); var doc = new Document(); doc.cancel = op;
         assertTrue(op.queue()); op.write(doc, JOURNAL);
         assertTrue(doc.bytes.size() > 0); assertTrue(doc.bytes.size() < ZIP.length);
-        assertTrue(op.message().contains("empty, partial or complete"));
+        assertTrue(op.message().contains("empty, incomplete or complete"));
     }
     @Test public void blockedOutputRetainsTaskUntilActualReturnAndStopsNewWrites() throws Exception {
         var op = ready(); var entered = new CountDownLatch(1); var leave = new CountDownLatch(1);

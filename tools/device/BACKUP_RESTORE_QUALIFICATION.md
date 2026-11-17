@@ -4,8 +4,8 @@ Procedure only: no device execution is claimed. Run on API 30 and a current
 supported Android release, with final strict-clean Java 0.3.2 APKs. The shared
 release removes known newer-library calls; actual API 30 execution is still
 required. Record any failure; do not increase minSdk or add an Android hex/crypto
-workaround. Host passes cannot qualify either device. Record R4D results in
-`review/BACKUP_RESTORE_R4D_ANDROID_FINAL_QUALIFICATION_REPORT.md`.
+workaround. Host passes cannot qualify either device. Record UX1 results in `review/ANDROID_BACKUP_RESTORE_UX1_REPORT.md`;
+historical R4D evidence does not qualify these changed screens.
 
 Use only a disposable device/profile and disposable vaults, never production
 secrets or existing personal app data. Record source HEAD + working-tree diff,
@@ -28,16 +28,25 @@ with the same protocol identity without deleting a retained root as a shortcut.
    and TOTP behavior after normal opening. Confirm Local only and absent biometric
    credentials/Sync configuration. Repeat export for a disposable synchronized vault.
 1. On each API, local-only fresh profile: Vaults → Add vault → Restore from backup.
-   Select empty.zip from local Documents, authenticate, name and confirm. Confirm
-   completion remains in Recovery until ordinary password opening; then Lock and
-   reopen. Confirm Local only, no Sync folder/grant, no biometric enrollment record,
+   Select empty.zip from local Documents. On one screen, enter Original vault
+   password and Vault name (optional), then Restore. Double-tap Restore: only one
+   authentication/install may be admitted. An invalid name must not consume the
+   candidate; correct it and resubmit the password. No ordinary Confirm restore or
+   Open restored vault screen may appear. Require automatic handoff after worker/
+   store retirement to normal locked password opening. Enter the password again;
+   only authenticated observation/inventory may establish the vault. Require a
+   non-modal Vault restored. status after opening, then Lock and reopen. Confirm Local only, no Sync folder/
+   grant, no biometric enrollment record,
    no network/broad-storage permission. Test packaged release as well as debug.
 2. In independent profiles restore history.zip and missing-parent.zip. Confirm
    exact encrypted bootstrap/object bytes through disposable debug app-private
    inspection or an instrumented harness under the same authority. Do not open a
    second canonical store alongside the app. History includes historical assertions,
    conflict branches and tombstone; inspect conflict/deleted alternatives. Confirm
-   missing-ancestry warning, explicit limited-history confirmation and normal open.
+   authenticated missing-ancestry warning: Some history is missing, with
+   “This backup is missing some earlier history. Restoring it won't recover that history.”
+   and Cancel / Restore anyway. Check both choices and normal open. Manifest claims
+   alone must never trigger/skip review. Ordinary no-gap fixtures have no confirmation.
    Re-export through shared Java and independently compare canonical membership and
    representations; a whole-ZIP digest comparison only applies to canonical writer
    bytes, because legal original timestamps may differ.
@@ -50,12 +59,19 @@ with the same protocol identity without deleting a retained root as a shortcut.
    to prepare states where necessary. Established offers Open existing vault;
    retained recovery keeps its meaning. Missing/unavailable/malformed/ambiguous
    identity blocks allocation. No second root, merge, overwrite or cleanup.
-5. Cancel picker; rotate with picker/password/confirmation displayed; return late
+5. Cancel picker; rotate with picker/combined form/conditional history review
+   displayed; return late
    picker results after cancellation and after process kill/restart. Passwords must
    not return from widget/Bundle state. Pick with ZIP and all-files filters. Background
    during reading/authentication/installation, leave the picker beyond 15 minutes,
    and test fixed journey expiry with no interaction. No late result starts another
-   journey or vault. During entered blocking I/O, selection stays unavailable until
+   journey or vault. Pause at auth→install, COMPLETE/INSTALLED→disposal and
+   disposal→selection boundaries with deterministic latches. Cancel, press Home,
+   expire the journey, rotate, and inject duplicate/stale completion callbacks at
+   each boundary. Rotation must keep the journey without credentials; actual
+   background/cancel/expiry must keep Recovery and never open on return/restart.
+   System Back retains existing Activity exit behavior; verify no automatic retry.
+   During entered blocking I/O, selection stays unavailable until
    real retirement; never release authority merely because a timeout elapsed.
 6. Using disposable fault instrumentation, stop at each durable boundary: registry
    RESERVED, ATTEMPTED, container allocation, provider marker creation/force,
@@ -63,7 +79,11 @@ with the same protocol identity without deleting a retained root as a shortcut.
    location barriers, INSTALLED update, normal open/observation and atomic promotion.
    Inject before-write failures and lost acknowledgements separately. Restart:
    no automatic install/open/promotion, Create/Join, new root or rollback. Explicit
-   exact-ZIP reauthentication retries the original allocation. PARTIAL/UNCERTAIN
+   Recovery → Resume restore from backup requires exact-ZIP reauthentication
+   and retries the original allocation; no optional name appears and the old name
+   stays unchanged. INSTALLED offers Finish restoring. Retained ordinary data uses
+   Recover retained vault; established duplicates offer Open existing vault.
+   PARTIAL/UNCERTAIN
    cannot appear under Your vaults. A complete bootstrap with missing objects must
    not establish the vault. Missing/torn intent and incompatible occupied objects
    remain preserved for investigation. A registry.next requires metadata recovery.
@@ -79,7 +99,12 @@ with the same protocol identity without deleting a retained root as a shortcut.
    remains absent without a new, separately configured Sync association. Restore
    must work with no Syncthing or Sync provider at all.
 9. Inspect accessibility labels, TalkBack, large fonts and dark-system rendering
-   for actual restore forms and Recovery actions. Report observations separately
+   for actual restore forms and Recovery actions. Both fields must keep visible
+   labels and label associations after typing. Verify polite progress/result
+   announcements without repetition on unchanged renders, focus on the password
+   after picker return without forced keyboard, IME dismissal on submission,
+   reachable Cancel/Restore buttons at large fonts, light/dark contrast, and the
+   six-second non-modal success status (never toast-only). Report observations separately
    from node/layout inspection. Never claim physical fault coverage based on JVM
    tests or this procedure.
 

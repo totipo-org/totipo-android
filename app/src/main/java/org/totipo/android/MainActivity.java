@@ -37,7 +37,10 @@ public final class MainActivity extends Activity {
     private android.net.Uri restoreSource;
     private record Pickers(String sync, BackupExport backup, int request, android.net.Uri destination,
                            BackupRestoreFlow restore, int restoreRequest, android.net.Uri restoreSource) {}
-    private AlertDialog backupExplanation;
+    private BackupRestoreFlow renderedRestore;
+    private BackupRestoreFlow.Stage renderedRestoreStage;
+    private boolean renderedRestoreBusy, renderedRestoreCancelled;
+    private String restoreAnnouncement = "";
     private String boundActivation;
     private boolean replacing;
     private final java.util.function.Consumer<VaultSelection.Snapshot> selectionObserver = value -> {
@@ -59,6 +62,14 @@ public final class MainActivity extends Activity {
     private boolean updatingVaultName;
     private TotipoApplication application() { return (TotipoApplication) getApplication(); }
     private void renderSelection() {
+        var flow = application().restoreFlow();
+        if (flow != null && flow == renderedRestore && flow.stage() == renderedRestoreStage
+                && flow.cancelled() == renderedRestoreCancelled
+                && application().managementBusy() == renderedRestoreBusy && "selection".equals(surface)) return;
+        renderedRestore = flow;
+        renderedRestoreStage = flow == null ? null : flow.stage();
+        renderedRestoreBusy = application().managementBusy();
+        renderedRestoreCancelled = flow != null && flow.cancelled();
         build("selection");
         boolean initialSetup = application().localEntries().size() == 1 && application().unusedReservation(application().localEntries().get(0));
         String diagnostic = application().startupDiagnostic();
@@ -96,7 +107,7 @@ public final class MainActivity extends Activity {
                 && !(entries.size() == 1 && application().unusedReservation(e))).collect(java.util.stream.Collectors.toList());
         if (!recovery.isEmpty()) {
             sectionGap(); label("Recovery").setTextSize(20);
-            label("Retained data requires this installation’s app data and the vault password.");
+            label("Vault data kept on this installation. Choose an action to continue.");
             for (var entry : recovery) {
                 LinearLayout row = new LinearLayout(this); content.addView(row);
                 TextView text = new TextView(this); text.setText(application().localName(entry) + "\n" + application().entrySummary(entry));
@@ -107,38 +118,54 @@ public final class MainActivity extends Activity {
         }
     }
     private void renderRestore(BackupRestoreFlow flow) {
-        label("Restore from backup").setTextSize(20);
-        label(flow.notice());
+        TextView heading = label(flow.needsHistoryReview() ? "Some history is missing" : "Restore from backup");
+        heading.setTextSize(20); heading.setAccessibilityHeading(true);
+        String message = flow.cancelled() && application().managementBusy()
+                ? "Stopping restore… Waiting for storage to finish. Keep the app’s data and original backup."
+                : flow.notice();
+        // Phase rebuilds may replace this view; announce only changed status text.
+        if (message.equals(restoreAnnouncement)) status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
+        else restoreAnnouncement = message;
+        status.setText(message);
         if (application().managementBusy()) {
-            label("Restoring or retiring work… Keep this screen open.");
-            button("Cancel restore", () -> application().cancelRestore(flow)); return;
+            if (!flow.cancelled()) button("Cancel restore", () -> application().cancelRestore(flow));
+            return;
         }
         switch (flow.stage()) {
             case PICKING -> {
-                label("ZIP restoration is separate from Recover retained vault, which uses this installation's private data.");
                 button("Choose backup ZIP", () -> pickRestore(flow, "application/zip"));
                 button("Browse all files", () -> pickRestore(flow, "*/*"));
             }
             case PASSWORD -> {
                 password = passwordField("Original vault password");
-                password.setContentDescription("Original vault password");
-                button("Authenticate backup", () -> {
+                EditText name;
+                if (!flow.recovery()) {
+                    TextView nameLabel = label("Vault name (optional)");
+                    name = new EditText(this); name.setId(View.generateViewId()); nameLabel.setLabelFor(name.getId());
+                    name.setSingleLine(true); name.setSaveEnabled(false); name.setSaveFromParentEnabled(false);
+                    content.addView(name); label("This name is only used on this device.");
+                } else name = null;
+                button("Restore", () -> {
+                    if (flow != application().restoreFlow() || flow.stage() != BackupRestoreFlow.Stage.PASSWORD
+                            || application().managementBusy()) return;
                     char[] credential = new char[password.length()]; password.getText().getChars(0, password.length(), credential, 0);
-                    password.getText().clear(); application().authenticateRestore(flow, credential);
+                    var token = password.getWindowToken(); password.getText().clear();
+                    if (!application().authenticateRestore(flow, credential, name == null ? null : name.getText().toString())) {
+                        if (name != null) { name.setError(application().managementNotice()); name.requestFocus(); }
+                    } else ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(token, 0);
                 });
+                password.requestFocus(); // Picker return: focus the form without forcing the IME.
             }
             case CONFIRM -> {
                 if (flow.duplicate() != null) {
                     if (flow.duplicate().state() == VaultRegistry.State.ESTABLISHED)
                         button("Open existing vault", () -> application().finishRestoreSelection(flow, flow.duplicate().id()));
-                    else label("Close this journey and use the matching Recovery entry. No second copy will be allocated.");
-                } else {
-                    EditText name = new EditText(this); name.setSingleLine(true); name.setSaveEnabled(false);
-                    name.setHint("Local vault name (optional)"); name.setContentDescription("Restored local vault name"); content.addView(name);
-                    button(flow.summary().unresolvedReferences() == 0 ? "Confirm restore" : "Restore limited history", () -> application().installRestore(flow, name.getText().toString()));
+                } else if (flow.needsHistoryReview()) {
+                    button("Cancel", () -> application().cancelRestore(flow));
+                    button("Restore anyway", () -> application().installRestore(flow));
+                    return;
                 }
             }
-            case DONE -> button("Open restored vault", () -> application().finishRestoreSelection(flow, flow.localId()));
             default -> { }
         }
         if (flow.active()) button("Cancel restore", () -> application().cancelRestore(flow));
@@ -163,8 +190,8 @@ public final class MainActivity extends Activity {
         PopupMenu menu = new PopupMenu(this, anchor);
         if (entry.restore() != null) {
             if (entry.restore().phase() == VaultRegistry.RestorePhase.INSTALLED)
-                menu.getMenu().add("Finish restore: open").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
-            menu.getMenu().add("Restore interrupted backup").setOnMenuItemClickListener(item -> { application().beginRestore(entry.id()); return true; });
+                menu.getMenu().add("Finish restoring").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
+            menu.getMenu().add("Resume restore from backup").setOnMenuItemClickListener(item -> { application().beginRestore(entry.id()); return true; });
             menu.show(); return;
         }
         menu.getMenu().add("Rename").setOnMenuItemClickListener(item -> { renameEntry(entry); return true; });
@@ -175,7 +202,7 @@ public final class MainActivity extends Activity {
         } else if (entry.state() == VaultRegistry.State.FORGETTING) {
             menu.getMenu().add("Retry Forget cleanup").setOnMenuItemClickListener(item -> { application().forgetEntry(entry.id()); return true; });
         } else if (entry.state() != VaultRegistry.State.ESTABLISHED) {
-            menu.getMenu().add("Recover").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
+            menu.getMenu().add("Recover retained vault").setOnMenuItemClickListener(item -> { application().selectFromUi(entry.id(), false); return true; });
         }
         if (entry.state() == VaultRegistry.State.DETACHED)
             menu.getMenu().add("Retry retained permission cleanup").setOnMenuItemClickListener(item -> { application().forgetEntry(entry.id()); return true; });
@@ -229,7 +256,6 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onPause() {
         resumed = false;
-        if (backupExplanation != null) { backupExplanation.dismiss(); backupExplanation = null; }
         if (biometric != null) biometric.close();
         if (controller != null) controller.cancelBiometricEnrollment();
         super.onPause();
@@ -328,6 +354,8 @@ public final class MainActivity extends Activity {
         if (managing && !joining && (state.state() == State.OPEN || state.state() == State.LOCKED || state.state() == State.NO_LOCAL_VAULT)) next = "manage";
         if (!next.equals(surface)) build(next);
         String message = next.equals("open") ? mainStatus(state) : state.message();
+        String restoreNotice = application().restoreOpeningNotice(controller);
+        if (!restoreNotice.isEmpty()) message += (message.isEmpty() ? "" : "\n") + restoreNotice;
         String backupNotice = controller.backupMessage();
         if (!backupNotice.isEmpty() && !backupNotice.equals(message)) message += (message.isEmpty() ? "" : "\n") + backupNotice;
         if (!application().interruptedBackup().isEmpty()) message += "\n" + application().interruptedBackup();
@@ -579,7 +607,7 @@ public final class MainActivity extends Activity {
     private void showOverflow(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add("Back up vault").setEnabled(controller.canBackUpVault())
-                .setOnMenuItemClickListener(item -> { explainBackup(); return true; });
+                .setOnMenuItemClickListener(item -> { controller.hideCode(); controller.beginBackup(); return true; });
         if (controller.backup() != null && controller.backup().active())
             menu.getMenu().add("Cancel backup").setOnMenuItemClickListener(item -> {
                 controller.cancelBackup(controller.backup()); return true;
@@ -693,12 +721,6 @@ public final class MainActivity extends Activity {
         pickerActivation = controller.activationId();
         try { startActivityForResult(picker, SYNC_TREE_REQUEST); }
         catch (android.content.ActivityNotFoundException unavailable) { status.setText("Folder picker unavailable."); }
-    }
-    private void explainBackup() {
-        controller.hideCode();
-        backupExplanation = new AlertDialog.Builder(this).setTitle("Back up vault")
-                .setMessage("The backup contains encrypted vault data, including historical and deleted entries. It uses the vault’s existing password. Keep that password separately and store the backup somewhere independent of this application. It includes locally available history, which may not include changes on other devices.")
-                .setNegativeButton("Cancel", null).setPositiveButton("Choose destination", (dialog, which) -> controller.beginBackup()).show();
     }
     private void maybeLaunchBackupPicker() {
         if (!resumed || replacing || backupPicker != null) return;

@@ -26,7 +26,7 @@ final class BackupExport {
     final long session;
     final AtomicBoolean cancelled = new AtomicBoolean();
     private volatile Phase phase = Phase.PREPARING;
-    private volatile String message = "Preparing encrypted backup…";
+    private volatile String message = "Preparing backup…";
     private byte[] archive;
     private byte[] digest;
     private int gaps;
@@ -63,7 +63,7 @@ final class BackupExport {
                     if (cancelled.get()) { finish(Outcome.CANCELLED); return; }
                     archive = Arrays.copyOf(buffer, size[0]); digest = hash;
                     gaps = summary.unresolvedReferences(); phase = Phase.READY;
-                    message = "Choose a destination for the encrypted backup.";
+                    message = "Choose where to save the backup.";
                 }
             } finally { Arrays.fill(buffer, (byte) 0); }
         }
@@ -74,7 +74,7 @@ final class BackupExport {
     }
     synchronized boolean queue() {
         if (cancelled.get() || phase != Phase.PICKER) return false;
-        phase = Phase.QUEUED; message = "Saving encrypted backup…"; return true;
+        phase = Phase.QUEUED; message = "Saving and checking backup…"; return true;
     }
     synchronized void cancel() {
         cancelled.set(true);
@@ -144,20 +144,20 @@ final class BackupExport {
             boolean cleared = !recorded || journal.complete();
             synchronized (this) {
                 finish(cancelled.get() ? Outcome.CANCELLED : result);
-                if (!cleared) message += " Interrupted-output notice could not be cleared; restart may show it again.";
+                if (!cleared) message += " The interruption notice could not be cleared and may appear again after restart.";
             }
         }
     }
     private synchronized void finish(Outcome result) {
         phase = Phase.FINISHED;
         message = switch (result) {
-            case VERIFIED -> "Backup saved and verified. The provider returned matching bytes; remote durability or cloud upload is not confirmed.";
-            case WRITTEN_UNVERIFIED -> "Backup written, but verification unavailable. Readback could not be opened; check the copy independently.";
-            case FAILED -> "Backup failed or could not be verified. A partial or incorrect document may remain; inspect it before relying on it.";
-            case CANCELLED -> started ? "Backup canceled. Output may be empty, partial or complete; inspect the selected destination."
-                    : "Backup canceled. No output write was started by Totipo.";
+            case VERIFIED -> "Backup saved.";
+            case WRITTEN_UNVERIFIED -> "Backup saved, but couldn't be verified. Check the file before relying on it.";
+            case FAILED -> "Backup failed. The file may be incomplete.";
+            case CANCELLED -> started ? "Backup canceled. A partial file may remain. Check the chosen location; the file may be empty, incomplete or complete."
+                    : "Backup canceled.";
         };
-        if (gaps > 0) message += " Locally available history has " + gaps + " unresolved ancestry references; missing history is not included.";
+        if (gaps > 0) message += " Some earlier history is missing from this backup.";
         if (archive != null) { Arrays.fill(archive, (byte) 0); archive = null; }
         digest = null;
     }
