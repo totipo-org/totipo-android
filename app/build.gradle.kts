@@ -40,7 +40,14 @@ android {
 java { toolchain.languageVersion.set(JavaLanguageVersion.of(17)) }
 tasks.withType<JavaCompile>().configureEach { options.encoding = "UTF-8" }
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
-    maxParallelForks = 4
+    val processors = Runtime.getRuntime().availableProcessors()
+    maxParallelForks = (processors / 2).coerceAtLeast(1)
+
+    doFirst {
+        logger.lifecycle(
+            "Available CPUs: $processors, test forks: $maxParallelForks"
+        )
+    }
 }
 dependencies {
     implementation("org.totipo:totipo-storage-nio:0.3.2")
