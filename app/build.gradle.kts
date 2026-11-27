@@ -39,6 +39,14 @@ android {
 
 java { toolchain.languageVersion.set(JavaLanguageVersion.of(17)) }
 tasks.withType<JavaCompile>().configureEach { options.encoding = "UTF-8" }
+// AGP 9.4 disables the fatal report when full lint is requested, but still
+// schedules its analysis dependency. Follow that decision for analysis too;
+// standalone release assembly keeps both fatal analysis and reporting.
+tasks.matching { it.name == "lintVitalAnalyzeRelease" }.configureEach {
+    onlyIf("AGP has enabled the release fatal lint report") {
+        tasks.named("lintVitalReportRelease").get().enabled
+    }
+}
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     val processors = Runtime.getRuntime().availableProcessors()
     maxParallelForks = (processors / 2).coerceAtLeast(1)

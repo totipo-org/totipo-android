@@ -4,6 +4,8 @@ import org.junit.*;
 import org.junit.rules.TemporaryFolder;
 import static org.junit.Assert.*;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -15,6 +17,19 @@ import static org.totipo.android.AndroidVaultController.*;
 
 /** Real Java session ownership with deterministic platform crypto/prompt/time seams. */
 public class SecurityControllerTest {
+    @ClassRule public static TemporaryFolder seedDirectory = new TemporaryFolder();
+    private static byte[] encryptedVault;
+    @BeforeClass public static void prepareEncryptedVault() throws Exception {
+        var root = seedDirectory.newFolder().toPath();
+        char[] credential = password();
+        try {
+            var result = org.totipo.storage.nio.NioTotipo.create(root, credential);
+            assertTrue(result instanceof org.totipo.CreateVaultResult.Created);
+            try (var session = ((org.totipo.CreateVaultResult.Created) result).session()) {
+                encryptedVault = Files.readAllBytes(root.resolve("vault"));
+            }
+        } finally { Arrays.fill(credential, '\0'); }
+    }
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
     final ProductControllerFixtures real = new ProductControllerFixtures();
     final BlockingQueue<Runnable> ui = new LinkedBlockingQueue<>();
@@ -36,6 +51,11 @@ public class SecurityControllerTest {
     }
     @Before public void setup() throws Exception {
         var owner = TestReplicaOwners.create(temporary.newFolder().toPath());
+        // Share only encrypted immutable bytes. Every test has its own registry,
+        // writable root, real password authentication, session and credentials.
+        try (var lease = owner.acquire()) {
+            Files.write(lease.root().resolve("vault"), encryptedVault, StandardOpenOption.CREATE_NEW);
+        }
         controller = new AndroidVaultController(owner, new Dispatcher() {
             public void post(Runnable action) { ui.add(action); }
             public void assertDispatchThread() { }
@@ -51,10 +71,14 @@ public class SecurityControllerTest {
         }, null);
         credentials.local = controller.localId();
         biometric = new BiometricUnlock(controller, credentials, prompt, this::after);
-        await(() -> controller.snapshot().state() == State.NO_LOCAL_VAULT && idle());
-        assertTrue(controller.create(password())); awaitOpen();
+        await(() -> controller.snapshot().state() == State.LOCKED && idle());
+        char[] credential = password();
+        assertTrue(controller.unlock(credential)); awaitOpen();
+        assertArrayEquals(new char[credential.length], credential);
+        // Test bodies count reopen attempts after the authenticated setup session.
+        opens = 0;
     }
-    char[] password() { return new char[]{'s','e','c','u','r','e','\u00e9'}; }
+    static char[] password() { return new char[]{'s','e','c','u','r','e','\u00e9'}; }
     void pump() { for (Runnable next; (next = ui.poll()) != null;) next.run(); }
     boolean idle() {
         try { var f = AndroidVaultController.class.getDeclaredField("operating"); f.setAccessible(true); return !f.getBoolean(controller); }

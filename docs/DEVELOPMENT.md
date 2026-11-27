@@ -108,6 +108,8 @@ the real NIO/core/BC graph must survive D8 and packaging. Configuration cache is
 disabled because the custom verification action resolves configurations at
 execution; no cache compatibility is claimed. Build cache remains available for
 ordinary iteration. Toolchain and SDK auto-download are disabled, UTF-8 is explicit.
+When full lint makes AGP disable the release fatal report, its unused analysis
+is skipped too. Standalone release assembly retains fatal analysis and reporting.
 
 Outputs:
 
@@ -166,6 +168,9 @@ Maven-boundary checks, debug APK verification with `--debug-probe` and unsigned
 release APK verification with `--unsigned --no-debug-probe`. The separate
 `checks.release-tooling` runs the release behavior suite with its required source
 and public signing identity; `checks.release-apps` checks packaged command entry points.
+The Android package runs assembly and Gradle `check` in one invocation during
+its build phase, avoiding a second Gradle startup and configuration pass. Its
+check phase retains the phase hooks; APK verification runs during installCheck.
 A second ordinary `nix build` is not required for qualification. The strict offline Gradle gate
 above remains final local Android validation, outside the iteration loop.
 

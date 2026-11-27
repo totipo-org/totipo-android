@@ -62,9 +62,15 @@ stdenv.mkDerivation (finalAttrs: {
     "--warning-mode=all"
     "-Pandroid.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/36.0.0/aapt2"
   ];
-  gradleBuildTask = ":app:assembleDebug :app:assembleRelease";
+  # One task graph avoids a second --no-daemon startup/configuration pass.
+  # Qualification is mandatory in the build, including for package consumers.
+  gradleBuildTask = ":app:assembleDebug :app:assembleRelease check";
   doCheck = true;
-  gradleCheckTask = "check";
+  checkPhase = ''
+    runHook preCheck
+    # Gradle check already ran with assembly in buildPhase.
+    runHook postCheck
+  '';
   gradleUpdateTask = ":app:assembleDebug :app:assembleRelease check";
   preBuild = ''
     if [ -z "''${IN_GRADLE_UPDATE_DEPS:-}" ] && [ "${if cacheReady then "yes" else "no"}" != yes ]; then
