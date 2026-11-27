@@ -176,6 +176,11 @@ public final class BackupControllerTest {
             var c = new AndroidVaultController(owner, dispatcher, backend); controllers.add(c); return c;
         }).controller(); next.foregroundChanged(true);
         await(() -> next.snapshot().state() == AndroidVaultController.State.NO_LOCAL_VAULT);
+        // Discovery publishes the absence snapshot before its worker task returns.
+        // This positive create case requires completion, not just state delivery.
+        var workerField = AndroidVaultController.class.getDeclaredField("worker"); workerField.setAccessible(true);
+        var nextWorker = (ThreadPoolExecutor) workerField.get(next);
+        await(() -> nextWorker.getActiveCount() == 0 && nextWorker.getQueue().isEmpty());
         assertTrue(next.create("independent".toCharArray())); await(next::canBackUpVault);
         var doc = new Document(); assertFalse(old.writeBackup(op, doc, JOURNAL)); assertFalse(next.writeBackup(op, doc, JOURNAL));
         assertEquals(0, doc.opens); assertNotEquals(old.localId(), next.localId());

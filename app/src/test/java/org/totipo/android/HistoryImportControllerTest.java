@@ -54,9 +54,24 @@ public final class HistoryImportControllerTest {
         c.foregroundChanged(true); await(() -> c.snapshot().state() == AndroidVaultController.State.LOCKED);
         await(() -> c.unlock("fixture password".toCharArray())); await(c::canAddHistory);
     }
+    private HistoryImport beginHistory() throws Exception {
+        var admitted = new AtomicReference<HistoryImport>();
+        await(() -> {
+            synchronized (c) {
+                // Readiness does not reserve admission: observation can queue a view.
+                // Keep this test's positive check and admission in one critical section.
+                if (!c.canAddHistory()) return false;
+                var operation = c.beginHistoryImport();
+                assertNotNull("Ready history import must be admitted atomically", operation);
+                admitted.set(operation);
+                return true;
+            }
+        });
+        return admitted.get();
+    }
     private HistoryImport prepare(String name) throws Exception {
         await(c::canAddHistory);
-        var op = c.beginHistoryImport(); assertNotNull(op);
+        var op = beginHistory(); assertNotNull(op);
         assertTrue(c.prepareHistory(op, () -> new ByteArrayInputStream(zip(name))));
         await(() -> op.phase == HistoryImport.Phase.CONFIRM || !op.active());
         assertEquals(op.message, HistoryImport.Phase.CONFIRM, op.phase);
@@ -73,7 +88,7 @@ public final class HistoryImportControllerTest {
         if (c != null) { c.retire(null); await(() -> c.retirement() == AndroidVaultController.Retirement.SUCCESS); }
     }
     @Test public void localOnlyCompleteRepeatedNoOpFrozenEvidenceAndNoSecretsOrTransport() throws Exception {
-        open(); var opens = new AtomicInteger(); var op = c.beginHistoryImport();
+        open(); var opens = new AtomicInteger(); var op = beginHistory();
         assertTrue(c.prepareHistory(op, () -> { opens.incrementAndGet(); return new ByteArrayInputStream(zip("history")); }));
         await(() -> op.phase == HistoryImport.Phase.CONFIRM && c.snapshot().state() == AndroidVaultController.State.OPEN);
         assertFalse(c.canAddToken()); assertFalse(c.canBackUpVault()); assertNull(c.beginHistoryImport());
@@ -84,7 +99,7 @@ public final class HistoryImportControllerTest {
         assertEquals(0, port.probes + port.scans + port.takes + port.releases); assertFalse(port.pending);
     }
     @Test public void pickerCancellationDuplicateDeliveryAndListenerRecreation() throws Exception {
-        open(); var op = c.beginHistoryImport(); c.foregroundChanged(false); assertTrue(op.active()); c.foregroundChanged(true);
+        open(); var op = beginHistory(); c.foregroundChanged(false); assertTrue(op.active()); c.foregroundChanged(true);
         var calls = new AtomicInteger();
         assertTrue(c.prepareHistory(op, () -> { calls.incrementAndGet(); return new ByteArrayInputStream(zip("history")); }));
         assertFalse(c.prepareHistory(op, () -> { calls.incrementAndGet(); return null; }));
@@ -94,7 +109,7 @@ public final class HistoryImportControllerTest {
         assertFalse(c.applyHistory(op)); assertEquals(1, calls.get()); assertFalse(Files.exists(root.resolve("objects-v1")));
     }
     @Test public void backgroundRevokesPreparationAndKeepsSessionUntilBlockedIngressRetires() throws Exception {
-        open(); var entered = new CountDownLatch(1); var leave = new CountDownLatch(1); var op = c.beginHistoryImport();
+        open(); var entered = new CountDownLatch(1); var leave = new CountDownLatch(1); var op = beginHistory();
         assertTrue(c.prepareHistory(op, () -> {
             entered.countDown(); gate(leave); return new ByteArrayInputStream(zip("history"));
         }));
@@ -136,7 +151,7 @@ public final class HistoryImportControllerTest {
             apply(prepare("history"));
             assertTrue(c.historyMessage(), c.historyMessage().startsWith(uncertain ? "Some history may have been added" : "Some history was added"));
             assertFalse(port.recovery.isEmpty()); assertFalse(c.canSync()); assertFalse(c.canPublishLocalChanges());
-            var wrong = c.beginHistoryImport(); assertNotNull(wrong);
+            var wrong = beginHistory(); assertNotNull(wrong);
             assertTrue(c.prepareHistory(wrong, () -> new ByteArrayInputStream(zip("empty")))); await(() -> !wrong.active());
             assertTrue(c.historyMessage().contains("original backup"));
             fixtures.operationHook = ignored -> {}; fixtures.tokenWriteFault = null; fixtures.persistBeforeTokenFault = false;
@@ -188,7 +203,7 @@ public final class HistoryImportControllerTest {
     @Test public void cancelledBeforeApplyAndRetiredSelectionCannotReuseAuthority() throws Exception {
         open(); var op = prepare("history"); c.foregroundChanged(false);
         await(() -> !op.active()); assertFalse(c.applyHistory(op));
-        c.foregroundChanged(true); await(c::canAddHistory); var picker = c.beginHistoryImport();
+        c.foregroundChanged(true); await(c::canAddHistory); var picker = beginHistory();
         c.retire(null); await(() -> c.retirement() == AndroidVaultController.Retirement.SUCCESS);
         assertFalse(c.prepareHistory(picker, () -> { fail("Late callback opened ZIP"); return null; }));
         open(); assertFalse(c.applyHistory(op)); assertFalse(c.prepareHistory(picker, () -> null));
