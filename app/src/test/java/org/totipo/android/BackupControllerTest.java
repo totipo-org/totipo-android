@@ -111,13 +111,18 @@ public final class BackupControllerTest {
         assertTrue(op.message(), op.message().contains("4,096")); assertFalse(c.launchBackupPicker(op));
     }
     @Test public void captureAdmissionExcludesAuthoringAndLockWaitsForAdmittedCapture() throws Exception {
+        // This test owns capture admission and lock ordering, not initial observation
+        // delivery. A late presentation can otherwise occupy the bounded worker slot
+        // between open() observing readiness and beginBackup() checking admission.
+        fixtures.observationCallback = (terminal, callback) -> terminal ? callback : () -> {};
         var c = open("history"); var entered = new CountDownLatch(1); var leave = new CountDownLatch(1);
         fixtures.beforeBoundedScan = () -> {
             entered.countDown();
             try { assertTrue(leave.await(10, TimeUnit.SECONDS)); } catch (InterruptedException e) { throw new AssertionError(e); }
         };
-        assertTrue(c.beginBackup()); assertTrue(entered.await(10, TimeUnit.SECONDS));
         try {
+            assertTrue("backup capture admitted", c.beginBackup());
+            assertTrue("admitted capture reached bounded scan", entered.await(10, TimeUnit.SECONDS));
             assertFalse(c.canAddToken()); assertFalse(c.canSync()); assertFalse(c.beginBackup());
             assertTrue(c.lock()); assertEquals(AndroidVaultController.State.LOCKING, c.snapshot().state());
             assertFalse(c.launchBackupPicker(c.backup()));

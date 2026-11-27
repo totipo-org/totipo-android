@@ -39,6 +39,9 @@ android {
 
 java { toolchain.languageVersion.set(JavaLanguageVersion.of(17)) }
 tasks.withType<JavaCompile>().configureEach { options.encoding = "UTF-8" }
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    maxParallelForks = 4
+}
 dependencies {
     implementation("org.totipo:totipo-storage-nio:0.3.2")
     testImplementation("junit:junit:4.13.2")
