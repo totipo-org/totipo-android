@@ -15,6 +15,20 @@ import static org.junit.Assert.*;
 import static org.totipo.android.reconcile.ForegroundVaultCoordinator.*;
 
 public final class TotpCoordinatorTest {
+    @ClassRule public static TemporaryFolder seedDirectory = new TemporaryFolder();
+    private static byte[] encryptedVault;
+    private static char[] password() { return "M2A disposable".toCharArray(); }
+    @BeforeClass public static void prepareEncryptedVault() throws Exception {
+        var root = seedDirectory.newFolder().toPath();
+        char[] credential = password();
+        try {
+            var result = org.totipo.storage.nio.NioTotipo.create(root, credential);
+            assertTrue(result instanceof CreateVaultResult.Created);
+            try (var session = ((CreateVaultResult.Created) result).session()) {
+                encryptedVault = Files.readAllBytes(root.resolve("vault"));
+            }
+        } finally { Arrays.fill(credential, '\0'); }
+    }
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
     private LocalReplicaOwner owner;
     private ForegroundVaultCoordinator vault;
@@ -24,9 +38,10 @@ public final class TotpCoordinatorTest {
     private boolean failGenerate;
     private TokenId id;
     private final Operations ops = new Operations() {
-        CreateVaultResult create(CoordinatedPrivateStore store, char[] password) {
-            var result = super.create(store, password);
-            session = ((CreateVaultResult.Created) result).session(); return result;
+        OpenResult open(CoordinatedPrivateStore store, char[] password) {
+            var result = super.open(store, password);
+            assertTrue(result instanceof OpenResult.Opened);
+            session = ((OpenResult.Opened) result).session(); return result;
         }
         TotpCode generateTotp(VaultState state, TokenAlternative alternative, Instant now) {
             generations++;
@@ -36,8 +51,15 @@ public final class TotpCoordinatorTest {
     };
     @Before public void setup() throws Exception {
         owner = TestReplicaOwners.create(temporary.newFolder().toPath());
-        var created = ForegroundVaultCoordinator.create(owner, "M2A disposable".toCharArray(), ops);
-        assertNull(created.cause()); vault = created.vault();
+        // Copy only immutable ciphertext; every test authenticates a fresh session
+        // in its own writable root and authors its own initial token below.
+        try (var lease = owner.acquire()) {
+            Files.write(lease.root().resolve("vault"), encryptedVault, StandardOpenOption.CREATE_NEW);
+        }
+        char[] credential = password();
+        var opened = ForegroundVaultCoordinator.open(owner, credential, ops);
+        assertNull(opened.cause()); assertNull(opened.failure()); vault = opened.vault();
+        assertArrayEquals(new char[credential.length], credential);
         id = author(session, TotpAlgorithm.SHA1, 8, 30, "12345678901234567890");
     }
     @After public void close() { if (vault != null) vault.close(); }
